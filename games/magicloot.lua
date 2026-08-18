@@ -94,6 +94,28 @@ return function(locomotionFactory, Library, Common)
         player = Players.LocalPlayer
     end
 
+    local sessionEnvironment = nil
+    pcall(function()
+        if type(getgenv) == "function" then
+            sessionEnvironment = getgenv()
+            local previousUnload = sessionEnvironment.__INFINITYGOLD_UNLOAD
+            if type(previousUnload) == "function" then pcall(previousUnload) end
+        end
+    end)
+    pcall(function()
+        local playerGui = player:FindFirstChildOfClass("PlayerGui")
+        if playerGui == nil then return end
+        for _, name in ipairs({
+            "InfinityGoldToggle",
+            "InfinityGoldLoaderToggle",
+            "InfinityGoldEmergency",
+        }) do
+            for _, child in ipairs(playerGui:GetChildren()) do
+                if child.Name == name then child:Destroy() end
+            end
+        end
+    end)
+
     local sessionAlive = true
     local unloaded = false
     local floatingGui
@@ -1284,9 +1306,17 @@ return function(locomotionFactory, Library, Common)
                 end
             end
         end
+        if sessionEnvironment ~= nil
+            and sessionEnvironment.__INFINITYGOLD_UNLOAD == unloadSession
+        then
+            sessionEnvironment.__INFINITYGOLD_UNLOAD = nil
+        end
         pcall(function() Library:Destroy() end)
     end
     window.OnClose = unloadSession
+    if sessionEnvironment ~= nil then
+        sessionEnvironment.__INFINITYGOLD_UNLOAD = unloadSession
+    end
 
     local function bindGroup(section)
         return {

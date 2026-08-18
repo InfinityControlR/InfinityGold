@@ -174,6 +174,8 @@ class CoreInvariantTests(unittest.TestCase):
     def test_unload_destroys_all_owned_gui(self):
         self.assertIn("window.OnClose = unloadSession", self.source)
         self.assertIn("Callback = unloadSession", self.source)
+        self.assertIn("__INFINITYGOLD_UNLOAD", self.source)
+        self.assertIn("previousUnload", self.source)
         self.assertIn('"InfinityGoldToggle"', self.source)
         self.assertIn('"InfinityGoldLoaderToggle"', self.source)
         self.assertIn("sessionAlive = false", self.source)
