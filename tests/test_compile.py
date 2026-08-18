@@ -11,6 +11,8 @@ sys.path.insert(0, str(REPO_ROOT))
 from tools.ensure_luau import compile_binary as luau_compile  # noqa: E402
 
 SOURCES = [
+    "loader.lua",
+    "tools/loader.template.lua",
     "ui/InfinityUI.lua",
     "games/magicloot_common.lua",
     "games/magicloot_locomotion.lua",
@@ -26,8 +28,11 @@ class CompileTests(unittest.TestCase):
             self.assertTrue(source.is_file(), f"missing {relative}")
             completed = subprocess.run(
                 [str(compiler), "--binary", str(source)],
-                capture_output=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             self.assertEqual(
                 completed.returncode,

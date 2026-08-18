@@ -131,7 +131,11 @@ local function fetchChunk(name, url)
         if type(chunk) ~= 'function' then
             error(tostring(compileError or 'chunk compile failed'))
         end
-        return chunk
+        local exported = chunk()
+        if type(exported) ~= 'function' then
+            error(name .. ' did not return an entry function')
+        end
+        return exported
     end)
     if ok then
         return result
