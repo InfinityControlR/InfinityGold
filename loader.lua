@@ -80,6 +80,14 @@ local UI = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/093b
 local COMMON = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/093b93adf1cc3a8068a37a9dac60d0203e79e4f8/games/magicloot_common.lua'
 local LOCOMOTION = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/093b93adf1cc3a8068a37a9dac60d0203e79e4f8/games/magicloot_locomotion.lua'
 
+-- raw.githubusercontent.com caches ~5 minutes per URL. Without this, a
+-- re-run right after a publish silently downloads the previous version.
+local CACHE_BUST = '?t=' .. tostring(os.time())
+
+local function busted(url)
+    return url .. CACHE_BUST
+end
+
 local PLACE_IDS = {
     [133188236593503] = true,
 }
@@ -113,7 +121,7 @@ local function fetchModule(name, url)
     return nil
 end
 
-local Library = fetchModule('Interface library', UI)
+local Library = fetchModule('Interface library', busted(UI))
 if type(Library) ~= 'table' or type(Library.CreateWindow) ~= 'function' then
     visibleNotify('Interface library unavailable - aborting (check console)')
     return
@@ -128,18 +136,18 @@ local function notifyLoad(content)
     visibleNotify(content)
 end
 
-local Common = fetchModule('Shared helpers', COMMON)
+local Common = fetchModule('Shared helpers', busted(COMMON))
 if type(Common) ~= 'table' then
     Common = nil
 end
 
-local factory = fetchModule('Locomotion module', LOCOMOTION)
+local factory = fetchModule('Locomotion module', busted(LOCOMOTION))
 if type(factory) ~= 'table' or type(factory.create) ~= 'function' then
     factory = nil
 end
 
 local coreOk, coreChunk = pcall(function()
-    local source = game:HttpGet(BASE .. 'games/magicloot.lua')
+    local source = game:HttpGet(busted(BASE .. 'games/magicloot.lua'))
     local chunk, compileError = loadstring(source)
     if type(chunk) ~= 'function' then
         error(tostring(compileError or 'core compile failed'))
