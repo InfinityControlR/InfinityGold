@@ -79,10 +79,10 @@ end
 -- SHA URLs can never be served stale by the raw CDN, which caches /main/
 -- URLs for minutes and sometimes ignores cache-busting query strings.
 -- Only this loader itself is served from main.
-local UI = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/093b93adf1cc3a8068a37a9dac60d0203e79e4f8/ui/InfinityUI.lua'
+local UI = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/185875c00b1963e83f3f6ce236515567cc820c2c/ui/InfinityUI.lua'
 local COMMON = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/1d95cdc4ed390fadb79fd2f63166a5d4787adef7/games/magicloot_common.lua'
 local LOCOMOTION = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/093b93adf1cc3a8068a37a9dac60d0203e79e4f8/games/magicloot_locomotion.lua'
-local CORE = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/1d95cdc4ed390fadb79fd2f63166a5d4787adef7/games/magicloot.lua'
+local CORE = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/185875c00b1963e83f3f6ce236515567cc820c2c/games/magicloot.lua'
 
 -- Belt and braces: a fresh cache key per run for the pinned URLs too.
 local CACHE_BUST = '?t=' .. tostring(os.time())
