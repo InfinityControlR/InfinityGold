@@ -93,9 +93,16 @@ local function label(instance, options)
 end
 
 local function resolveParent()
-    local candidates = {}
-    local holder = nil
+    -- PlayerGui first: it renders reliably on every executor (including
+    -- mobile builds whose gethui()/CoreGui container never draws). The gui
+    -- keeps ResetOnSpawn = false so respawns do not clear it.
+    local player = Players.LocalPlayer
+    local playerGui = player and player:FindFirstChildOfClass("PlayerGui")
+    if playerGui then
+        return playerGui
+    end
 
+    local holder = nil
     local ok = pcall(function()
         if type(gethui) == "function" then
             holder = gethui()
@@ -117,10 +124,6 @@ local function resolveParent()
             return holder
         end
     end
-
-    local player = Players.LocalPlayer
-    local playerGui = player and player:FindFirstChildOfClass("PlayerGui")
-    if playerGui then return playerGui end
 
     return game:GetService("CoreGui")
 end
