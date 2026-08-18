@@ -1,0 +1,382 @@
+-- Offline construction harness: runs InfinityUI and the core script against a
+-- minimal Roblox API simulation under the plain Luau CLI.
+--
+-- Catching construction-time errors here means the dashboard cannot ship a
+-- silent "nothing opens" failure. Run from the repository root:
+--   luau tests/ui_core_smoke.luau
+
+local failures = {}
+
+local function fail(message)
+    table.insert(failures, tostring(message))
+    print("FAIL " .. tostring(message))
+end
+
+-- Signals -----------------------------------------------------------------
+
+local function makeSignal()
+    local handlers = {}
+    local signal = {}
+    function signal:Connect(handler)
+        table.insert(handlers, handler)
+        return { Disconnect = function() end }
+    end
+    function signal:Fire(...)
+        for _, handler in ipairs(handlers) do
+            handler(...)
+        end
+    end
+    return signal
+end
+
+-- Instances ---------------------------------------------------------------
+
+local SIGNAL_NAMES = {
+    InputBegan = true,
+    InputChanged = true,
+    InputEnded = true,
+    MouseButton1Click = true,
+    MouseButton1Down = true,
+    FocusLost = true,
+    Idled = true,
+    Changed = true,
+}
+
+local InstanceMT
+local InstanceMethods = {}
+
+local function newInstance(className, name)
+    local self = setmetatable({
+        __children = {},
+        ClassName = className,
+        Name = name or className,
+    }, InstanceMT)
+    return self
+end
+
+function InstanceMethods:GetChildren()
+    local copy = {}
+    for index, child in ipairs(self.__children) do
+        copy[index] = child
+    end
+    return copy
+end
+
+function InstanceMethods:IsA(className)
+    return self.ClassName == className
+end
+
+function InstanceMethods:FindFirstChild(name)
+    for _, child in ipairs(self.__children) do
+        if child.Name == name then
+            return child
+        end
+    end
+    return nil
+end
+
+function InstanceMethods:FindFirstChildOfClass(className)
+    for _, child in ipairs(self.__children) do
+        if child.ClassName == className then
+            return child
+        end
+    end
+    return nil
+end
+
+function InstanceMethods:WaitForChild(name)
+    return InstanceMethods.FindFirstChild(self, name)
+end
+
+function InstanceMethods:IsDescendantOf()
+    return false
+end
+
+function InstanceMethods:Destroy()
+    local parent = rawget(self, "Parent")
+    if parent ~= nil then
+        for index, child in ipairs(parent.__children) do
+            if child == self then
+                table.remove(parent.__children, index)
+                break
+            end
+        end
+    end
+    rawset(self, "Parent", nil)
+end
+
+function InstanceMethods:GetPropertyChangedSignal()
+    return makeSignal()
+end
+
+InstanceMT = {
+    __index = function(self, key)
+        local method = InstanceMethods[key]
+        if method ~= nil then
+            return method
+        end
+        if SIGNAL_NAMES[key] then
+            local signal = makeSignal()
+            rawset(self, key, signal)
+            return signal
+        end
+        return rawget(self, key)
+    end,
+    __newindex = function(self, key, value)
+        if key == "Parent" then
+            local old = rawget(self, "Parent")
+            if old ~= nil then
+                for index, child in ipairs(old.__children) do
+                    if child == self then
+                        table.remove(old.__children, index)
+                        break
+                    end
+                end
+            end
+            if value ~= nil then
+                table.insert(value.__children, self)
+            end
+            rawset(self, "Parent", value)
+            return
+        end
+        rawset(self, key, value)
+    end,
+}
+
+Instance = { new = function(_, className) return newInstance(className) end }
+
+-- Datatypes ---------------------------------------------------------------
+
+local function arithmeticMetatable(zero)
+    return {
+        __add = function() return zero end,
+        __sub = function() return zero end,
+        __mul = function() return zero end,
+    }
+end
+
+local EnumTokenMT = arithmeticMetatable(0)
+local function makeEnumCategory()
+    return setmetatable({}, {
+        __index = function(category, key)
+            local token = setmetatable({ Value = 0 }, EnumTokenMT)
+            rawset(category, key, token)
+            return token
+        end,
+    })
+end
+
+Enum = setmetatable({}, {
+    __index = function(_, key)
+        local category = makeEnumCategory()
+        rawset(Enum, key, category)
+        return category
+    end,
+})
+
+local Vector3MT
+Vector3 = {
+    new = function(x, y, z)
+        return setmetatable({ X = x or 0, Y = y or 0, Z = z or 0 }, Vector3MT)
+    end,
+    zero = nil,
+}
+Vector3MT = {
+    __index = function(vector, key)
+        if key == "Magnitude" then
+            return math.sqrt(vector.X ^ 2 + vector.Y ^ 2 + vector.Z ^ 2)
+        elseif key == "Unit" then
+            local magnitude = math.sqrt(vector.X ^ 2 + vector.Y ^ 2 + vector.Z ^ 2)
+            if magnitude == 0 then return Vector3.new(0, 0, 0) end
+            return Vector3.new(vector.X / magnitude, vector.Y / magnitude, vector.Z / magnitude)
+        end
+        return nil
+    end,
+    __add = function(a, b) return Vector3.new(a.X + b.X, a.Y + b.Y, a.Z + b.Z) end,
+    __sub = function(a, b) return Vector3.new(a.X - b.X, a.Y - b.Y, a.Z - b.Z) end,
+    __mul = function(a, b)
+        if type(b) == "number" then return Vector3.new(a.X * b, a.Y * b, a.Z * b) end
+        return Vector3.new(0, 0, 0)
+    end,
+}
+Vector3.zero = Vector3.new(0, 0, 0)
+
+Vector2 = { new = function(x, y) return { X = x or 0, Y = y or 0 } end }
+
+UDim = { new = function(scale, offset) return { Scale = scale or 0, Offset = offset or 0 } end }
+
+local UDim2MT
+UDim2 = {
+    new = function(xs, xo, ys, yo)
+        return setmetatable({ X = { Scale = xs or 0, Offset = xo or 0 }, Y = { Scale = ys or 0, Offset = yo or 0 } }, UDim2MT)
+    end,
+}
+UDim2MT = {
+    __add = function(a, b)
+        return UDim2.new(a.X.Scale + b.X.Scale, a.X.Offset + b.X.Offset, a.Y.Scale + b.Y.Scale, a.Y.Offset + b.Y.Offset)
+    end,
+    __sub = function(a, b)
+        return UDim2.new(a.X.Scale - b.X.Scale, a.X.Offset - b.X.Offset, a.Y.Scale - b.Y.Scale, a.Y.Offset - b.Y.Offset)
+    end,
+}
+
+Color3 = {
+    fromRGB = function(r, g, b) return { R = r, G = g, B = b } end,
+    new = function(r, g, b) return { R = r, G = g, B = b } end,
+}
+ColorSequenceKeypoint = { new = function(time, value) return { Time = time, Value = value } end }
+ColorSequence = { new = function(keypoints) return { Keypoints = keypoints } end }
+TweenInfo = { new = function() return {} end }
+
+CFrame = {
+    new = function(...)
+        return { Position = Vector3.new(0, 0, 0) }
+    end,
+    lookAt = function(...)
+        return { Position = Vector3.new(0, 0, 0) }
+    end,
+}
+
+-- Task scheduler ----------------------------------------------------------
+
+local threads = {}
+
+task = {}
+
+function task.spawn(fn, ...)
+    local co = coroutine.create(fn)
+    local ok, err = coroutine.resume(co, ...)
+    if not ok then
+        fail("task.spawn error: " .. tostring(debug.traceback(co, err)))
+    end
+    if coroutine.status(co) ~= "dead" then
+        table.insert(threads, co)
+    end
+end
+
+function task.wait()
+    return coroutine.yield()
+end
+
+function task.delay(_, fn, ...)
+    task.spawn(fn, ...)
+end
+
+function task.defer(fn, ...)
+    task.spawn(fn, ...)
+end
+
+local function pump(rounds)
+    for _ = 1, rounds do
+        for _, co in ipairs(threads) do
+            if coroutine.status(co) ~= "dead" then
+                local ok, err = coroutine.resume(co)
+                if not ok then
+                    fail("worker error: " .. tostring(debug.traceback(co, err)))
+                end
+            end
+        end
+    end
+end
+
+-- Services ----------------------------------------------------------------
+
+local function makeService(className)
+    return newInstance(className)
+end
+
+local services = {}
+local function service(name)
+    if services[name] == nil then
+        services[name] = makeService(name)
+    end
+    return services[name]
+end
+
+local player = makeService("Player")
+player.Name = "LocalPlayer"
+
+local Players = service("Players")
+rawset(Players, "LocalPlayer", player)
+
+game = setmetatable({
+    PlaceId = 133188236593503,
+    CreatorId = 118455659,
+    JobId = "job-id",
+    IsLoaded = true,
+    Loaded = makeSignal(),
+    GetService = function(_, name)
+        return service(name)
+    end,
+    HttpGet = function(_, _url)
+        return ""
+    end,
+}, {
+    __index = function(_, key)
+        if key == "PlaceId" or key == "CreatorId" or key == "JobId" then
+            return nil
+        end
+        return nil
+    end,
+})
+
+workspace = service("Workspace")
+
+TweenService = nil -- accessed through game:GetService
+
+-- Patch TweenService with a playable object
+do
+    local tweenService = service("TweenService")
+    rawset(tweenService, "Create", function(_, instance, _info, _props)
+        return { Play = function() end }
+    end)
+end
+
+warn = function(...) print("[warn]", ...) end
+
+-- Harness -----------------------------------------------------------------
+-- The module sources are injected here by tests/test_ui_core_smoke.py: the
+-- plain Luau CLI isolates globals per required module, so the harness runs
+-- everything inside a single chunk instead of using require.
+-- @@INJECT_MODULES@@
+
+local notifications = {}
+do
+    local originalNotify = Library.Notify
+    function Library:Notify(options)
+        table.insert(notifications, options)
+        return originalNotify(self, options)
+    end
+end
+
+local ok, err = xpcall(function()
+    core(LocomotionFactory, Library, Common)
+end, debug.traceback)
+
+if not ok then
+    fail("core construction error: " .. tostring(err))
+end
+
+pump(20)
+
+if #Library._windows ~= 1 then
+    fail("expected exactly one window, got " .. tostring(#Library._windows))
+end
+
+if #Library._windows == 1 then
+    local window = Library._windows[1]
+    if window.Frame == nil or window.Frame.Parent == nil then
+        fail("window frame was never parented to a screen gui")
+    end
+end
+
+if #notifications == 0 then
+    fail("core never issued its loaded notification")
+end
+
+if #failures > 0 then
+    print(string.format("ui_core_smoke: %d failure(s)", #failures))
+    error("ui_core_smoke failed")
+end
+
+print("ui_core_smoke: all checks passed")

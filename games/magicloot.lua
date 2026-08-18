@@ -18,7 +18,25 @@ local CREATOR_ID = 118455659
 local DISCORD_INVITE = "" -- set to an invite URL to show the invite button
 
 return function(locomotionFactory, Library, Common)
+    local function earlyNotify(content)
+        pcall(function()
+            Library:Notify({
+                Title = BRAND,
+                Content = content,
+                Duration = 6,
+            })
+        end)
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = BRAND,
+                Text = content,
+                Duration = 6,
+            })
+        end)
+    end
+
     if game.PlaceId ~= PLACE_ID and game.CreatorId ~= CREATOR_ID then
+        earlyNotify("Unsupported game (PlaceId " .. tostring(game.PlaceId) .. ")")
         return
     end
 
@@ -89,6 +107,8 @@ return function(locomotionFactory, Library, Common)
             })
         end)
     end
+
+    notify("starting • building dashboard...", 3)
 
     -- Options ----------------------------------------------------------------
 
