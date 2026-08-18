@@ -1529,6 +1529,37 @@ return function(locomotionFactory, Library, Common)
 
     -- Main movement loop -----------------------------------------------------------------
 
+    -- Dashboard watchdog: some games sweep foreign ScreenGuis out of PlayerGui.
+    -- If ours is unparented, re-attach and say so on the banner; if it was
+    -- destroyed outright, keep the failure on screen instead of failing silently.
+    do
+        local wasAttached = true
+        task.spawn(function()
+            while sessionAlive do
+                pcall(function()
+                    local attached = Library._gui ~= nil and Library._gui.Parent ~= nil
+                    if not attached then
+                        local playerGui = player:FindFirstChildOfClass("PlayerGui")
+                        if playerGui ~= nil and Library._gui ~= nil then
+                            Library._gui.Parent = playerGui
+                            attached = Library._gui.Parent ~= nil
+                            if attached then
+                                banner("dashboard gui was removed and re-attached")
+                            end
+                        end
+                    end
+                    if attached ~= wasAttached then
+                        wasAttached = attached
+                        if not attached then
+                            banner("dashboard gui could not be re-attached (destroyed?)")
+                        end
+                    end
+                end)
+                task.wait(2)
+            end
+        end)
+    end
+
     task.spawn(function()
         while sessionAlive do
             local ok, err = pcall(updateMovement)

@@ -136,7 +136,8 @@ local function ensureGui()
     screenGui.Name = "InfinityGold_" .. tostring(math.random(10000, 99999))
     screenGui.ResetOnSpawn = false
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    screenGui.DisplayOrder = 999
+    screenGui.DisplayOrder = 1000000
+    screenGui.IgnoreGuiInset = true
 
     local parent = resolveParent()
     local placed = pcall(function()
@@ -151,6 +152,10 @@ local function ensureGui()
 
     Library._gui = screenGui
     return screenGui
+end
+
+function Library:IsAttached()
+    return Library._gui ~= nil and Library._gui.Parent ~= nil
 end
 
 -- Notifications ---------------------------------------------------------------
@@ -280,6 +285,7 @@ function Library:CreateWindow(options)
     local window = {
         Keybind = options.Keybind or Enum.KeyCode.RightShift,
         Status = "",
+        Gui = screenGui,
     }
 
     local main = Instance.new("Frame")
@@ -288,7 +294,20 @@ function Library:CreateWindow(options)
     main.BackgroundColor3 = Library.Theme.Background
     main.BorderSizePixel = 0
     main.Position = UDim2.new(0.5, 0, 0.5, 0)
+
+    -- Shrink on phone-sized viewports so the window always fits the screen.
     main.Size = UDim2.new(0, 580, 0, 420)
+    do
+        local ok, camera = pcall(function()
+            return workspace.CurrentCamera
+        end)
+        if ok and camera ~= nil then
+            local viewport = camera.ViewportSize
+            if viewport.X < 640 or viewport.Y < 480 then
+                main.Size = UDim2.new(0, 460, 0, 340)
+            end
+        end
+    end
     main.ClipsDescendants = true
     main.Parent = screenGui
     corner(main, 12)
