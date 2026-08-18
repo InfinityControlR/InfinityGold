@@ -76,9 +76,9 @@ if identifyexecutor then
 end
 
 local BASE = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/main/'
-local UI = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/64873a6115a472936d9000bbf69d33f53f39b762/ui/InfinityUI.lua'
-local COMMON = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/64873a6115a472936d9000bbf69d33f53f39b762/games/magicloot_common.lua'
-local LOCOMOTION = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/64873a6115a472936d9000bbf69d33f53f39b762/games/magicloot_locomotion.lua'
+local UI = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/3cf3e499909840dcc99080242d103bde9b1c6a1b/ui/InfinityUI.lua'
+local COMMON = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/3cf3e499909840dcc99080242d103bde9b1c6a1b/games/magicloot_common.lua'
+local LOCOMOTION = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/3cf3e499909840dcc99080242d103bde9b1c6a1b/games/magicloot_locomotion.lua'
 
 local PLACE_IDS = {
     [133188236593503] = true,
