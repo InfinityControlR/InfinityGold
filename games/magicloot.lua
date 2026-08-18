@@ -105,7 +105,7 @@ return function(locomotionFactory, Library, Common)
     if type(Common) ~= "table" then
         Common = {
             isEventDrop = function(gold)
-                return math.floor(tonumber(gold) or 1) == 0
+                return type(gold) == "number" and gold == 0
             end,
             sortDrops = function(entries)
                 local copy = {}
@@ -125,9 +125,10 @@ return function(locomotionFactory, Library, Common)
             parseTierSelection = function(values)
                 local tiers = {}
                 if type(values) == "table" then
-                    for _, value in ipairs(values) do
-                        local number = tonumber(value)
-                        if number ~= nil then tiers[number] = true end
+                    for key, value in pairs(values) do
+                        local selected = type(key) == "number" or value == true
+                        local number = tonumber(type(key) == "number" and value or key)
+                        if selected and number ~= nil then tiers[math.floor(number)] = true end
                     end
                 end
                 return tiers
@@ -889,22 +890,48 @@ return function(locomotionFactory, Library, Common)
     local function pickupPrompt(primaryPart)
         if primaryPart == nil then return nil end
         local prompt = primaryPart:FindFirstChild("PickupPrompt")
-        if prompt ~= nil then
+        if prompt ~= nil and prompt:IsA("ProximityPrompt") then
             return prompt
         end
         return nil
     end
 
-    local function activatePrompt(prompt, primaryPart)
+    local function promptDropId(prompt)
+        if type(getconnections) ~= "function" or type(getupvalue) ~= "function" then
+            return nil
+        end
+        local ok, connections = pcall(getconnections, prompt.Triggered)
+        if not ok or type(connections) ~= "table" then return nil end
+        for _, connection in ipairs(connections) do
+            local callbackOk, callback = pcall(function()
+                return connection.Function or connection.fn
+            end)
+            if callbackOk and type(callback) == "function" then
+                for index = 1, 8 do
+                    local readOk, value = pcall(getupvalue, callback, index)
+                    if readOk and type(value) == "string" and value ~= "" then
+                        return value
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    local function activatePrompt(prompt)
         if type(fireproximityprompt) == "function" then
-            local ok = pcall(fireproximityprompt, prompt)
+            local ok = pcall(fireproximityprompt, prompt, 0)
             if ok then return true end
         end
         if type(firesignal) == "function" then
-            local ok = pcall(firesignal, prompt, "Triggered")
+            local ok = pcall(firesignal, prompt.Triggered, player)
             if ok then return true end
         end
-        return sendAction("DROP_PICKUP", primaryPart)
+        local dropId = promptDropId(prompt)
+        if dropId ~= nil then
+            return sendAction("DROP_PICKUP", dropId)
+        end
+        return false
     end
 
     local pickupCount = 0
@@ -922,44 +949,46 @@ return function(locomotionFactory, Library, Common)
 
         local candidates = {}
         local order = 0
-        for _, tierFolder in ipairs(container:GetChildren()) do
-            local children = tierFolder:IsA("Model") and { tierFolder } or tierFolder:GetChildren()
-            for _, model in ipairs(children) do
-                local ok, entry = pcall(function()
-                    if not model:IsA("Model") then return nil end
-                    local legacy = model.Name == "DropItem"
-                    local itemId = tonumber(model:GetAttribute("ItemId"))
-                    if not legacy and itemId == nil then return nil end
-                    local primaryPart = model.PrimaryPart
-                    if primaryPart == nil then return nil end
-                    local gold = math.floor(tonumber(model:GetAttribute("GoldValue")) or 0)
-                    local landed = model:GetAttribute("DropLanded") == true
-                    local tier = tonumber(model:GetAttribute("Xyd"))
-                        or tonumber(model.Parent and model.Parent.Name)
-                        or nil
-                    local distance = (primaryPart.Position - parts.root.Position).Magnitude
-                    return {
-                        model = model,
-                        primaryPart = primaryPart,
-                        gold = gold,
-                        tier = tier,
-                        landed = landed,
-                        distance = distance,
-                        order = order,
-                    }
-                end)
-                if ok and entry ~= nil then
-                    order = order + 1
-                    entry.order = order
-                    entry.hasPrimaryPart = entry.primaryPart ~= nil
-                    entry.inRange = entry.distance <= range
-                    entry.isEvent = Common.isEventDrop(entry.gold)
-                    table.insert(candidates, entry)
-                end
+        for _, model in ipairs(container:GetDescendants()) do
+            local ok, entry = pcall(function()
+                if not model:IsA("Model") then return nil end
+                local legacy = model.Name == "DropItem"
+                local itemId = tonumber(model:GetAttribute("ItemId"))
+                if not legacy and itemId == nil then return nil end
+                local primaryPart = model.PrimaryPart
+                if primaryPart == nil then return nil end
+                local rawGold = model:GetAttribute("GoldValue")
+                local gold = math.floor(tonumber(rawGold) or 0)
+                local landed = model:GetAttribute("DropLanded") == true
+                local tier = tonumber(model:GetAttribute("Xyd"))
+                    or tonumber(model.Parent and model.Parent.Name)
+                    or nil
+                local distance = (primaryPart.Position - parts.root.Position).Magnitude
+                return {
+                    model = model,
+                    primaryPart = primaryPart,
+                    rawGold = rawGold,
+                    gold = gold,
+                    tier = tier,
+                    landed = landed,
+                    distance = distance,
+                    order = order,
+                }
+            end)
+            if ok and entry ~= nil then
+                order = order + 1
+                entry.order = order
+                entry.hasPrimaryPart = entry.primaryPart ~= nil
+                entry.inRange = entry.distance <= range
+                entry.isEvent = Common.isEventDrop(entry.rawGold)
+                table.insert(candidates, entry)
             end
         end
 
-        dropsNearby = #candidates
+        dropsNearby = 0
+        for _, entry in ipairs(candidates) do
+            if entry.inRange then dropsNearby = dropsNearby + 1 end
+        end
 
         local sorted = Common.sortDrops(candidates)
         for _, entry in ipairs(sorted) do
@@ -970,15 +999,8 @@ return function(locomotionFactory, Library, Common)
             }) then
                 local prompt = pickupPrompt(entry.primaryPart)
                 if prompt ~= nil then
-                    local activated = activatePrompt(prompt, entry.primaryPart)
+                    local activated = activatePrompt(prompt)
                     if activated then
-                        pickupCount = pickupCount + 1
-                        task.wait(0.4)
-                        return
-                    end
-                else
-                    local ok = sendAction("DROP_PICKUP", entry.primaryPart)
-                    if ok then
                         pickupCount = pickupCount + 1
                         task.wait(0.4)
                         return

@@ -7,15 +7,13 @@
 
 local Common = {}
 
--- Event drops carry a GoldValue of exactly zero (after flooring).
+-- Event drops carry a numeric GoldValue of exactly zero.
 function Common.isEventDrop(goldValue)
-    local number = tonumber(goldValue)
-    if number == nil then return false end
-    return math.floor(number) == 0
+    return type(goldValue) == "number" and goldValue == 0
 end
 
 -- Stable drop ordering:
---   1. event drops first (GoldValue floored to exactly 0)
+--   1. event drops first (raw numeric GoldValue exactly 0)
 --   2. then everything else by GoldValue descending
 --   3. ties broken by lower tier first (nil tier last)
 --   4. remaining ties keep discovery order
@@ -29,8 +27,10 @@ function Common.sortDrops(entries)
     end
 
     table.sort(sorted, function(left, right)
-        local leftEvent = Common.isEventDrop(left.gold)
-        local rightEvent = Common.isEventDrop(right.gold)
+        local leftEvent = left.isEvent == true
+            or (left.isEvent == nil and Common.isEventDrop(left.gold))
+        local rightEvent = right.isEvent == true
+            or (right.isEvent == nil and Common.isEventDrop(right.gold))
         if leftEvent ~= rightEvent then
             return leftEvent
         end
@@ -112,9 +112,10 @@ end
 function Common.parseTierSelection(values)
     local tiers = {}
     if type(values) ~= "table" then return tiers end
-    for _, value in ipairs(values) do
-        local number = tonumber(value)
-        if number ~= nil then
+    for key, value in pairs(values) do
+        local selected = type(key) == "number" or value == true
+        local number = tonumber(type(key) == "number" and value or key)
+        if selected and number ~= nil then
             tiers[math.floor(number)] = true
         end
     end

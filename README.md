@@ -40,7 +40,7 @@ is implemented fail-open and is listed under *Runtime verification* below.
   bridge; manual-click fallback via `TRAIN_MANUAL_CLICK`.
 - **Loot**: Auto Pickup with the modern drop schema (`ItemId` attribute,
   `DropLanded`, `GoldValue`, `Xyd`) plus legacy `DropItem` models. Event drops
-  (`GoldValue` floored to exactly 0) bypass minimum value and rarity filters
+  (numeric `GoldValue` exactly equal to 0) bypass minimum value and rarity filters
   and are collected first. Auto Sell and Sell All Now.
 - **Broom**: exactly the observed two-step remote flow
   (`关卡跳关请求` then `上下扫帚` after 0.25 s), single-flight with epoch

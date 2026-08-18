@@ -147,7 +147,19 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn('model:GetAttribute("ItemId")', self.source)
         self.assertIn('model:GetAttribute("DropLanded")', self.source)
         self.assertIn('model:GetAttribute("GoldValue")', self.source)
+        self.assertIn("container:GetDescendants()", self.source)
+        self.assertNotIn('tierFolder:IsA("Model")', self.source)
+
+    def test_pickup_activates_the_real_prompt_signal_or_exact_drop_id(self):
+        self.assertIn("fireproximityprompt, prompt, 0", self.source)
+        self.assertIn("firesignal, prompt.Triggered, player", self.source)
+        self.assertIn('sendAction("DROP_PICKUP", dropId)', self.source)
+        self.assertNotIn('sendAction("DROP_PICKUP", primaryPart)', self.source)
         self.assertIn('model:GetAttribute("Xyd")', self.source)
+
+    def test_pickup_rarity_accepts_multiselect_map(self):
+        self.assertIn('value == true', self.source)
+        self.assertIn('type(key) == "number" and value or key', self.source)
 
     def test_walking_mode_dispatch(self):
         self.assertIn('cfg.FarmMode == "Walking"', self.source)

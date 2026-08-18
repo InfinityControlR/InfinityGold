@@ -19,11 +19,11 @@ end
 
 -- isEventDrop
 check("event drop: exact zero", Common.isEventDrop(0))
-check("event drop: zero after floor", Common.isEventDrop(0.4))
+check("non event: fractional value", not Common.isEventDrop(0.4))
 check("event drop: negative zero", Common.isEventDrop(-0.0))
 check("non event: one", not Common.isEventDrop(1))
 check("non event: nil gold", not Common.isEventDrop(nil))
-check("event drop: numeric string coerces", Common.isEventDrop("0"))
+check("non event: numeric string", not Common.isEventDrop("0"))
 
 -- sortDrops: event first, gold desc, tier asc, stable
 local sorted = Common.sortDrops({
@@ -103,6 +103,8 @@ check("farm: nil cleared uses selected", Common.farmStageTarget(nil, 3, false, 2
 -- parseTierSelection
 local tiers = Common.parseTierSelection({ "1", "3", "x", 4 })
 check("tiers: 1,3,4 selected", tiers[1] and tiers[3] and tiers[4] and not tiers[2])
+local tierMap = Common.parseTierSelection({ ["2"] = true, ["5"] = true, ["8"] = false })
+check("tiers: multi-select map", tierMap[2] and tierMap[5] and not tierMap[8])
 check("tiers: non-table", next(Common.parseTierSelection(nil)) == nil)
 
 if #failures > 0 then
