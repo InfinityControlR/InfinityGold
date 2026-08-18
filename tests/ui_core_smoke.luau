@@ -156,7 +156,10 @@ InstanceMT = {
     end,
 }
 
-Instance = { new = function(_, className) return newInstance(className) end }
+Instance = { new = function(first, second)
+    -- supports both Instance.new("X") and Instance:new("X") call styles
+    return newInstance(second or first)
+end }
 
 -- Datatypes ---------------------------------------------------------------
 
@@ -424,6 +427,10 @@ do
     local windowGui = Library._windows[1] and Library._windows[1].Gui
     if windowGui == nil or windowGui:FindFirstChild("IGProbe") == nil then
         fail("IG probe badge was not created in the window gui")
+    end
+    local toggleGui = playerGui and playerGui:FindFirstChild("InfinityGoldToggle")
+    if toggleGui == nil or toggleGui:FindFirstChild("IG") == nil then
+        fail("floating IG toggle button was not created")
     end
 end
 

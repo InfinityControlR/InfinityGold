@@ -1529,6 +1529,156 @@ return function(locomotionFactory, Library, Common)
 
     -- Main movement loop -----------------------------------------------------------------
 
+    -- Floating IG button: touch-friendly dashboard toggle in its own PlayerGui
+    -- ScreenGui (the channel proven to render on every executor). Mobile has
+    -- no Right Shift; this button always works and survives gui sweeps via
+    -- the watchdog below.
+    local floatingGui
+
+    local function ensureFloatingToggle()
+        pcall(function()
+            local playerGui = player:FindFirstChildOfClass("PlayerGui")
+            if playerGui == nil then return end
+            if floatingGui ~= nil and floatingGui.Parent ~= nil then return end
+
+            floatingGui = Instance.new("ScreenGui")
+            floatingGui.Name = "InfinityGoldToggle"
+            floatingGui.ResetOnSpawn = false
+            floatingGui.DisplayOrder = 999999
+            floatingGui.Parent = playerGui
+
+            local button = Instance.new("TextButton")
+            button.Name = "IG"
+            button.AnchorPoint = Vector2.new(1, 1)
+            button.Position = UDim2.new(1, -16, 1, -16)
+            button.Size = UDim2.new(0, 54, 0, 54)
+            button.BackgroundColor3 = Color3.fromRGB(245, 197, 66)
+            button.Font = Enum.Font.GothamBold
+            button.Text = "IG"
+            button.TextColor3 = Color3.fromRGB(13, 13, 18)
+            button.TextSize = 18
+            button.AutoButtonColor = true
+            button.Parent = floatingGui
+
+            local rounding = Instance.new("UICorner")
+            rounding.CornerRadius = UDim.new(1, 0)
+            rounding.Parent = button
+
+            button.MouseButton1Click:Connect(function()
+                local frame = dashboard.window and dashboard.window.Frame
+                if frame == nil then return end
+                local host = frame.Parent
+                if host ~= nil and host.Parent == nil then
+                    local target = player:FindFirstChildOfClass("PlayerGui")
+                    if target ~= nil then host.Parent = target end
+                end
+                frame.Visible = not frame.Visible
+                banner(frame.Visible and "dashboard shown" or "dashboard hidden")
+            end)
+        end)
+    end
+
+    ensureFloatingToggle()
+
+    -- Emergency panel: if the dashboard gui can never render (0x0), give the
+    -- user a minimal working control surface in the guaranteed channel.
+    local function buildEmergencyPanel(reason)
+        pcall(function()
+            local playerGui = player:FindFirstChildOfClass("PlayerGui")
+            if playerGui == nil or playerGui:FindFirstChild("InfinityGoldEmergency") then
+                return
+            end
+
+            local panel = Instance.new("ScreenGui")
+            panel.Name = "InfinityGoldEmergency"
+            panel.ResetOnSpawn = false
+            panel.DisplayOrder = 999998
+            panel.Parent = playerGui
+
+            local frame = Instance.new("Frame")
+            frame.AnchorPoint = Vector2.new(0, 1)
+            frame.Position = UDim2.new(0, 16, 1, -16)
+            frame.Size = UDim2.new(0, 230, 0, 170)
+            frame.BackgroundColor3 = Color3.fromRGB(13, 13, 18)
+            frame.Parent = panel
+
+            local frameCorner = Instance.new("UICorner")
+            frameCorner.CornerRadius = UDim.new(0, 10)
+            frameCorner.Parent = frame
+
+            local frameStroke = Instance.new("UIStroke")
+            frameStroke.Color = Color3.fromRGB(245, 197, 66)
+            frameStroke.Parent = frame
+
+            local title = Instance.new("TextLabel")
+            title.BackgroundTransparency = 1
+            title.Position = UDim2.new(0, 10, 0, 6)
+            title.Size = UDim2.new(1, -20, 0, 18)
+            title.Font = Enum.Font.GothamBold
+            title.Text = "InfinityGold (emergency)"
+            title.TextColor3 = Color3.fromRGB(245, 197, 66)
+            title.TextSize = 13
+            title.TextXAlignment = Enum.TextXAlignment.Left
+            title.Parent = frame
+
+            local modeCycle = { "Ground", "Above", "Orbit", "Running", "Walking" }
+            local modeIndex = 1
+
+            local function addRow(offset, getText, onClick)
+                local row = Instance.new("TextButton")
+                row.Position = UDim2.new(0, 10, 0, offset)
+                row.Size = UDim2.new(1, -20, 0, 30)
+                row.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
+                row.Font = Enum.Font.Gotham
+                row.TextSize = 13
+                row.TextColor3 = Color3.fromRGB(235, 233, 228)
+                row.AutoButtonColor = true
+                row.Text = getText()
+                row.Parent = frame
+                local rowCorner = Instance.new("UICorner")
+                rowCorner.CornerRadius = UDim.new(0, 6)
+                rowCorner.Parent = row
+                row.MouseButton1Click:Connect(function()
+                    onClick()
+                    row.Text = getText()
+                end)
+                return row
+            end
+
+            addRow(28, function()
+                return (cfg.AutoFarm and "[x] " or "[ ] ") .. "Auto Farm"
+            end, function()
+                cfg.AutoFarm = not cfg.AutoFarm
+            end)
+
+            addRow(62, function()
+                return "Mode: " .. tostring(cfg.FarmMode)
+            end, function()
+                modeIndex = modeIndex % #modeCycle + 1
+                cfg.FarmMode = modeCycle[modeIndex]
+            end)
+
+            addRow(96, function()
+                return (cfg.AutoPickup and "[x] " or "[ ] ") .. "Auto Pickup"
+            end, function()
+                cfg.AutoPickup = not cfg.AutoPickup
+            end)
+
+            local note = Instance.new("TextLabel")
+            note.BackgroundTransparency = 1
+            note.Position = UDim2.new(0, 10, 0, 130)
+            note.Size = UDim2.new(1, -20, 0, 34)
+            note.Font = Enum.Font.Gotham
+            note.Text = tostring(reason)
+            note.TextColor3 = Color3.fromRGB(154, 152, 146)
+            note.TextSize = 11
+            note.TextWrapped = true
+            note.TextXAlignment = Enum.TextXAlignment.Left
+            note.TextYAlignment = Enum.TextYAlignment.Top
+            note.Parent = frame
+        end)
+    end
+
     -- Dashboard watchdog: some games sweep foreign ScreenGuis out of PlayerGui.
     -- If ours is unparented, re-attach and say so on the banner; if it was
     -- destroyed outright, keep the failure on screen instead of failing silently.
@@ -1537,6 +1687,7 @@ return function(locomotionFactory, Library, Common)
         task.spawn(function()
             while sessionAlive do
                 pcall(function()
+                    ensureFloatingToggle()
                     local attached = Library._gui ~= nil and Library._gui.Parent ~= nil
                     if not attached then
                         local playerGui = player:FindFirstChildOfClass("PlayerGui")
@@ -1571,15 +1722,17 @@ return function(locomotionFactory, Library, Common)
     end)
 
     setMovementStatus("ready")
-    notify("loaded • right shift toggles the dashboard")
+    notify("loaded • tap the gold IG button (bottom-right) to toggle the dashboard")
 
     -- Dashboard render verification: measure the real engine layout instead
     -- of guessing. One run must be enough to see (or fix) the problem:
-    --   * dead gui (AbsoluteSize 0x0)  -> rebuilt into a fresh ScreenGui
-    --   * healthy gui                  -> "IG" badge proves the layer draws
+    --   * dead gui (AbsoluteSize 0x0) -> rebuilt; still dead -> emergency panel
+    --   * healthy gui -> IG probe badge proves the layer draws
     --   * banner keeps the measurements on screen for 15 seconds
-    task.delay(0.6, function()
-        pcall(function()
+    task.spawn(function()
+        task.wait(0.6)
+        banner("verifying dashboard render...")
+        local verifyOk, verifyError = pcall(function()
             local windowGui = dashboard.window and dashboard.window.Gui
             local mainFrame = dashboard.window and dashboard.window.Frame
             if windowGui == nil or mainFrame == nil then
@@ -1611,6 +1764,18 @@ return function(locomotionFactory, Library, Common)
                 windowGui = fresh
             end
 
+            local stillDead = windowGui.AbsoluteSize.X < 10
+                or mainFrame.AbsoluteSize.X < 10
+            if stillDead then
+                buildEmergencyPanel(string.format(
+                    "dashboard gui stays at %dx%d px; emergency controls active",
+                    math.floor(mainFrame.AbsoluteSize.X),
+                    math.floor(mainFrame.AbsoluteSize.Y)
+                ))
+                banner("dashboard cannot render here - emergency panel bottom-left")
+                return
+            end
+
             local badge = Instance.new("TextLabel")
             badge.Name = "IGProbe"
             badge.BackgroundColor3 = Color3.fromRGB(245, 197, 66)
@@ -1622,12 +1787,12 @@ return function(locomotionFactory, Library, Common)
             badge.TextSize = 14
             badge.ZIndex = 50
             badge.Parent = windowGui
-            task.delay(15, function()
+            task.delay(12, function()
                 pcall(function() badge:Destroy() end)
             end)
 
             banner(string.format(
-                "dashboard %s: %dx%d px in %s [%d children] • IG badge should show top-left",
+                "dashboard %s: %dx%d px in %s [%d children] • gold IG button toggles it",
                 note,
                 math.floor(mainFrame.AbsoluteSize.X),
                 math.floor(mainFrame.AbsoluteSize.Y),
@@ -1641,5 +1806,8 @@ return function(locomotionFactory, Library, Common)
                 end
             end)
         end)
+        if not verifyOk then
+            banner("verify error: " .. tostring(verifyError))
+        end
     end)
 end
