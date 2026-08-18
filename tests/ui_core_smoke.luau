@@ -50,6 +50,8 @@ local function newInstance(className, name)
         __children = {},
         ClassName = className,
         Name = name or className,
+        AbsoluteSize = Vector2.new(1024, 640),
+        AbsolutePosition = Vector2.new(0, 0),
     }, InstanceMT)
     return self
 end
@@ -120,7 +122,18 @@ InstanceMT = {
             rawset(self, key, signal)
             return signal
         end
-        return rawget(self, key)
+        local raw = rawget(self, key)
+        if raw ~= nil then
+            return raw
+        end
+        if type(key) == "string" then
+            for _, child in ipairs(self.__children) do
+                if child.Name == key then
+                    return child
+                end
+            end
+        end
+        return nil
     end,
     __newindex = function(self, key, value)
         if key == "Parent" then
@@ -240,6 +253,8 @@ CFrame = {
 -- Task scheduler ----------------------------------------------------------
 
 local threads = {}
+local delayed = {}
+local clockRound = 0
 
 task = {}
 
@@ -258,8 +273,12 @@ function task.wait()
     return coroutine.yield()
 end
 
-function task.delay(_, fn, ...)
-    task.spawn(fn, ...)
+function task.delay(duration, fn, ...)
+    local co = coroutine.create(fn)
+    table.insert(delayed, {
+        thread = co,
+        readyRound = clockRound + math.max(1, math.ceil(tonumber(duration) or 0)),
+    })
 end
 
 function task.defer(fn, ...)
@@ -268,6 +287,19 @@ end
 
 local function pump(rounds)
     for _ = 1, rounds do
+        clockRound = clockRound + 1
+        for index = #delayed, 1, -1 do
+            local entry = delayed[index]
+            if entry.readyRound <= clockRound then
+                table.remove(delayed, index)
+                local ok, err = coroutine.resume(entry.thread)
+                if not ok then
+                    fail("delayed error: " .. tostring(debug.traceback(entry.thread, err)))
+                elseif coroutine.status(entry.thread) ~= "dead" then
+                    table.insert(threads, entry.thread)
+                end
+            end
+        end
         for _, co in ipairs(threads) do
             if coroutine.status(co) ~= "dead" then
                 local ok, err = coroutine.resume(co)
@@ -295,6 +327,10 @@ end
 
 local player = makeService("Player")
 player.Name = "LocalPlayer"
+
+local playerGui = makeService("PlayerGui")
+playerGui.Name = "PlayerGui"
+playerGui.Parent = player
 
 local Players = service("Players")
 rawset(Players, "LocalPlayer", player)
@@ -357,7 +393,7 @@ if not ok then
     fail("core construction error: " .. tostring(err))
 end
 
-pump(20)
+pump(10)
 
 if #Library._windows ~= 1 then
     fail("expected exactly one window, got " .. tostring(#Library._windows))
@@ -372,6 +408,23 @@ end
 
 if #notifications == 0 then
     fail("core never issued its loaded notification")
+end
+
+-- The render-verification block must have run and reported through the
+-- banner channel (the only channel proven visible on every executor).
+do
+    local playerGui = player:FindFirstChildOfClass("PlayerGui")
+    local statusGui = playerGui and playerGui:FindFirstChild("InfinityGoldStatus")
+    local statusText = statusGui and statusGui:FindFirstChild("Status")
+    if statusText == nil or not statusText.Text:find("dashboard", 1, true) then
+        fail("render verification never reported through the banner")
+    else
+        print("banner: " .. statusText.Text)
+    end
+    local windowGui = Library._windows[1] and Library._windows[1].Gui
+    if windowGui == nil or windowGui:FindFirstChild("IGProbe") == nil then
+        fail("IG probe badge was not created in the window gui")
+    end
 end
 
 if #failures > 0 then

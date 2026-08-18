@@ -1572,11 +1572,74 @@ return function(locomotionFactory, Library, Common)
 
     setMovementStatus("ready")
     notify("loaded • right shift toggles the dashboard")
-    banner("loaded • right shift toggles the dashboard")
-    task.delay(5, function()
-        if bannerGui ~= nil then
-            pcall(function() bannerGui:Destroy() end)
-            bannerGui = nil
-        end
+
+    -- Dashboard render verification: measure the real engine layout instead
+    -- of guessing. One run must be enough to see (or fix) the problem:
+    --   * dead gui (AbsoluteSize 0x0)  -> rebuilt into a fresh ScreenGui
+    --   * healthy gui                  -> "IG" badge proves the layer draws
+    --   * banner keeps the measurements on screen for 15 seconds
+    task.delay(0.6, function()
+        pcall(function()
+            local windowGui = dashboard.window and dashboard.window.Gui
+            local mainFrame = dashboard.window and dashboard.window.Frame
+            if windowGui == nil or mainFrame == nil then
+                banner("dashboard missing after build (window or gui nil)")
+                return
+            end
+
+            local playerGui = player:FindFirstChildOfClass("PlayerGui")
+            if windowGui.Parent == nil and playerGui ~= nil then
+                windowGui.Parent = playerGui
+            end
+
+            local note = "ok"
+            if windowGui.AbsoluteSize.X < 10 or mainFrame.AbsoluteSize.X < 10 then
+                note = "rebuilt"
+                local fresh = Instance.new("ScreenGui")
+                fresh.Name = windowGui.Name
+                fresh.ResetOnSpawn = false
+                fresh.IgnoreGuiInset = true
+                fresh.DisplayOrder = 1000000
+                fresh.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+                fresh.Parent = playerGui
+                mainFrame.Parent = fresh
+                if Library._gui == windowGui then
+                    Library._gui = fresh
+                end
+                dashboard.window.Gui = fresh
+                task.wait(0.3)
+                windowGui = fresh
+            end
+
+            local badge = Instance.new("TextLabel")
+            badge.Name = "IGProbe"
+            badge.BackgroundColor3 = Color3.fromRGB(245, 197, 66)
+            badge.Size = UDim2.new(0, 44, 0, 24)
+            badge.Position = UDim2.new(0, 8, 0, 70)
+            badge.Text = "IG"
+            badge.TextColor3 = Color3.fromRGB(13, 13, 18)
+            badge.Font = Enum.Font.GothamBold
+            badge.TextSize = 14
+            badge.ZIndex = 50
+            badge.Parent = windowGui
+            task.delay(15, function()
+                pcall(function() badge:Destroy() end)
+            end)
+
+            banner(string.format(
+                "dashboard %s: %dx%d px in %s [%d children] • IG badge should show top-left",
+                note,
+                math.floor(mainFrame.AbsoluteSize.X),
+                math.floor(mainFrame.AbsoluteSize.Y),
+                tostring(windowGui.Parent and windowGui.Parent.ClassName or "?"),
+                #windowGui:GetChildren()
+            ))
+            task.delay(15, function()
+                if bannerGui ~= nil then
+                    pcall(function() bannerGui:Destroy() end)
+                    bannerGui = nil
+                end
+            end)
+        end)
     end)
 end
