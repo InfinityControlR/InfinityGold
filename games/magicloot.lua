@@ -1810,4 +1810,10 @@ return function(locomotionFactory, Library, Common)
             banner("verify error: " .. tostring(verifyError))
         end
     end)
+
+    return {
+        windowFrame = dashboard.window and dashboard.window.Frame or nil,
+        windowGui = dashboard.window and dashboard.window.Gui or nil,
+        floating = floatingGui,
+    }
 end

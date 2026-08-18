@@ -155,15 +155,89 @@ end
 
 screenBanner('starting core...')
 
-local runOk, runError = pcall(coreChunk, factory, Library, Common)
+local runOk, result = pcall(coreChunk, factory, Library, Common)
 if not runOk then
-    notifyLoad('Core error: ' .. tostring(runError))
-    warn('[InfinityGold] core runtime error: ' .. tostring(runError))
+    notifyLoad('Core error: ' .. tostring(result))
+    warn('[InfinityGold] core runtime error: ' .. tostring(result))
     return
 end
 
-screenBanner('loaded - right shift toggles the dashboard')
-task.delay(4, function()
+-- Final report and floating toggle built in the LOADER context: this is the
+-- channel proven to render on every executor tested, so the diagnosis and
+-- the open/close button do not depend on the core's own gui health.
+local windowFrame = type(result) == 'table' and result.windowFrame or nil
+local windowGui = type(result) == 'table' and result.windowGui or nil
+
+do
+    local summary = { 'loaded' }
+    if windowGui ~= nil then
+        if windowGui.Parent == nil then
+            pcall(function()
+                local localPlayer = game:GetService('Players').LocalPlayer
+                local target = localPlayer and localPlayer:FindFirstChildOfClass('PlayerGui')
+                if target ~= nil then windowGui.Parent = target end
+            end)
+        end
+        pcall(function()
+            local parent = windowGui.Parent
+            table.insert(summary, 'gui: ' .. tostring(parent and parent.ClassName or 'unparented'))
+            table.insert(summary, string.format(
+                '%dx%d',
+                math.floor(windowGui.AbsoluteSize.X),
+                math.floor(windowGui.AbsoluteSize.Y)
+            ))
+            table.insert(summary, #windowGui:GetChildren() .. ' children')
+        end)
+    else
+        table.insert(summary, 'no window reference from core')
+    end
+    screenBanner(table.concat(summary, ' | ') .. ' | tap IG button bottom-left')
+end
+
+if windowFrame ~= nil then
+    pcall(function()
+        local localPlayer = game:GetService('Players').LocalPlayer
+        local playerGui = localPlayer and localPlayer:FindFirstChildOfClass('PlayerGui')
+        if playerGui == nil then return end
+
+        local toggleGui = Instance.new('ScreenGui')
+        toggleGui.Name = 'InfinityGoldLoaderToggle'
+        toggleGui.ResetOnSpawn = false
+        toggleGui.DisplayOrder = 999999
+        toggleGui.Parent = playerGui
+
+        local button = Instance.new('TextButton')
+        button.AnchorPoint = Vector2.new(0, 1)
+        button.Position = UDim2.new(0, 16, 1, -84)
+        button.Size = UDim2.new(0, 54, 0, 54)
+        button.BackgroundColor3 = Color3.fromRGB(245, 197, 66)
+        button.Font = Enum.Font.GothamBold
+        button.Text = 'IG'
+        button.TextColor3 = Color3.fromRGB(13, 13, 18)
+        button.TextSize = 18
+        button.AutoButtonColor = true
+        button.Parent = toggleGui
+
+        local rounding = Instance.new('UICorner')
+        rounding.CornerRadius = UDim.new(1, 0)
+        rounding.Parent = button
+
+        button.MouseButton1Click:Connect(function()
+            local host = windowFrame.Parent
+            if host ~= nil and host.Parent == nil then
+                pcall(function()
+                    local target = game:GetService('Players').LocalPlayer
+                        :FindFirstChildOfClass('PlayerGui')
+                    if target ~= nil then host.Parent = target end
+                end)
+            end
+            windowFrame.Visible = not windowFrame.Visible
+            screenBanner(windowFrame.Visible and 'dashboard shown' or 'dashboard hidden')
+        end)
+    end)
+end
+
+task.delay(15, function()
     if bannerGui ~= nil then
         pcall(function() bannerGui:Destroy() end)
         bannerGui = nil
