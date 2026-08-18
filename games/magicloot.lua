@@ -83,6 +83,7 @@ return function(locomotionFactory, Library, Common)
     end
 
     local Players = game:GetService("Players")
+    local ReplicatedFirst = game:GetService("ReplicatedFirst")
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local RunService = game:GetService("RunService")
     local TeleportService = game:GetService("TeleportService")
@@ -231,21 +232,61 @@ return function(locomotionFactory, Library, Common)
 
     local net = {
         utils = nil,
+        clientUtils = nil,
         network = nil,
         messages = nil,
         status = "resolving",
     }
 
+    local function requireUtilsSystem(container)
+        local function load()
+            local allSide = container:WaitForChild("AllSideCode", 8)
+            if allSide == nil then return nil end
+            local module = allSide:WaitForChild("UtilsSystem", 8)
+            if module == nil then return nil end
+            return require(module)
+        end
+
+        local ok, utils = pcall(load)
+        if (not ok or type(utils) ~= "table")
+            and type(getthreadidentity) == "function"
+            and type(setthreadidentity) == "function"
+        then
+            local elevatedOk, elevatedUtils = pcall(function()
+                local identity = getthreadidentity()
+                setthreadidentity(2)
+                local loadOk, result = pcall(load)
+                setthreadidentity(identity)
+                if not loadOk then error(result) end
+                return result
+            end)
+            if elevatedOk then
+                ok, utils = true, elevatedUtils
+            end
+        end
+        if ok and type(utils) == "table" then return utils end
+        return nil
+    end
+
+    local function resolveClientUtils()
+        if net.clientUtils ~= nil then return net.clientUtils end
+        -- The original Magic Loot runtime exposes PlayerData/GetData here.
+        local utils = requireUtilsSystem(ReplicatedFirst)
+        if utils ~= nil then net.clientUtils = utils end
+        return net.clientUtils
+    end
+
     local function resolveNet()
         if net.network ~= nil then
             return net.network
         end
-        local ok, utils = pcall(function()
-            local allSide = ReplicatedStorage:WaitForChild("AllSideCode", 8)
-            if allSide == nil then return nil end
-            return require(allSide:WaitForChild("UtilsSystem", 8))
-        end)
-        if not ok or type(utils) ~= "table" then
+        local utils = resolveClientUtils()
+        if utils == nil or utils.NetWork == nil then
+            -- Keep a compatibility fallback for game builds that mirror only
+            -- the networking facade into ReplicatedStorage.
+            utils = requireUtilsSystem(ReplicatedStorage)
+        end
+        if type(utils) ~= "table" then
             net.status = "UtilsSystem unavailable"
             return nil
         end
@@ -324,11 +365,11 @@ return function(locomotionFactory, Library, Common)
 
     local function resolveRuntimeModule(name)
         if runtimeModules[name] ~= nil then return runtimeModules[name] end
-        local network = resolveNet()
-        if network == nil or net.utils == nil then return nil end
+        local utils = resolveClientUtils()
+        if utils == nil then return nil end
 
         local function readModule()
-            return net.utils[name]
+            return utils[name]
         end
 
         local ok, candidate = pcall(readModule)
@@ -369,12 +410,16 @@ return function(locomotionFactory, Library, Common)
 
     local function playerBag()
         local playerData = resolveRuntimeModule("PlayerData")
-        if playerData == nil or type(playerData.GetPlrDataByKey) ~= "function" then
-            return nil
+        if playerData == nil then
+            return nil, "PlayerData unavailable"
+        end
+        if type(playerData.GetPlrDataByKey) ~= "function" then
+            return nil, "GetPlrDataByKey unavailable"
         end
         local ok, bag = pcall(playerData.GetPlrDataByKey, player, "Bag")
         if ok and type(bag) == "table" then return bag end
-        return nil
+        if not ok then return nil, "inventory read failed: " .. tostring(bag) end
+        return nil, "Bag data unavailable"
     end
 
     local function isProtectedAlchemyMaterial(itemId)
@@ -390,8 +435,8 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function sellAllMaterials()
-        local bag = playerBag()
-        if bag == nil then return false, 0, "inventory unavailable" end
+        local bag, bagError = playerBag()
+        if bag == nil then return false, 0, bagError or "inventory unavailable" end
         local ok, onlyIds = pcall(
             Common.sellOnlyIds,
             bag,
@@ -1632,42 +1677,98 @@ return function(locomotionFactory, Library, Common)
             end,
         })
 
+        local configPath = BRAND .. "/config.json"
+        local fallbackConfigPath = BRAND .. "_config.json"
+
+        local function configPayload()
+            local payload = {}
+            for name in pairs(registry) do
+                payload[name] = cfg[name]
+            end
+            return payload
+        end
+
+        local function writeConfig(text)
+            if type(writefile) ~= "function" then
+                return false, "writefile unavailable"
+            end
+
+            local folderReady = false
+            if type(isfolder) == "function" then
+                local ok, exists = pcall(isfolder, BRAND)
+                folderReady = ok and exists == true
+            end
+            if not folderReady and type(makefolder) == "function" then
+                pcall(makefolder, BRAND)
+                if type(isfolder) == "function" then
+                    local ok, exists = pcall(isfolder, BRAND)
+                    folderReady = ok and exists == true
+                else
+                    folderReady = true
+                end
+            end
+
+            if folderReady then
+                local ok = pcall(writefile, configPath, text)
+                if ok then return true, configPath end
+            end
+            local ok, err = pcall(writefile, fallbackConfigPath, text)
+            if ok then return true, fallbackConfigPath end
+            return false, tostring(err)
+        end
+
+        local function readConfig()
+            if type(readfile) ~= "function" then
+                return nil, "readfile unavailable"
+            end
+            for _, path in ipairs({ configPath, fallbackConfigPath }) do
+                local ok, text = pcall(readfile, path)
+                if ok and type(text) == "string" and text ~= "" then
+                    return text, path
+                end
+            end
+            return nil, "no saved config"
+        end
+
+        local function saveConfig()
+            local ok, encoded = pcall(HttpService.JSONEncode, HttpService, configPayload())
+            if not ok then return false, tostring(encoded) end
+            return writeConfig(encoded)
+        end
+
+        local function loadConfig()
+            local text, source = readConfig()
+            if text == nil then return false, source end
+            local ok, decoded = pcall(HttpService.JSONDecode, HttpService, text)
+            if not ok or type(decoded) ~= "table" then
+                return false, "saved config is invalid"
+            end
+
+            for name, element in pairs(registry) do
+                local value = decoded[name]
+                if value ~= nil then
+                    -- Set cfg synchronously: some UI controls dispatch their
+                    -- callbacks asynchronously, which made defaults win at boot.
+                    cfg[name] = value
+                    pcall(function() element:Set(value) end)
+                end
+            end
+            return true, source
+        end
+
         local configGroup = bindGroup(tab:CreateSection("Config"))
         configGroup:AddButton({
             Text = "Save config",
             Callback = function()
-                local payload = {}
-                for name in pairs(registry) do
-                    payload[name] = cfg[name]
-                end
-                local ok = pcall(function()
-                    if isfolder and not isfolder(BRAND) then
-                        makefolder(BRAND)
-                    end
-                    writefile(
-                        BRAND .. "/config.json",
-                        HttpService:JSONEncode(payload)
-                    )
-                end)
-                notify(ok and "Config saved" or "Filesystem unavailable")
+                local ok, detail = saveConfig()
+                notify(ok and "Config saved" or ("Config save failed: " .. tostring(detail)))
             end,
         })
         configGroup:AddButton({
             Text = "Load config",
             Callback = function()
-                local ok, decoded = pcall(function()
-                    return HttpService:JSONDecode(readfile(BRAND .. "/config.json"))
-                end)
-                if not ok or type(decoded) ~= "table" then
-                    notify("No saved config")
-                    return
-                end
-                for name, element in pairs(registry) do
-                    if decoded[name] ~= nil then
-                        pcall(function() element:Set(decoded[name]) end)
-                    end
-                end
-                notify("Config loaded")
+                local ok, detail = loadConfig()
+                notify(ok and "Config loaded" or ("Config load failed: " .. tostring(detail)))
             end,
         })
 
@@ -1675,6 +1776,11 @@ return function(locomotionFactory, Library, Common)
             Text = "Unload InfinityGold",
             Callback = unloadSession,
         })
+
+        -- Restore the saved values after every control has been registered.
+        -- Missing filesystem support or a first run remains intentionally quiet.
+        local loaded = loadConfig()
+        if loaded then notify("Config auto-loaded", 3) end
     end
 
     -- Main movement loop -----------------------------------------------------------------

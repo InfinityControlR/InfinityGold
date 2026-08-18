@@ -95,6 +95,9 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn("task.wait(0.4)", self.source)
 
     def test_sell_cadence(self):
+        self.assertIn('local ReplicatedFirst = game:GetService("ReplicatedFirst")', self.source)
+        self.assertIn("local utils = requireUtilsSystem(ReplicatedFirst)", self.source)
+        self.assertIn("if utils ~= nil then net.clientUtils = utils end", self.source)
         self.assertIn('playerData.GetPlrDataByKey, player, "Bag"', self.source)
         self.assertIn("Common.sellOnlyIds", self.source)
         self.assertIn('invokeAction("SELL_MATERIAL", { onlyIDList = onlyIds })', self.source)
@@ -179,6 +182,14 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn('"InfinityGoldToggle"', self.source)
         self.assertIn('"InfinityGoldLoaderToggle"', self.source)
         self.assertIn("sessionAlive = false", self.source)
+
+    def test_config_persists_and_auto_loads(self):
+        self.assertIn('local fallbackConfigPath = BRAND .. "_config.json"', self.source)
+        self.assertIn("pcall(writefile, fallbackConfigPath, text)", self.source)
+        self.assertIn("for _, path in ipairs({ configPath, fallbackConfigPath })", self.source)
+        self.assertIn("cfg[name] = value", self.source)
+        self.assertIn('notify("Config auto-loaded", 3)', self.source)
+        self.assertIn("local loaded = loadConfig()", self.source)
 
 
 class CommonInvariantTests(unittest.TestCase):
