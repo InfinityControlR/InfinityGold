@@ -18,7 +18,44 @@ local CREATOR_ID = 118455659
 local DISCORD_INVITE = "" -- set to an invite URL to show the invite button
 
 return function(locomotionFactory, Library, Common)
+    local bannerGui
+
+    local function banner(content)
+        pcall(function()
+            if player == nil then return end
+            local playerGui = player:FindFirstChildOfClass("PlayerGui")
+            if playerGui == nil then return end
+            if bannerGui == nil or bannerGui.Parent == nil then
+                bannerGui = Instance.new("ScreenGui")
+                bannerGui.Name = "InfinityGoldStatus"
+                bannerGui.ResetOnSpawn = false
+                bannerGui.DisplayOrder = 1000000
+                bannerGui.IgnoreGuiInset = true
+                bannerGui.Parent = playerGui
+
+                local label = Instance.new("TextLabel")
+                label.Name = "Status"
+                label.AnchorPoint = Vector2.new(0.5, 1)
+                label.Position = UDim2.new(0.5, 0, 1, -24)
+                label.Size = UDim2.new(0.92, 0, 0, 30)
+                label.BackgroundColor3 = Color3.fromRGB(13, 13, 18)
+                label.BackgroundTransparency = 0.15
+                label.TextColor3 = Color3.fromRGB(245, 197, 66)
+                label.Font = Enum.Font.GothamBold
+                label.TextSize = 13
+                label.TextWrapped = true
+                label.Parent = bannerGui
+
+                local rounding = Instance.new("UICorner")
+                rounding.CornerRadius = UDim.new(0, 8)
+                rounding.Parent = label
+            end
+            bannerGui.Status.Text = "[InfinityGold] " .. tostring(content)
+        end)
+    end
+
     local function earlyNotify(content)
+        banner(content)
         pcall(function()
             Library:Notify({
                 Title = BRAND,
@@ -1504,4 +1541,11 @@ return function(locomotionFactory, Library, Common)
 
     setMovementStatus("ready")
     notify("loaded • right shift toggles the dashboard")
+    banner("loaded • right shift toggles the dashboard")
+    task.delay(5, function()
+        if bannerGui ~= nil then
+            pcall(function() bannerGui:Destroy() end)
+            bannerGui = nil
+        end
+    end)
 end

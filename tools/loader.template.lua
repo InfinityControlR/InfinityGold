@@ -13,7 +13,49 @@ if not game:IsLoaded() then
     game.Loaded:Wait()
 end
 
+-- Always-visible status banner (PlayerGui): toasts can be blocked by the
+-- game or the executor, the console is easy to miss on mobile. This label
+-- shows every load step directly on screen.
+local bannerGui
+
+local function screenBanner(text)
+    pcall(function()
+        local localPlayer = game:GetService('Players').LocalPlayer
+        if localPlayer == nil then return end
+        local playerGui = localPlayer:FindFirstChildOfClass('PlayerGui')
+        if playerGui == nil then return end
+        if bannerGui == nil or bannerGui.Parent == nil then
+            bannerGui = Instance.new('ScreenGui')
+            bannerGui.Name = 'InfinityGoldStatus'
+            bannerGui.ResetOnSpawn = false
+            bannerGui.DisplayOrder = 1000000
+            bannerGui.IgnoreGuiInset = true
+            bannerGui.Parent = playerGui
+
+            local label = Instance.new('TextLabel')
+            label.Name = 'Status'
+            label.AnchorPoint = Vector2.new(0.5, 1)
+            label.Position = UDim2.new(0.5, 0, 1, -24)
+            label.Size = UDim2.new(0.92, 0, 0, 30)
+            label.BackgroundColor3 = Color3.fromRGB(13, 13, 18)
+            label.BackgroundTransparency = 0.15
+            label.TextColor3 = Color3.fromRGB(245, 197, 66)
+            label.Font = Enum.Font.GothamBold
+            label.TextSize = 13
+            label.TextScaled = false
+            label.TextWrapped = true
+            label.Parent = bannerGui
+
+            local rounding = Instance.new('UICorner')
+            rounding.CornerRadius = UDim.new(0, 8)
+            rounding.Parent = label
+        end
+        bannerGui.Status.Text = '[InfinityGold] ' .. tostring(text)
+    end)
+end
+
 local function visibleNotify(content)
+    screenBanner(content)
     pcall(function()
         game:GetService('StarterGui'):SetCore('SendNotification', {
             Title = 'InfinityGold',
@@ -51,8 +93,10 @@ if not (PLACE_IDS[game.PlaceId] or CREATOR_IDS[game.CreatorId]) then
 end
 
 task.wait(math.random())
+screenBanner('downloading modules...')
 
 local function fetchModule(name, url)
+    screenBanner('downloading ' .. string.lower(name) .. '...')
     local ok, result = pcall(function()
         local source = game:HttpGet(url)
         local chunk, compileError = loadstring(source)
@@ -65,7 +109,7 @@ local function fetchModule(name, url)
         return result
     end
     warn('[InfinityGold] ' .. name .. ' failed: ' .. tostring(result) .. ' @ ' .. url)
-    visibleNotify(name .. ' failed to load (check console)')
+    visibleNotify(name .. ' failed: ' .. tostring(result))
     return nil
 end
 
@@ -74,6 +118,8 @@ if type(Library) ~= 'table' or type(Library.CreateWindow) ~= 'function' then
     visibleNotify('Interface library unavailable - aborting (check console)')
     return
 end
+
+screenBanner('interface library ok')
 
 local function notifyLoad(content)
     pcall(function()
@@ -107,9 +153,19 @@ if not coreOk or type(coreChunk) ~= 'function' then
     return
 end
 
+screenBanner('starting core...')
+
 local runOk, runError = pcall(coreChunk, factory, Library, Common)
 if not runOk then
     notifyLoad('Core error: ' .. tostring(runError))
     warn('[InfinityGold] core runtime error: ' .. tostring(runError))
     return
 end
+
+screenBanner('loaded - right shift toggles the dashboard')
+task.delay(4, function()
+    if bannerGui ~= nil then
+        pcall(function() bannerGui:Destroy() end)
+        bannerGui = nil
+    end
+end)
