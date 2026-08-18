@@ -95,7 +95,10 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn("task.wait(0.4)", self.source)
 
     def test_sell_cadence(self):
-        self.assertIn('sendAction("SELL_MATERIAL", { onlyIDList = {} })', self.source)
+        self.assertIn('playerData.GetPlrDataByKey, player, "Bag"', self.source)
+        self.assertIn("Common.sellOnlyIds", self.source)
+        self.assertIn('sendAction("SELL_MATERIAL", { onlyIDList = onlyIds })', self.source)
+        self.assertNotIn('sendAction("SELL_MATERIAL", { onlyIDList = {} })', self.source)
         self.assertIn("task.wait(2)", self.source)
 
     def test_train_zone_update_payload(self):
@@ -176,6 +179,12 @@ class CommonInvariantTests(unittest.TestCase):
     def test_common_has_no_roblox_globals(self):
         for banned in ("game:", "Instance.new", "workspace", "Vector3"):
             self.assertNotIn(banned, self.source)
+
+    def test_sell_builder_uses_unique_ids_and_protects_materials(self):
+        self.assertIn("function Common.sellOnlyIds", self.source)
+        self.assertIn("tonumber(item.onlyID)", self.source)
+        self.assertIn("tonumber(item.tp) == 2", self.source)
+        self.assertIn("not protected", self.source)
 
 
 if __name__ == "__main__":

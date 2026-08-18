@@ -41,7 +41,9 @@ is implemented fail-open and is listed under *Runtime verification* below.
 - **Loot**: Auto Pickup with the modern drop schema (`ItemId` attribute,
   `DropLanded`, `GoldValue`, `Xyd`) plus legacy `DropItem` models. Event drops
   (numeric `GoldValue` exactly equal to 0) bypass minimum value and rarity filters
-  and are collected first. Auto Sell and Sell All Now.
+  and are collected first. Auto Sell and Sell All Now enumerate the player's
+  Bag and send the eligible materials' unique `onlyID` values, excluding
+  locked items and materials reserved for Alchemy recipes.
 - **Broom**: exactly the observed two-step remote flow
   (`关卡跳关请求` then `上下扫帚` after 0.25 s), single-flight with epoch
   tokens, invalidation on toggle/stage/return changes, base detection through

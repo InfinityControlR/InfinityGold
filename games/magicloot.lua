@@ -294,22 +294,91 @@ return function(locomotionFactory, Library, Common)
     local getData = nil
     local getDataResolved = false
 
+    local runtimeModules = {}
+
+    local function resolveRuntimeModule(name)
+        if runtimeModules[name] ~= nil then return runtimeModules[name] end
+        local network = resolveNet()
+        if network == nil or net.utils == nil then return nil end
+
+        local function readModule()
+            return net.utils[name]
+        end
+
+        local ok, candidate = pcall(readModule)
+        if (not ok or candidate == nil)
+            and type(getthreadidentity) == "function"
+            and type(setthreadidentity) == "function"
+        then
+            local elevatedOk, elevatedCandidate = pcall(function()
+                local identity = getthreadidentity()
+                setthreadidentity(2)
+                local readOk, result = pcall(readModule)
+                setthreadidentity(identity)
+                if not readOk then error(result) end
+                return result
+            end)
+            if elevatedOk then
+                ok, candidate = true, elevatedCandidate
+            end
+        end
+        if not ok or candidate == nil then return nil end
+
+        if typeof(candidate) == "Instance" then
+            ok, candidate = pcall(require, candidate)
+            if not ok then return nil end
+        end
+        if type(candidate) ~= "table" then return nil end
+
+        runtimeModules[name] = candidate
+        return candidate
+    end
+
     local function resolveGetData()
         if getDataResolved then return getData end
         getDataResolved = true
-        local network = resolveNet()
-        if network == nil or net.utils == nil then return nil end
-        local ok, result = pcall(function()
-            local candidate = net.utils.GetData
-            if typeof(candidate) == "Instance" then
-                return require(candidate)
-            end
-            return candidate
-        end)
-        if ok and type(result) == "table" then
-            getData = result
-        end
+        getData = resolveRuntimeModule("GetData")
         return getData
+    end
+
+    local function playerBag()
+        local playerData = resolveRuntimeModule("PlayerData")
+        if playerData == nil or type(playerData.GetPlrDataByKey) ~= "function" then
+            return nil
+        end
+        local ok, bag = pcall(playerData.GetPlrDataByKey, player, "Bag")
+        if ok and type(bag) == "table" then return bag end
+        return nil
+    end
+
+    local function isProtectedAlchemyMaterial(itemId)
+        local data = resolveGetData()
+        if data == nil
+            or type(data.Alchemy) ~= "table"
+            or type(data.Alchemy.IsMarkedRecipeMaterial) ~= "function"
+        then
+            return false
+        end
+        local ok, marked = pcall(data.Alchemy.IsMarkedRecipeMaterial, player, itemId)
+        return ok and marked == true
+    end
+
+    local function sellAllMaterials()
+        local bag = playerBag()
+        if bag == nil then return false, 0, "inventory unavailable" end
+        local ok, onlyIds = pcall(
+            Common.sellOnlyIds,
+            bag,
+            nil,
+            isProtectedAlchemyMaterial
+        )
+        if not ok or type(onlyIds) ~= "table" then
+            return false, 0, "inventory scan failed"
+        end
+        if #onlyIds == 0 then return false, 0, "nothing to sell" end
+
+        local sent, err = sendAction("SELL_MATERIAL", { onlyIDList = onlyIds })
+        return sent, #onlyIds, err
     end
 
     local function playerGold()
@@ -1079,7 +1148,8 @@ return function(locomotionFactory, Library, Common)
     task.spawn(function() -- sell
         while sessionAlive do
             if cfg.AutoSell then
-                if sendAction("SELL_MATERIAL", { onlyIDList = {} }) then
+                local sold = sellAllMaterials()
+                if sold then
                     task.wait(2)
                 end
             end
@@ -1376,10 +1446,11 @@ return function(locomotionFactory, Library, Common)
         sellGroup:AddButton({
             Text = "Sell All Now",
             Callback = function()
-                if sendAction("SELL_MATERIAL", { onlyIDList = {} }) then
-                    notify("Sell request sent")
+                local sold, count, err = sellAllMaterials()
+                if sold then
+                    notify("Sell request sent for " .. tostring(count) .. " items")
                 else
-                    notify("Sell remote unavailable")
+                    notify(err or "Nothing to sell")
                 end
             end,
         })

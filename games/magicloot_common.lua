@@ -122,4 +122,38 @@ function Common.parseTierSelection(values)
     return tiers
 end
 
+-- Build the SELL_MATERIAL onlyIDList from the player's Bag. Magic Loot keeps
+-- sellable materials as tp=2 entries and the server expects their unique
+-- onlyID values, not an empty list and not the material configuration IDs.
+function Common.sellOnlyIds(bag, selectedIds, isProtected)
+    local onlyIds = {}
+    if type(bag) ~= "table" then return onlyIds end
+
+    for _, item in pairs(bag) do
+        if type(item) == "table" then
+            local id = tonumber(item.id)
+            local onlyId = tonumber(item.onlyID)
+            local locked = item.lock == true or tonumber(item.lock) == 1
+            local selected = selectedIds == nil
+                or (id ~= nil and selectedIds[id] == true)
+            local protected = false
+            if id ~= nil and type(isProtected) == "function" then
+                protected = isProtected(id) == true
+            end
+
+            if not locked
+                and tonumber(item.tp) == 2
+                and id ~= nil
+                and onlyId ~= nil
+                and selected
+                and not protected
+            then
+                table.insert(onlyIds, onlyId)
+            end
+        end
+    end
+
+    return onlyIds
+end
+
 return Common

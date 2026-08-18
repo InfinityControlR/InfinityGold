@@ -107,6 +107,26 @@ local tierMap = Common.parseTierSelection({ ["2"] = true, ["5"] = true, ["8"] = 
 check("tiers: multi-select map", tierMap[2] and tierMap[5] and not tierMap[8])
 check("tiers: non-table", next(Common.parseTierSelection(nil)) == nil)
 
+-- sellOnlyIds: send unique inventory IDs for unlocked tp=2 materials only.
+local sellIds = Common.sellOnlyIds({
+    { id = 10, onlyID = 101, tp = 2, lock = false },
+    { id = 11, onlyID = 102, tp = 2, lock = true },
+    { id = 12, onlyID = 103, tp = 1, lock = false },
+    { id = 13, onlyID = 104, tp = 2, lock = 0 },
+    { id = 14, onlyID = 105, tp = 2, lock = false },
+    { id = 15, tp = 2, lock = false },
+}, nil, function(id)
+    return id == 14
+end)
+check("sell: exact eligible onlyIDs", #sellIds == 2 and sellIds[1] == 101 and sellIds[2] == 104)
+
+local selectedSellIds = Common.sellOnlyIds({
+    { id = 20, onlyID = 201, tp = 2 },
+    { id = 21, onlyID = 202, tp = 2 },
+}, { [21] = true })
+check("sell: selected material IDs", #selectedSellIds == 1 and selectedSellIds[1] == 202)
+check("sell: missing bag", #Common.sellOnlyIds(nil) == 0)
+
 if #failures > 0 then
     print(string.format("%d smoke checks failed", #failures))
     error("pickup_sort_smoke failed")
