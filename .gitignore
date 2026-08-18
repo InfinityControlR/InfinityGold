@@ -1,0 +1,4 @@
+# Luau toolchain cache
+.tools/
+__pycache__/
+*.pyc
