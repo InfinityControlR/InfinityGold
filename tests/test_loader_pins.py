@@ -1,9 +1,10 @@
 """Loader pin validation.
 
 Rules:
-  * InfinityUI, magicloot_common and magicloot_locomotion must be pinned to a
-    full 40-character commit SHA (never /main/ or an abbreviated SHA).
-  * The core script is served from main (the two-commit publish flow).
+  * InfinityUI, magicloot_common, magicloot_locomotion and the core script
+    must all be pinned to full 40-character commit SHAs. SHA URLs are
+    immutable and can never be served stale by the raw CDN (which caches
+    /main/ URLs and sometimes ignores cache-busting query strings).
   * tests/fixtures/expected_pins.json must list the same SHAs so the pins are
     reviewed deliberately on every pin change.
   * With INFINITYGOLD_VERIFY_REMOTE=1 the pinned URLs are fetched and compared
@@ -25,6 +26,7 @@ PINNED_FILES = {
     "UI": "ui/InfinityUI.lua",
     "COMMON": "games/magicloot_common.lua",
     "LOCOMOTION": "games/magicloot_locomotion.lua",
+    "CORE": "games/magicloot.lua",
 }
 
 SHA_PATTERN = re.compile(
@@ -44,7 +46,7 @@ class LoaderPinTests(unittest.TestCase):
         self.assertIsNotNone(match, f"loader does not define {name}")
         return match.group(1)
 
-    def test_pinned_modules_use_full_shas(self):
+    def test_every_module_is_pinned_to_a_full_sha(self):
         seen = {}
         for name in PINNED_FILES:
             url = self.extract_url(name)
@@ -61,14 +63,10 @@ class LoaderPinTests(unittest.TestCase):
                 sha,
                 f"{name} pin does not match tests/fixtures/expected_pins.json",
             )
-
-    def test_core_served_from_main(self):
-        match = re.search(r"local BASE = '([^']+)'", self.text)
-        self.assertIsNotNone(match, "loader does not define BASE")
-        self.assertIn(
-            "InfinityControlR/InfinityGold/main/", match.group(1)
-        )
         self.assertNotIn("REPLACE_WITH", self.text)
+
+    def test_no_unpinned_downloads(self):
+        self.assertNotIn("InfinityGold/main/", self.text)
 
     def test_remote_pins_match_published_files(self):
         if os.environ.get("INFINITYGOLD_VERIFY_REMOTE") != "1":
@@ -94,3 +92,4 @@ class LoaderPinTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

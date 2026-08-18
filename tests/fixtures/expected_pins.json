@@ -1,5 +1,6 @@
 {
   "UI": "093b93adf1cc3a8068a37a9dac60d0203e79e4f8",
   "COMMON": "093b93adf1cc3a8068a37a9dac60d0203e79e4f8",
-  "LOCOMOTION": "093b93adf1cc3a8068a37a9dac60d0203e79e4f8"
+  "LOCOMOTION": "093b93adf1cc3a8068a37a9dac60d0203e79e4f8",
+  "CORE": "916fdfd22f5dd2afed49bbb591e3dbd6e1677679"
 }

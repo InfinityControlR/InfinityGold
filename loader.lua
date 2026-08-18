@@ -75,13 +75,16 @@ if identifyexecutor then
     end
 end
 
-local BASE = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/main/'
+-- Every module (including the core) is pinned to an immutable commit SHA:
+-- SHA URLs can never be served stale by the raw CDN, which caches /main/
+-- URLs for minutes and sometimes ignores cache-busting query strings.
+-- Only this loader itself is served from main.
 local UI = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/093b93adf1cc3a8068a37a9dac60d0203e79e4f8/ui/InfinityUI.lua'
 local COMMON = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/093b93adf1cc3a8068a37a9dac60d0203e79e4f8/games/magicloot_common.lua'
 local LOCOMOTION = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/093b93adf1cc3a8068a37a9dac60d0203e79e4f8/games/magicloot_locomotion.lua'
+local CORE = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/916fdfd22f5dd2afed49bbb591e3dbd6e1677679/games/magicloot.lua'
 
--- raw.githubusercontent.com caches ~5 minutes per URL. Without this, a
--- re-run right after a publish silently downloads the previous version.
+-- Belt and braces: a fresh cache key per run for the pinned URLs too.
 local CACHE_BUST = '?t=' .. tostring(os.time())
 
 local function busted(url)
@@ -121,6 +124,23 @@ local function fetchModule(name, url)
     return nil
 end
 
+local function fetchChunk(name, url)
+    local ok, result = pcall(function()
+        local source = game:HttpGet(busted(url))
+        local chunk, compileError = loadstring(source)
+        if type(chunk) ~= 'function' then
+            error(tostring(compileError or 'chunk compile failed'))
+        end
+        return chunk
+    end)
+    if ok then
+        return result
+    end
+    warn('[InfinityGold] ' .. name .. ' failed: ' .. tostring(result) .. ' @ ' .. url)
+    visibleNotify(name .. ' failed: ' .. tostring(result))
+    return nil
+end
+
 local Library = fetchModule('Interface library', busted(UI))
 if type(Library) ~= 'table' or type(Library.CreateWindow) ~= 'function' then
     visibleNotify('Interface library unavailable - aborting (check console)')
@@ -146,18 +166,9 @@ if type(factory) ~= 'table' or type(factory.create) ~= 'function' then
     factory = nil
 end
 
-local coreOk, coreChunk = pcall(function()
-    local source = game:HttpGet(busted(BASE .. 'games/magicloot.lua'))
-    local chunk, compileError = loadstring(source)
-    if type(chunk) ~= 'function' then
-        error(tostring(compileError or 'core compile failed'))
-    end
-    return chunk
-end)
-
-if not coreOk or type(coreChunk) ~= 'function' then
-    notifyLoad('Core script failed to download/compile (check console)')
-    warn('[InfinityGold] core script failed: ' .. tostring(coreChunk))
+local coreChunk = fetchChunk('Core script', CORE)
+if type(coreChunk) ~= 'function' then
+    notifyLoad('Core script unavailable - aborting (check console)')
     return
 end
 
