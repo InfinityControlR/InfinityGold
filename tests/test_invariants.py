@@ -97,7 +97,7 @@ class CoreInvariantTests(unittest.TestCase):
     def test_sell_cadence(self):
         self.assertIn('playerData.GetPlrDataByKey, player, "Bag"', self.source)
         self.assertIn("Common.sellOnlyIds", self.source)
-        self.assertIn('sendAction("SELL_MATERIAL", { onlyIDList = onlyIds })', self.source)
+        self.assertIn('invokeAction("SELL_MATERIAL", { onlyIDList = onlyIds })', self.source)
         self.assertNotIn('sendAction("SELL_MATERIAL", { onlyIDList = {} })', self.source)
         self.assertIn("task.wait(2)", self.source)
 
@@ -171,6 +171,13 @@ class CoreInvariantTests(unittest.TestCase):
     def test_no_loadstring_in_core(self):
         self.assertNotIn("loadstring", self.source)
 
+    def test_unload_destroys_all_owned_gui(self):
+        self.assertIn("window.OnClose = unloadSession", self.source)
+        self.assertIn("Callback = unloadSession", self.source)
+        self.assertIn('"InfinityGoldToggle"', self.source)
+        self.assertIn('"InfinityGoldLoaderToggle"', self.source)
+        self.assertIn("sessionAlive = false", self.source)
+
 
 class CommonInvariantTests(unittest.TestCase):
     def setUp(self):
@@ -185,6 +192,22 @@ class CommonInvariantTests(unittest.TestCase):
         self.assertIn("tonumber(item.onlyID)", self.source)
         self.assertIn("tonumber(item.tp) == 2", self.source)
         self.assertIn("not protected", self.source)
+
+
+class UiLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.source = read("ui/InfinityUI.lua")
+
+    def test_close_delegates_to_core_unload(self):
+        self.assertIn('type(window.OnClose) == "function"', self.source)
+        self.assertIn("pcall(window.OnClose)", self.source)
+
+    def test_global_input_connections_are_disconnected(self):
+        self.assertIn("local function connectGlobal", self.source)
+        self.assertIn("Library._connections = {}", self.source)
+        self.assertNotIn("UserInputService.InputChanged:Connect", self.source)
+        self.assertNotIn("UserInputService.InputEnded:Connect", self.source)
+        self.assertNotIn("UserInputService.InputBegan:Connect", self.source)
 
 
 if __name__ == "__main__":

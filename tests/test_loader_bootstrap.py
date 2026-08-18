@@ -33,6 +33,13 @@ class LoaderBootstrapTests(unittest.TestCase):
 
         self.assertEqual(bootstrap(loader), bootstrap(template))
 
+    def test_loader_does_not_create_a_second_floating_toggle(self):
+        for relative in ("loader.lua", "tools/loader.template.lua"):
+            source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+            self.assertNotIn("local toggleGui = Instance.new", source, relative)
+            self.assertNotIn("button.Text = 'IG'", source, relative)
+            self.assertIn("remove that exact legacy GUI once", source, relative)
+
 
 if __name__ == "__main__":
     unittest.main()

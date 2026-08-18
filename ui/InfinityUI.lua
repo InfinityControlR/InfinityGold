@@ -37,7 +37,14 @@ local Library = {
     _gui = nil,
     _windows = {},
     _tweens = {},
+    _connections = {},
 }
+
+local function connectGlobal(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(Library._connections, connection)
+    return connection
+end
 
 local function tween(instance, properties, duration, style, direction)
     local info = TweenInfo.new(
@@ -488,7 +495,7 @@ function Library:CreateWindow(options)
             end
         end)
 
-        UserInputService.InputChanged:Connect(function(input)
+        connectGlobal(UserInputService.InputChanged, function(input)
             if not dragging then return end
             if input.UserInputType ~= Enum.UserInputType.MouseMovement
                 and input.UserInputType ~= Enum.UserInputType.Touch
@@ -506,7 +513,7 @@ function Library:CreateWindow(options)
             }, 0.06)
         end)
 
-        UserInputService.InputEnded:Connect(function(input)
+        connectGlobal(UserInputService.InputEnded, function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1
                 or input.UserInputType == Enum.UserInputType.Touch
             then
@@ -533,12 +540,14 @@ function Library:CreateWindow(options)
     end)
 
     closeButton.MouseButton1Click:Connect(function()
-        visible = false
-        tween(main, { BackgroundTransparency = 1 }, 0.15)
-        main.Visible = false
+        if type(window.OnClose) == "function" then
+            local ok = pcall(window.OnClose)
+            if ok then return end
+        end
+        Library:Destroy()
     end)
 
-    UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    connectGlobal(UserInputService.InputBegan, function(input, gameProcessed)
         if gameProcessed then return end
         if input.KeyCode == window.Keybind then
             visible = not visible
@@ -974,7 +983,7 @@ function Library:CreateWindow(options)
                 end
             end)
 
-            UserInputService.InputChanged:Connect(function(input)
+            connectGlobal(UserInputService.InputChanged, function(input)
                 if not draggingSlider then return end
                 if input.UserInputType ~= Enum.UserInputType.MouseMovement
                     and input.UserInputType ~= Enum.UserInputType.Touch
@@ -984,7 +993,7 @@ function Library:CreateWindow(options)
                 fromInput(input)
             end)
 
-            UserInputService.InputEnded:Connect(function(input)
+            connectGlobal(UserInputService.InputEnded, function(input)
                 if input.UserInputType == Enum.UserInputType.MouseButton1
                     or input.UserInputType == Enum.UserInputType.Touch
                 then
@@ -1306,6 +1315,7 @@ function Library:Destroy()
     for _, connection in ipairs(Library._connections or {}) do
         pcall(function() connection:Disconnect() end)
     end
+    Library._connections = {}
     for _, window in ipairs(Library._windows) do
         pcall(function() window.Frame:Destroy() end)
     end

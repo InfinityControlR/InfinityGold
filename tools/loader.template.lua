@@ -214,51 +214,17 @@ do
     else
         table.insert(summary, 'no window reference from core')
     end
-    screenBanner(table.concat(summary, ' | ') .. ' | tap IG button bottom-left')
+    screenBanner(table.concat(summary, ' | ') .. ' | tap the gold IG button')
 end
 
-if windowFrame ~= nil then
-    pcall(function()
-        local localPlayer = game:GetService('Players').LocalPlayer
-        local playerGui = localPlayer and localPlayer:FindFirstChildOfClass('PlayerGui')
-        if playerGui == nil then return end
-
-        local toggleGui = Instance.new('ScreenGui')
-        toggleGui.Name = 'InfinityGoldLoaderToggle'
-        toggleGui.ResetOnSpawn = false
-        toggleGui.DisplayOrder = 999999
-        toggleGui.Parent = playerGui
-
-        local button = Instance.new('TextButton')
-        button.AnchorPoint = Vector2.new(0, 1)
-        button.Position = UDim2.new(0, 16, 1, -84)
-        button.Size = UDim2.new(0, 54, 0, 54)
-        button.BackgroundColor3 = Color3.fromRGB(245, 197, 66)
-        button.Font = Enum.Font.GothamBold
-        button.Text = 'IG'
-        button.TextColor3 = Color3.fromRGB(13, 13, 18)
-        button.TextSize = 18
-        button.AutoButtonColor = true
-        button.Parent = toggleGui
-
-        local rounding = Instance.new('UICorner')
-        rounding.CornerRadius = UDim.new(1, 0)
-        rounding.Parent = button
-
-        button.MouseButton1Click:Connect(function()
-            local host = windowFrame.Parent
-            if host ~= nil and host.Parent == nil then
-                pcall(function()
-                    local target = game:GetService('Players').LocalPlayer
-                        :FindFirstChildOfClass('PlayerGui')
-                    if target ~= nil then host.Parent = target end
-                end)
-            end
-            windowFrame.Visible = not windowFrame.Visible
-            screenBanner(windowFrame.Visible and 'dashboard shown' or 'dashboard hidden')
-        end)
-    end)
-end
+-- The core owns the single floating toggle and its unload lifecycle. Older
+-- loader builds created a second button; remove that exact legacy GUI once.
+pcall(function()
+    local localPlayer = game:GetService('Players').LocalPlayer
+    local playerGui = localPlayer and localPlayer:FindFirstChildOfClass('PlayerGui')
+    local legacy = playerGui and playerGui:FindFirstChild('InfinityGoldLoaderToggle')
+    if legacy ~= nil then legacy:Destroy() end
+end)
 
 task.delay(15, function()
     if bannerGui ~= nil then

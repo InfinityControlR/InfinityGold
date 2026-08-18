@@ -95,6 +95,10 @@ return function(locomotionFactory, Library, Common)
     end
 
     local sessionAlive = true
+    local unloaded = false
+    local floatingGui
+    local emergencyGui
+    local unloadSession
     local startedAt = os.clock()
     local executorName = type(identifyexecutor) == "function"
         and tostring(identifyexecutor())
@@ -377,7 +381,7 @@ return function(locomotionFactory, Library, Common)
         end
         if #onlyIds == 0 then return false, 0, "nothing to sell" end
 
-        local sent, err = sendAction("SELL_MATERIAL", { onlyIDList = onlyIds })
+        local sent, _, err = invokeAction("SELL_MATERIAL", { onlyIDList = onlyIds })
         return sent, #onlyIds, err
     end
 
@@ -1255,6 +1259,35 @@ return function(locomotionFactory, Library, Common)
     })
     dashboard.window = window
 
+    unloadSession = function()
+        if unloaded then return end
+        unloaded = true
+        sessionAlive = false
+        if loco ~= nil then
+            pcall(function() loco:Stop() end)
+        end
+        for _, gui in pairs({ floatingGui, emergencyGui, bannerGui }) do
+            if gui ~= nil then pcall(function() gui:Destroy() end) end
+        end
+        local playerGui = player:FindFirstChildOfClass("PlayerGui")
+        if playerGui ~= nil then
+            for _, name in ipairs({
+                "InfinityGoldToggle",
+                "InfinityGoldLoaderToggle",
+                "InfinityGoldEmergency",
+                "InfinityGoldStatus",
+            }) do
+                for _, child in ipairs(playerGui:GetChildren()) do
+                    if child.Name == name then
+                        pcall(function() child:Destroy() end)
+                    end
+                end
+            end
+        end
+        pcall(function() Library:Destroy() end)
+    end
+    window.OnClose = unloadSession
+
     local function bindGroup(section)
         return {
             AddToggle = function(_, name, options)
@@ -1610,13 +1643,7 @@ return function(locomotionFactory, Library, Common)
 
         configGroup:AddButton({
             Text = "Unload InfinityGold",
-            Callback = function()
-                sessionAlive = false
-                if loco ~= nil then
-                    pcall(function() loco:Stop() end)
-                end
-                Library:Destroy()
-            end,
+            Callback = unloadSession,
         })
     end
 
@@ -1626,8 +1653,6 @@ return function(locomotionFactory, Library, Common)
     -- ScreenGui (the channel proven to render on every executor). Mobile has
     -- no Right Shift; this button always works and survives gui sweeps via
     -- the watchdog below.
-    local floatingGui
-
     local function ensureFloatingToggle()
         pcall(function()
             local playerGui = player:FindFirstChildOfClass("PlayerGui")
@@ -1687,6 +1712,7 @@ return function(locomotionFactory, Library, Common)
             panel.ResetOnSpawn = false
             panel.DisplayOrder = 999998
             panel.Parent = playerGui
+            emergencyGui = panel
 
             local frame = Instance.new("Frame")
             frame.AnchorPoint = Vector2.new(0, 1)
@@ -1822,9 +1848,10 @@ return function(locomotionFactory, Library, Common)
     --   * dead gui (AbsoluteSize 0x0) -> rebuilt; still dead -> emergency panel
     --   * healthy gui -> IG probe badge proves the layer draws
     --   * banner keeps the measurements on screen for 15 seconds
-    task.spawn(function()
-        task.wait(0.6)
-        banner("verifying dashboard render...")
+        task.spawn(function()
+            task.wait(0.6)
+            if not sessionAlive then return end
+            banner("verifying dashboard render...")
         local verifyOk, verifyError = pcall(function()
             local windowGui = dashboard.window and dashboard.window.Gui
             local mainFrame = dashboard.window and dashboard.window.Frame
@@ -1908,5 +1935,6 @@ return function(locomotionFactory, Library, Common)
         windowFrame = dashboard.window and dashboard.window.Frame or nil,
         windowGui = dashboard.window and dashboard.window.Gui or nil,
         floating = floatingGui,
+        unload = unloadSession,
     }
 end
