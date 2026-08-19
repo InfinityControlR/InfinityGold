@@ -22,6 +22,7 @@ is implemented fail-open and is listed under *Runtime verification* below.
 | `games/magicloot_common.lua` | Pure, Roblox-free helpers: drop sorting/gating, farm stage selection |
 | `games/magicloot_locomotion.lua` | Walking locomotion, EnterDelay, stuck reset, Auto Broom |
 | `games/magicloot.lua` | Core script: farm modes, combat, pickup, progress, dashboard |
+| `diagnostics/click_action_inspector.lua` | Passive real-click, remote and numeric-delta inspector |
 | `tests/` | Python regression suite + Luau smoke tests |
 | `tools/` | Luau toolchain provisioning, loader template |
 
@@ -67,6 +68,25 @@ The suite compiles every shipped source with the official Luau compiler,
 runs the pure-helper smoke tests under the Luau CLI, and enforces the
 behavioural invariants (cadences, no-teleport Walking, Broom single-flight,
 branding, loader pins).
+
+## Passive click inspector
+
+This standalone diagnostic identifies what a real left click does in the
+current game client. It observes `InputBegan`/`InputEnded`, nearby outgoing
+remotes and replicated numeric changes without synthesizing input, invoking
+an inspected callback or sending a remote.
+
+```lua
+loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/InfinityControlR/InfinityGold/main/diagnostics/click_action_inspector.lua?t="
+    .. tostring(os.time())
+))()
+```
+
+For a clean capture, turn Auto Attack, Auto Click and Auto Train off, run the
+inspector, click empty game space three times about one second apart, wait one
+second, and use **Copiar**. Repeat once in a training area and once in a stage
+if the click behaviour differs by context.
 
 ## Publish flow (two commits)
 

@@ -17,6 +17,7 @@ SOURCES = [
     "games/magicloot_common.lua",
     "games/magicloot_locomotion.lua",
     "games/magicloot.lua",
+    "diagnostics/click_action_inspector.lua",
 ]
 
 
