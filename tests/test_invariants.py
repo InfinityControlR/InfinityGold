@@ -198,6 +198,18 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn('value == true', self.source)
         self.assertIn('type(key) == "number" and value or key', self.source)
 
+    def test_pickup_rarity_ui_includes_tier_ten(self):
+        self.assertIn("local MAX_PICKUP_TIER = 10", self.source)
+        self.assertIn("for tier = 1, MAX_PICKUP_TIER do", self.source)
+        dropdown_start = self.source.index('group:AddDropdown("PickupTiers"')
+        rarity_dropdown = self.source[
+            dropdown_start :
+            self.source.index('tab:CreateSection("Notes")', dropdown_start)
+        ]
+        self.assertIn("Values = tierValues", rarity_dropdown)
+        self.assertIn("Multi = true", rarity_dropdown)
+        self.assertIn("MaxVisible = 5", rarity_dropdown)
+
     def test_walking_mode_dispatch(self):
         self.assertIn('cfg.FarmMode == "Walking"', self.source)
         self.assertIn('loco:Update("Walking"', self.source)

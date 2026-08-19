@@ -91,6 +91,10 @@ check("gate: rarity without tier rejects", not Common.gateDrop(
     { hasPrimaryPart = true, landed = true, inRange = true, gold = 50 },
     { minValue = 0, filterRarity = true, tiers = { [3] = true } }
 ))
+check("gate: tier 10 selected", Common.gateDrop(
+    { hasPrimaryPart = true, landed = true, inRange = true, gold = 50, tier = 10 },
+    { minValue = 0, filterRarity = true, tiers = { [10] = true } }
+))
 
 -- farmStageTarget
 check("farm: specific exact", Common.farmStageTarget(10, 5, true, 27) == 5)
@@ -105,6 +109,8 @@ local tiers = Common.parseTierSelection({ "1", "3", "x", 4 })
 check("tiers: 1,3,4 selected", tiers[1] and tiers[3] and tiers[4] and not tiers[2])
 local tierMap = Common.parseTierSelection({ ["2"] = true, ["5"] = true, ["8"] = false })
 check("tiers: multi-select map", tierMap[2] and tierMap[5] and not tierMap[8])
+local highTiers = Common.parseTierSelection({ "9", "10" })
+check("tiers: 9 and 10", highTiers[9] and highTiers[10])
 check("tiers: non-table", next(Common.parseTierSelection(nil)) == nil)
 
 -- sellOnlyIds: send unique inventory IDs for unlocked tp=2 materials only.

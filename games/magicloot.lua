@@ -13,6 +13,7 @@
 
 local BRAND = "InfinityGold"
 local MAX_FARM_STAGE = 27
+local MAX_PICKUP_TIER = 10
 local PLACE_ID = 133188236593503
 local CREATOR_ID = 118455659
 local DISCORD_INVITE = "" -- set to an invite URL to show the invite button
@@ -1942,7 +1943,7 @@ return function(locomotionFactory, Library, Common)
             Default = false,
         })
         local tierValues = {}
-        for tier = 1, 8 do
+        for tier = 1, MAX_PICKUP_TIER do
             table.insert(tierValues, tostring(tier))
         end
         group:AddDropdown("PickupTiers", {
@@ -1950,6 +1951,7 @@ return function(locomotionFactory, Library, Common)
             Values = tierValues,
             Default = {},
             Multi = true,
+            MaxVisible = 5,
         })
         tab:CreateSection("Notes"):AddParagraph({
             Title = "Event drops",
