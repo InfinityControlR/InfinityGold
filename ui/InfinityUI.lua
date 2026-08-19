@@ -19,7 +19,7 @@ local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
 
 local Library = {
-    Version = "1.1.0",
+    Version = "1.2.0",
     Brand = "INFINITYGOLD",
     Theme = {
         Background     = Color3.fromRGB(10, 11, 16),
@@ -33,6 +33,10 @@ local Library = {
         GoldBright     = Color3.fromRGB(255, 220, 113),
         GoldDeep       = Color3.fromRGB(213, 151, 25),
         GoldSoft       = Color3.fromRGB(105, 80, 24),
+        Interactive    = Color3.fromRGB(39, 37, 30),
+        InteractiveHover = Color3.fromRGB(64, 52, 25),
+        InteractivePress = Color3.fromRGB(78, 60, 21),
+        InteractiveBorder = Color3.fromRGB(142, 105, 31),
         Text           = Color3.fromRGB(242, 241, 237),
         TextDim        = Color3.fromRGB(163, 163, 171),
         TextMuted      = Color3.fromRGB(108, 109, 120),
@@ -317,17 +321,17 @@ function Library:CreateWindow(options)
     main.BorderSizePixel = 0
     main.Position = UDim2.new(0.5, 0, 0.5, 0)
 
-    -- A wide default gives long labels enough room while remaining comfortably
-    -- inside a desktop viewport. Smaller screens get a margin-aware size.
+    -- Keep the dashboard compact enough to leave the 3D world visible while
+    -- capturing Running points. Smaller screens still get a margin-aware size.
     local function fittedWindowSize(viewport)
-        if viewport == nil then return 720, 520 end
+        if viewport == nil then return 600, 430 end
         -- CurrentCamera can briefly report a zero-sized viewport while the
         -- client is still bootstrapping. Keep a usable default until Roblox
         -- publishes the real dimensions; the viewport listener below will
         -- then apply the responsive size.
-        if viewport.X < 100 or viewport.Y < 100 then return 720, 520 end
-        local width = math.min(760, math.max(300, viewport.X - 32))
-        local height = math.min(560, math.max(280, viewport.Y - 32))
+        if viewport.X < 100 or viewport.Y < 100 then return 600, 430 end
+        local width = math.min(600, math.max(300, viewport.X - 32))
+        local height = math.min(430, math.max(280, viewport.Y - 32))
         -- The final cap is deliberately independent of the minimum so even
         -- an unusually tiny emulator viewport cannot be overflowed.
         width = math.min(width, math.max(1, viewport.X - 12))
@@ -339,8 +343,8 @@ function Library:CreateWindow(options)
     pcall(function() currentCamera = workspace.CurrentCamera end)
     local initialViewport = currentCamera and currentCamera.ViewportSize or nil
     local windowWidth, windowHeight = fittedWindowSize(initialViewport)
-    local compactNavigation = windowWidth < 480
-    local navigationWidth = compactNavigation and 72 or 168
+    local compactNavigation = windowWidth < 520
+    local navigationWidth = compactNavigation and 64 or 142
     main.Size = UDim2.new(0, windowWidth, 0, windowHeight)
     main.ClipsDescendants = true
     main.Parent = screenGui
@@ -795,8 +799,8 @@ function Library:CreateWindow(options)
 
         currentCamera = camera
         windowWidth, windowHeight = fittedWindowSize(camera.ViewportSize)
-        compactNavigation = windowWidth < 480
-        navigationWidth = compactNavigation and 72 or 168
+        compactNavigation = windowWidth < 520
+        navigationWidth = compactNavigation and 64 or 142
 
         main.Size = UDim2.new(0, windowWidth, 0, windowHeight)
         nav.Size = UDim2.new(0, navigationWidth, 1, -34)
@@ -1028,7 +1032,8 @@ function Library:CreateWindow(options)
             }
 
             local function render(instant)
-                local trackColor = value and Library.Theme.GoldSoft or Library.Theme.SurfaceLight
+                local trackColor = value and Library.Theme.InteractiveBorder
+                    or Library.Theme.SurfaceLight
                 local knobColor = value and Library.Theme.GoldBright or Library.Theme.TextDim
                 local knobProperties = {
                     BackgroundColor3 = knobColor,
@@ -1272,7 +1277,7 @@ function Library:CreateWindow(options)
 
             local button = Instance.new("TextButton")
             button.Name = "Button"
-            button.BackgroundColor3 = Library.Theme.SurfaceRaised
+            button.BackgroundColor3 = Library.Theme.Interactive
             button.BorderSizePixel = 0
             button.Size = UDim2.new(1, 0, 0, 48)
             button.Font = Enum.Font.Gotham
@@ -1282,7 +1287,7 @@ function Library:CreateWindow(options)
             button.ZIndex = 3
             button.Parent = holder
             corner(button, 9)
-            local buttonStroke = stroke(button, Library.Theme.BorderSoft, 1)
+            local buttonStroke = stroke(button, Library.Theme.InteractiveBorder, 1, 0.08)
 
             label(button, {
                 Name = "Caption",
@@ -1300,7 +1305,7 @@ function Library:CreateWindow(options)
                 Text = "",
                 Font = Enum.Font.GothamMedium,
                 TextSize = 13,
-                TextColor3 = Library.Theme.Gold,
+                TextColor3 = Library.Theme.GoldBright,
                 TextTruncate = Enum.TextTruncate.AtEnd,
                 Position = UDim2.new(0, 14, 0, 21),
                 Size = UDim2.new(1, -62, 0, 21),
@@ -1310,7 +1315,7 @@ function Library:CreateWindow(options)
             local arrowBox = Instance.new("Frame")
             arrowBox.Name = "ChevronBox"
             arrowBox.AnchorPoint = Vector2.new(1, 0.5)
-            arrowBox.BackgroundColor3 = Library.Theme.SurfaceLight
+            arrowBox.BackgroundColor3 = Library.Theme.InteractiveHover
             arrowBox.BorderSizePixel = 0
             arrowBox.Position = UDim2.new(1, -10, 0.5, 0)
             arrowBox.Size = UDim2.new(0, 28, 0, 28)
@@ -1323,7 +1328,7 @@ function Library:CreateWindow(options)
                 Text = "v",
                 Font = Enum.Font.GothamBold,
                 TextSize = 12,
-                TextColor3 = Library.Theme.TextDim,
+                TextColor3 = Library.Theme.GoldBright,
                 TextXAlignment = Enum.TextXAlignment.Center,
                 ZIndex = 5,
             })
@@ -1426,11 +1431,11 @@ function Library:CreateWindow(options)
                 arrow.Text = open and "^" or "v"
                 holder.Size = UDim2.new(1, 0, 0, open and (54 + listHeight()) or 48)
                 tween(arrowBox, {
-                    BackgroundColor3 = open and Library.Theme.GoldSoft
-                        or Library.Theme.SurfaceLight,
+                    BackgroundColor3 = open and Library.Theme.InteractivePress
+                        or Library.Theme.InteractiveHover,
                 }, 0.14)
                 tween(buttonStroke, {
-                    Color = open and Library.Theme.GoldSoft or Library.Theme.BorderSoft,
+                    Color = Library.Theme.InteractiveBorder,
                 }, 0.14)
             end
 
@@ -1604,7 +1609,7 @@ function Library:CreateWindow(options)
             buttonOptions = type(buttonOptions) == "table" and buttonOptions or {}
             local button = Instance.new("TextButton")
             button.Name = "Button"
-            button.BackgroundColor3 = Library.Theme.SurfaceRaised
+            button.BackgroundColor3 = Library.Theme.Interactive
             button.BorderSizePixel = 0
             button.Size = UDim2.new(1, 0, 0, 40)
             button.Font = Enum.Font.GothamMedium
@@ -1616,20 +1621,34 @@ function Library:CreateWindow(options)
             button.LayoutOrder = nextOrder()
             button.Parent = sectionFrame
             corner(button, 8)
-            stroke(button, Library.Theme.GoldSoft, 1, 0.2)
+            stroke(button, Library.Theme.InteractiveBorder, 1, 0.02)
 
-            local buttonGradient = Instance.new("UIGradient")
-            buttonGradient.Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0, Library.Theme.SurfaceLight),
-                ColorSequenceKeypoint.new(1, Library.Theme.SurfaceRaised),
-            })
-            buttonGradient.Rotation = 90
-            buttonGradient.Parent = button
+            local hovered = false
+            local function restoreButtonSurface(duration)
+                tween(button, {
+                    BackgroundColor3 = hovered and Library.Theme.InteractiveHover
+                        or Library.Theme.Interactive,
+                }, duration or 0.12)
+            end
+            button.MouseEnter:Connect(function()
+                hovered = true
+                tween(button, { BackgroundColor3 = Library.Theme.InteractiveHover }, 0.12)
+            end)
+            button.MouseLeave:Connect(function()
+                hovered = false
+                restoreButtonSurface()
+            end)
+            button.MouseButton1Down:Connect(function()
+                tween(button, { BackgroundColor3 = Library.Theme.InteractivePress }, 0.06)
+            end)
+            button.InputEnded:Connect(function()
+                restoreButtonSurface(0.1)
+            end)
 
             button.MouseButton1Click:Connect(function()
-                tween(button, { BackgroundColor3 = Library.Theme.GoldSoft }, 0.08)
+                tween(button, { BackgroundColor3 = Library.Theme.InteractivePress }, 0.06)
                 task.delay(0.1, function()
-                    tween(button, { BackgroundColor3 = Library.Theme.SurfaceRaised }, 0.15)
+                    restoreButtonSurface(0.15)
                 end)
                 if type(buttonOptions.Callback) == "function" then
                     task.spawn(buttonOptions.Callback)

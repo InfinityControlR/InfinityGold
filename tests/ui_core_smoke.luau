@@ -37,6 +37,8 @@ local SIGNAL_NAMES = {
     InputEnded = true,
     MouseButton1Click = true,
     MouseButton1Down = true,
+    MouseEnter = true,
+    MouseLeave = true,
     FocusLost = true,
     Idled = true,
     Changed = true,
@@ -519,7 +521,7 @@ do
     camera.ViewportSize = Vector2.new(0, 0)
     camera:GetPropertyChangedSignal("ViewportSize"):Fire()
     pump(2)
-    if windowFrame.Size.X.Offset ~= 720 or windowFrame.Size.Y.Offset ~= 520 then
+    if windowFrame.Size.X.Offset ~= 600 or windowFrame.Size.Y.Offset ~= 430 then
         fail("zero-sized bootstrap viewport collapsed the dashboard")
     end
 
@@ -527,7 +529,8 @@ do
     camera:GetPropertyChangedSignal("ViewportSize"):Fire()
     pump(2)
     if windowFrame.Size.X.Offset ~= 328
-        or navigation == nil or navigation.Size.X.Offset ~= 72
+        or windowFrame.Size.Y.Offset ~= 430
+        or navigation == nil or navigation.Size.X.Offset ~= 64
         or firstTabName == nil or firstTabName.Visible ~= false
         or navigationCaption == nil or navigationCaption.Text ~= "IG"
     then
@@ -537,12 +540,36 @@ do
     camera.ViewportSize = Vector2.new(1024, 640)
     camera:GetPropertyChangedSignal("ViewportSize"):Fire()
     pump(2)
-    if windowFrame.Size.X.Offset ~= 760
-        or navigation.Size.X.Offset ~= 168
+    if windowFrame.Size.X.Offset ~= 600
+        or windowFrame.Size.Y.Offset ~= 430
+        or navigation.Size.X.Offset ~= 142
         or firstTabName.Visible ~= true
         or navigationCaption.Text ~= "NAVIGATION"
     then
         fail("dashboard did not restore its full navigation after resize")
+    end
+
+    camera.ViewportSize = Vector2.new(1850, 1000)
+    camera:GetPropertyChangedSignal("ViewportSize"):Fire()
+    pump(2)
+    if windowFrame.Size.X.Offset ~= 600 or windowFrame.Size.Y.Offset ~= 430 then
+        fail("desktop viewport exceeded the compact dashboard cap")
+    end
+
+    if navigation.ClassName ~= "ScrollingFrame"
+        or navigation.AutomaticCanvasSize ~= Enum.AutomaticSize.Y
+        or navigation.ScrollingDirection ~= Enum.ScrollingDirection.Y
+    then
+        fail("compact navigation is not vertically scrollable")
+    end
+
+    local firstPage = windowFrame and findDescendant(windowFrame, "Page1")
+    if firstPage == nil
+        or firstPage.ClassName ~= "ScrollingFrame"
+        or firstPage.AutomaticCanvasSize ~= Enum.AutomaticSize.Y
+        or firstPage.ScrollingDirection ~= Enum.ScrollingDirection.Y
+    then
+        fail("compact dashboard pages are not vertically scrollable")
     end
 
     local paragraph = windowFrame and findDescendant(windowFrame, "Paragraph")
@@ -563,6 +590,37 @@ do
         or dynamicLabel.AutomaticSize ~= Enum.AutomaticSize.Y
     then
         fail("dynamic diagnostic label cannot grow with multiline text")
+    end
+
+    local function findActionButton(root, expectedText)
+        for _, child in ipairs(root:GetChildren()) do
+            if child:IsA("TextButton") and child.Text == expectedText then
+                return child
+            end
+            local found = findActionButton(child, expectedText)
+            if found then return found end
+        end
+        return nil
+    end
+
+    local actionButton = windowFrame and findActionButton(
+        windowFrame,
+        "Capture current position (current stage)"
+    )
+    if actionButton == nil then
+        fail("running capture action button was not constructed")
+    elseif actionButton:FindFirstChildOfClass("UIGradient") ~= nil then
+        fail("action button gradient darkens its own text")
+    elseif actionButton.BackgroundColor3 == nil
+        or actionButton.BackgroundColor3.R ~= 39
+        or actionButton.BackgroundColor3.G ~= 37
+        or actionButton.BackgroundColor3.B ~= 30
+        or actionButton.TextColor3 == nil
+        or actionButton.TextColor3.R ~= 255
+        or actionButton.TextColor3.G ~= 220
+        or actionButton.TextColor3.B ~= 113
+    then
+        fail("running capture action button does not use the high-contrast palette")
     end
 
     local dropdown = windowFrame and findDescendant(windowFrame, "Dropdown")
