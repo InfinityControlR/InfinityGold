@@ -582,7 +582,10 @@ return function(locomotionFactory, Library, Common)
         if type(getIdentity) == "function" and type(setIdentity) == "function" then
             local ok, original = pcall(getIdentity)
             if ok and type(original) == "number" then
-                pcall(setIdentity, math.max(original, 2))
+                -- The original resolver requires identity 2 specifically;
+                -- retaining a higher executor identity can make ModuleScripts
+                -- reject require() even though the path is correct.
+                pcall(setIdentity, 2)
                 local resultOk, result = pcall(callback)
                 pcall(setIdentity, original)
                 return resultOk, result
@@ -598,11 +601,13 @@ return function(locomotionFactory, Library, Common)
         local ok, result = withElevatedIdentity(function()
             local playerScripts = player:WaitForChild("PlayerScripts", 8)
             if playerScripts == nil then return { error = "PlayerScripts not found" } end
-            local manager = playerScripts:WaitForChild("PlayerSkillClientManager", 8)
-            if manager == nil then return { error = "PlayerSkillClientManager not found" } end
-            local inputModule = manager:WaitForChild("PlayerSkillInput", 8)
+            local managerFolder = playerScripts:WaitForChild("Manager", 8)
+            if managerFolder == nil then return { error = "Manager not found" } end
+            local skillManager = managerFolder:WaitForChild("PlayerSkillClientManager", 8)
+            if skillManager == nil then return { error = "PlayerSkillClientManager not found" } end
+            local inputModule = skillManager:WaitForChild("PlayerSkillInput", 8)
             if inputModule == nil then return { error = "PlayerSkillInput not found" } end
-            local configModule = manager:WaitForChild("SkillSlotConfig", 8)
+            local configModule = skillManager:WaitForChild("SkillSlotConfig", 8)
             if configModule == nil then return { error = "SkillSlotConfig not found" } end
             local inputOk, inputTable = pcall(require, inputModule)
             if not inputOk or type(inputTable) ~= "table" then
@@ -653,7 +658,7 @@ return function(locomotionFactory, Library, Common)
                     local ok, usable = pcall(function()
                         if not model:IsA("Model") then return false end
                         local humanoid = model:FindFirstChildOfClass("Humanoid")
-                        if humanoid == nil or humanoid.Health <= 0 then return false end
+                        if humanoid ~= nil and humanoid.Health <= 0 then return false end
                         local anchor = model.PrimaryPart
                             or model:FindFirstChild("HumanoidRootPart")
                         if anchor == nil then return false end
@@ -663,7 +668,7 @@ return function(locomotionFactory, Library, Common)
                         local anchor = model.PrimaryPart
                             or model:FindFirstChild("HumanoidRootPart")
                         local distance = (anchor.Position - parts.root.Position).Magnitude
-                        if distance <= range and (bestDistance == nil or distance < bestDistance) then
+                        if distance < range and (bestDistance == nil or distance < bestDistance) then
                             best = model
                             bestDistance = distance
                         end
@@ -677,92 +682,35 @@ return function(locomotionFactory, Library, Common)
     local function attackTarget(target)
         local input = resolveAttack()
         if input == nil then return false, attack.status end
-        setNowTarget(target)
-        local ok = withElevatedIdentity(function()
-            input.simulateSlotPressRelease(attack.slotIndex, true)
-        end)
+        if not setNowTarget(target) then
+            return false, "NowTargetCurrent unavailable"
+        end
+        -- Match the game/original call context: only module resolution needs
+        -- identity 2; the actual input simulation runs at the caller identity.
+        local ok = pcall(
+            input.simulateSlotPressRelease,
+            attack.slotIndex,
+            true
+        )
         if not ok then return false, "simulateSlotPressRelease failed" end
         return true
     end
 
-    -- Background clicks: the game registers the tap without touching the
-    -- real cursor. Nothing here injects input events, so the dashboard (and
-    -- the mouse) stay fully usable while Auto Click runs. Chain:
-    -- TRAIN_MANUAL_CLICK remote (what the game itself sends) -> the training
-    -- button's connected handlers (getconnections) -> firesignal fallback.
-    local cachedTrainingButton = nil
+    -- Exact original Auto Click split: training uses the manual-click
+    -- RemoteFunction; everywhere else it performs the normal attack skill
+    -- against the closest live monster. It never moves the real cursor.
+    local function performAutoClick()
+        if characterParts() == nil then return false, "character unavailable" end
+        local trainId = playerNumber("TrainGroundId") or 0
+        if trainId > 0 then
+            local ok, _, err = invokeAction("TRAIN_MANUAL_CLICK", {})
+            return ok, ok and "training remote" or tostring(err)
+        end
 
-    local function findTrainingButton(playerGui)
-        if cachedTrainingButton ~= nil and cachedTrainingButton.Parent ~= nil then
-            return cachedTrainingButton
-        end
-        cachedTrainingButton = nil
-        local best, bestArea = nil, 0
-        local ok, descendants = pcall(playerGui.GetDescendants, playerGui)
-        if not ok or type(descendants) ~= "table" then
-            return nil
-        end
-        for _, child in ipairs(descendants) do
-            local okArea, area = pcall(function()
-                if not child:IsA("GuiButton") then return -1 end
-                if child.Visible == false then return -1 end
-                local size = child.AbsoluteSize
-                return size.X * size.Y
-            end)
-            if okArea and area ~= nil and area > bestArea then
-                best, bestArea = child, area
-            end
-        end
-        cachedTrainingButton = best
-        return best
-    end
-
-    local BUTTON_SIGNALS = { "MouseButton1Click", "Activated", "TouchTap" }
-
-    local function fireTrainingButton(button)
-        -- Calling the connected handlers directly is verifiable delivery:
-        -- only claims success when at least one handler really ran.
-        if type(getconnections) == "function" then
-            for _, signalName in ipairs(BUTTON_SIGNALS) do
-                local ok, connections = pcall(getconnections, button[signalName])
-                if ok and type(connections) == "table" then
-                    for _, connection in ipairs(connections) do
-                        local handlerOk, handler = pcall(function()
-                            return connection.Function or connection.fn
-                        end)
-                        if handlerOk and type(handler) == "function" then
-                            if pcall(handler) then
-                                return true, "ui handlers"
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        if type(firesignal) == "function" then
-            for _, signalName in ipairs(BUTTON_SIGNALS) do
-                local ok = pcall(firesignal, button[signalName])
-                if ok then
-                    return true, "ui signal"
-                end
-            end
-        end
-        return false, "no handlers fired"
-    end
-
-    local function simulateBackgroundClick()
-        local ok = sendAction("TRAIN_MANUAL_CLICK", {})
-        if ok then return true, "remote" end
-
-        local playerGui = player:FindFirstChildOfClass("PlayerGui")
-        if playerGui ~= nil then
-            local button = findTrainingButton(playerGui)
-            if button ~= nil then
-                local fired, delivery = fireTrainingButton(button)
-                if fired then return true, delivery end
-            end
-        end
-        return false, "no background click path"
+        local target = findAttackTarget(tonumber(cfg.AttackRange) or 120)
+        if target == nil then return false, "no attack target in range" end
+        local ok, err = attackTarget(target)
+        return ok, ok and "normal attack" or tostring(err)
     end
 
     -- Locomotion bridge --------------------------------------------------------
@@ -1100,16 +1048,11 @@ return function(locomotionFactory, Library, Common)
 
     task.spawn(function()
         while sessionAlive do
-            if cfg.AutoAttack and not blocksAttack() then
+            local farming = cfg.AutoFarm or cfg.AutoFarmSpecific
+            if farming and cfg.AutoAttack and not blocksAttack() then
                 local target = findAttackTarget(tonumber(cfg.AttackRange) or 120)
                 if target ~= nil then
                     local ok, err = attackTarget(target)
-                    if not ok then
-                        -- Skill modules missing: run a background training
-                        -- click instead, without touching real input.
-                        local clicked = simulateBackgroundClick()
-                        ok = clicked
-                    end
                     if ok then
                         combatStats.attacksOk = combatStats.attacksOk + 1
                         combatStats.lastAttackError = "none"
@@ -1126,9 +1069,7 @@ return function(locomotionFactory, Library, Common)
     task.spawn(function()
         while sessionAlive do
             if cfg.AutoClick and not blocksAttack() then
-                -- Background clicks: the game registers the tap while the
-                -- mouse and the dashboard stay untouched.
-                local clicked, delivery = simulateBackgroundClick()
+                local clicked, delivery = performAutoClick()
                 if clicked then
                     combatStats.clicksOk = combatStats.clicksOk + 1
                     combatStats.lastClickError = "none"
@@ -1633,12 +1574,12 @@ return function(locomotionFactory, Library, Common)
         group:AddToggle("AutoClick", { Text = "Auto Click", Default = false })
         group:AddSlider("ClickRate", {
             Text = "Click rate",
-            Default = 10, Min = 1, Max = 50, Rounding = 0,
+            Default = 10, Min = 1, Max = 20, Rounding = 0,
         })
         group:AddButton({
             Text = "Send test click now",
             Callback = function()
-                local clicked, delivery = simulateBackgroundClick()
+                local clicked, delivery = performAutoClick()
                 local message = clicked
                     and ("test click sent via " .. tostring(delivery))
                     or ("test click failed: " .. tostring(delivery))
@@ -1695,10 +1636,9 @@ return function(locomotionFactory, Library, Common)
 
         tab:CreateSection("Notes"):AddParagraph({
             Title = "How clicking works",
-            Text = "Auto Click runs in the background: the game registers "
-                .. "each tap (training remote first, then the training "
-                .. "button's own handlers) without moving the mouse, so the "
-                .. "dashboard stays fully usable while it runs. Auto Attack "
+            Text = "Auto Click uses the training remote while training and "
+                .. "the normal attack skill inside the dungeon, without "
+                .. "moving the real mouse. Auto Attack "
                 .. "pauses while Walking or Running has not entered the "
                 .. "stage yet.",
         })

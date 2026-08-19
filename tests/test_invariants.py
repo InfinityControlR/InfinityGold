@@ -284,12 +284,12 @@ class CombatDiagnosticsTests(unittest.TestCase):
     def setUp(self):
         self.source = read("games/magicloot.lua")
 
-    def test_click_worker_falls_back_to_training_click(self):
-        self.assertIn("local function simulateBackgroundClick()", self.source)
-        self.assertIn("local function fireTrainingButton(button)", self.source)
-        self.assertIn("getconnections", self.source)
-        self.assertIn("firesignal", self.source)
-        self.assertIn('sendAction("TRAIN_MANUAL_CLICK", {})', self.source)
+    def test_autoclick_matches_original_training_and_dungeon_split(self):
+        self.assertIn("local function performAutoClick()", self.source)
+        self.assertIn('local trainId = playerNumber("TrainGroundId") or 0', self.source)
+        self.assertIn('invokeAction("TRAIN_MANUAL_CLICK", {})', self.source)
+        self.assertIn("local target = findAttackTarget", self.source)
+        self.assertIn("local ok, err = attackTarget(target)", self.source)
 
     def test_clicks_never_inject_real_input(self):
         # Background clicks only: the mouse and the dashboard must stay
@@ -297,28 +297,62 @@ class CombatDiagnosticsTests(unittest.TestCase):
         for banned in ("VirtualInputManager", "SendMouseButtonEvent", "mouse1click"):
             self.assertNotIn(banned, self.source)
 
-    def test_autoclick_is_pure_screen_taps(self):
-        self.assertIn(
-            "Background clicks: the game registers the tap",
-            self.source,
-        )
+        attack_section = self.source.split("-- Attack", 1)[1].split(
+            "-- Locomotion bridge", 1
+        )[0]
+        for banned in ("getconnections", "firesignal", "TouchTap"):
+            self.assertNotIn(banned, attack_section)
+
+    def test_autoclick_reports_its_real_delivery(self):
+        self.assertIn('ok and "training remote"', self.source)
+        self.assertIn('ok and "normal attack"', self.source)
         self.assertIn("combatStats.clickDelivery = delivery", self.source)
 
-    def test_autoattack_falls_back_to_screen_click(self):
-        self.assertIn(
-            "local clicked = simulateBackgroundClick()",
-            self.source,
-        )
+    def test_autoattack_never_falls_back_to_training(self):
+        worker = self.source.split("-- Combat workers", 1)[1].split(
+            "-- Pickup worker", 1
+        )[0]
+        autoattack = worker.split("task.spawn(function()", 2)[1]
+        self.assertIn("attackTarget(target)", autoattack)
+        self.assertNotIn("TRAIN_MANUAL_CLICK", autoattack)
+        self.assertNotIn("performAutoClick", autoattack)
+        self.assertIn("local farming = cfg.AutoFarm or cfg.AutoFarmSpecific", autoattack)
 
     def test_skill_resolution_reports_the_failing_step(self):
         for marker in (
             '"PlayerScripts not found"',
+            '"Manager not found"',
             '"PlayerSkillClientManager not found"',
             '"PlayerSkillInput not found"',
             '"SkillSlotConfig not found"',
             '"simulateSlotPressRelease missing"',
         ):
             self.assertIn(marker, self.source)
+
+    def test_skill_resolution_uses_original_nested_manager_path(self):
+        manager = 'playerScripts:WaitForChild("Manager", 8)'
+        skill = 'managerFolder:WaitForChild("PlayerSkillClientManager", 8)'
+        self.assertIn(manager, self.source)
+        self.assertIn(skill, self.source)
+        self.assertLess(self.source.index(manager), self.source.index(skill))
+        self.assertNotIn(
+            'playerScripts:WaitForChild("PlayerSkillClientManager", 8)',
+            self.source,
+        )
+        self.assertIn("pcall(setIdentity, 2)", self.source)
+        self.assertNotIn("math.max(original, 2)", self.source)
+
+    def test_target_and_skill_call_match_original_contract(self):
+        self.assertIn(
+            "if humanoid ~= nil and humanoid.Health <= 0 then return false end",
+            self.source,
+        )
+        self.assertIn('return false, "NowTargetCurrent unavailable"', self.source)
+        self.assertIn(
+            "pcall(\n            input.simulateSlotPressRelease,",
+            self.source,
+        )
+        self.assertIn('character unavailable', self.source)
 
     def test_netmsg_fallbacks(self):
         self.assertIn("network.NetMsg", self.source)
@@ -337,7 +371,7 @@ class CombatDiagnosticsTests(unittest.TestCase):
     def test_combat_tab_has_probe_buttons(self):
         self.assertIn("Send test click now", self.source)
         self.assertIn("Probe skill modules", self.source)
-        self.assertIn("Max = 50", self.source)
+        self.assertIn("Max = 20", self.source)
 
 
 if __name__ == "__main__":
