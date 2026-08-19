@@ -152,6 +152,12 @@ InstanceMT = {
             rawset(self, "Parent", value)
             return
         end
+        if key == "Size" and type(value) == "table" and value.X and value.Y then
+            -- Cheap layout approximation: a pixel Size maps to AbsoluteSize.
+            if value.X.Scale == 0 and value.Y.Scale == 0 then
+                rawset(self, "AbsoluteSize", Vector2.new(value.X.Offset, value.Y.Offset))
+            end
+        end
         rawset(self, key, value)
     end,
 }
@@ -431,6 +437,51 @@ do
     local toggleGui = playerGui and playerGui:FindFirstChild("InfinityGoldToggle")
     if toggleGui == nil or toggleGui:FindFirstChild("IG") == nil then
         fail("floating IG toggle button was not created")
+    end
+end
+
+-- Floating button interaction: a tap toggles the dashboard, a drag moves the
+-- button without toggling.
+do
+    local playerGui = player:FindFirstChildOfClass("PlayerGui")
+    local toggleGui = playerGui and playerGui:FindFirstChild("InfinityGoldToggle")
+    local button = toggleGui and toggleGui:FindFirstChild("IG")
+    if button == nil then
+        fail("cannot simulate the floating toggle: button missing")
+    else
+        local inputService = service("UserInputService")
+        local touch = Enum.UserInputType.Touch
+
+        -- Roblox frames start visible; make the stub match before tapping.
+        Library._windows[1].Frame.Visible = true
+
+        -- Tap: press and release in place -> toggles (hides) the dashboard.
+        button.InputBegan:Fire({ UserInputType = touch, Position = Vector3.new(300, 300, 0) })
+        inputService.InputEnded:Fire({ UserInputType = touch, Position = Vector3.new(300, 300, 0) })
+
+        local statusGui = playerGui:FindFirstChild("InfinityGoldStatus")
+        local statusText = statusGui and statusGui:FindFirstChild("Status")
+        if statusText == nil or not statusText.Text:find("dashboard hidden", 1, true) then
+            fail("tap on the IG button did not hide the dashboard")
+        end
+
+        -- Drag: move beyond the tap threshold -> repositions without toggling.
+        button.InputBegan:Fire({ UserInputType = touch, Position = Vector3.new(300, 300, 0) })
+        inputService.InputChanged:Fire({ UserInputType = touch, Position = Vector3.new(345, 331, 0) })
+        inputService.InputEnded:Fire({ UserInputType = touch, Position = Vector3.new(345, 331, 0) })
+
+        if button.Position.X.Offset ~= 45 or button.Position.Y.Offset ~= 31 then
+            fail(string.format(
+                "drag did not move the button: offset %d,%d",
+                button.Position.X.Offset,
+                button.Position.Y.Offset
+            ))
+        end
+        statusGui = playerGui:FindFirstChild("InfinityGoldStatus")
+        statusText = statusGui and statusGui:FindFirstChild("Status")
+        if statusText == nil or not statusText.Text:find("dashboard hidden", 1, true) then
+            fail("drag unexpectedly toggled the dashboard")
+        end
     end
 end
 

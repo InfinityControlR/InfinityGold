@@ -524,19 +524,12 @@ function Library:CreateWindow(options)
 
     -- Visibility controls
     local visible = true
-    local collapsed = false
 
-    local function refreshCollapsed()
-        local targetSize = collapsed
-            and UDim2.new(0, 580, 0, 46)
-            or UDim2.new(0, 580, 0, 420)
-        tween(main, { Size = targetSize }, 0.3)
-    end
-
+    -- Minimizing hides the window completely (same as the floating toggle);
+    -- it is restored with the floating IG button or the keybind.
     minimizeButton.MouseButton1Click:Connect(function()
-        collapsed = not collapsed
-        minimizeButton.Text = collapsed and "+" or "-"
-        refreshCollapsed()
+        visible = false
+        main.Visible = false
     end)
 
     closeButton.MouseButton1Click:Connect(function()

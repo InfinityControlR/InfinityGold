@@ -222,6 +222,31 @@ class UiLifecycleTests(unittest.TestCase):
         self.assertNotIn("UserInputService.InputEnded:Connect", self.source)
         self.assertNotIn("UserInputService.InputBegan:Connect", self.source)
 
+    def test_minimize_hides_the_window_completely(self):
+        self.assertNotIn("collapsed", self.source)
+        self.assertNotIn("refreshCollapsed", self.source)
+        self.assertIn("visible = false", self.source)
+        self.assertIn("main.Visible = false", self.source)
+
+
+class FloatingButtonTests(unittest.TestCase):
+    def setUp(self):
+        self.source = read("games/magicloot.lua")
+
+    def test_floating_button_position_survives_recreation(self):
+        self.assertIn("local floatingPosition", self.source)
+        self.assertIn("button.Position = floatingPosition", self.source)
+        self.assertIn("floatingPosition = button.Position", self.source)
+
+    def test_floating_button_tap_vs_drag(self):
+        self.assertIn("local dragMoved = false", self.source)
+        self.assertIn("delta.Magnitude < 6", self.source)
+        self.assertIn("if dragMoved then", self.source)
+
+    def test_floating_button_drag_is_clamped_to_viewport(self):
+        self.assertIn("math.clamp(buttonOrigin.X + delta.X", self.source)
+        self.assertIn("math.clamp(buttonOrigin.Y + delta.Y", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()

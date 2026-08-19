@@ -88,6 +88,7 @@ return function(locomotionFactory, Library, Common)
     local RunService = game:GetService("RunService")
     local TeleportService = game:GetService("TeleportService")
     local HttpService = game:GetService("HttpService")
+    local UserInputService = game:GetService("UserInputService")
 
     local player = Players.LocalPlayer
     if player == nil then
@@ -1788,7 +1789,11 @@ return function(locomotionFactory, Library, Common)
     -- Floating IG button: touch-friendly dashboard toggle in its own PlayerGui
     -- ScreenGui (the channel proven to render on every executor). Mobile has
     -- no Right Shift; this button always works and survives gui sweeps via
-    -- the watchdog below.
+    -- the watchdog below. It is draggable so the user can place it anywhere,
+    -- and the chosen position survives watchdog re-creation.
+    local floatingGui
+    local floatingPosition = UDim2.new(1, -16, 1, -16)
+
     local function ensureFloatingToggle()
         pcall(function()
             local playerGui = player:FindFirstChildOfClass("PlayerGui")
@@ -1804,7 +1809,7 @@ return function(locomotionFactory, Library, Common)
             local button = Instance.new("TextButton")
             button.Name = "IG"
             button.AnchorPoint = Vector2.new(1, 1)
-            button.Position = UDim2.new(1, -16, 1, -16)
+            button.Position = floatingPosition
             button.Size = UDim2.new(0, 54, 0, 54)
             button.BackgroundColor3 = Color3.fromRGB(245, 197, 66)
             button.Font = Enum.Font.GothamBold
@@ -1818,7 +1823,7 @@ return function(locomotionFactory, Library, Common)
             rounding.CornerRadius = UDim.new(1, 0)
             rounding.Parent = button
 
-            button.MouseButton1Click:Connect(function()
+            local function toggleDashboard()
                 local frame = dashboard.window and dashboard.window.Frame
                 if frame == nil then return end
                 local host = frame.Parent
@@ -1828,6 +1833,60 @@ return function(locomotionFactory, Library, Common)
                 end
                 frame.Visible = not frame.Visible
                 banner(frame.Visible and "dashboard shown" or "dashboard hidden")
+            end
+
+            -- Tap toggles the dashboard; dragging moves the button. A short
+            -- travel threshold keeps accidental jitter from turning a tap
+            -- into a drag, and the position is clamped to the viewport.
+            local dragging = false
+            local dragMoved = false
+            local dragStart = nil
+            local buttonOrigin = nil
+
+            button.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1
+                    or input.UserInputType == Enum.UserInputType.Touch
+                then
+                    dragging = true
+                    dragMoved = false
+                    dragStart = input.Position
+                    buttonOrigin = button.AbsolutePosition
+                end
+            end)
+
+            UserInputService.InputChanged:Connect(function(input)
+                if not dragging then return end
+                if input.UserInputType ~= Enum.UserInputType.MouseMovement
+                    and input.UserInputType ~= Enum.UserInputType.Touch
+                then
+                    return
+                end
+                local delta = input.Position - dragStart
+                if not dragMoved and delta.Magnitude < 6 then
+                    return
+                end
+                dragMoved = true
+                local viewport = floatingGui.AbsoluteSize
+                local size = button.AbsoluteSize
+                local x = math.clamp(buttonOrigin.X + delta.X, 0, math.max(0, viewport.X - size.X))
+                local y = math.clamp(buttonOrigin.Y + delta.Y, 0, math.max(0, viewport.Y - size.Y))
+                button.Position = UDim2.new(0, x, 0, y)
+            end)
+
+            UserInputService.InputEnded:Connect(function(input)
+                if not dragging then return end
+                if input.UserInputType ~= Enum.UserInputType.MouseButton1
+                    and input.UserInputType ~= Enum.UserInputType.Touch
+                then
+                    return
+                end
+                dragging = false
+                if dragMoved then
+                    -- Keep the anchor-independent offset as the new position.
+                    floatingPosition = button.Position
+                else
+                    toggleDashboard()
+                end
             end)
         end)
     end
