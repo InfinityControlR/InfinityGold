@@ -148,10 +148,15 @@ local ok, delivery = performAutoClick()
 assert(ok and delivery == "normal attack")
 assert(attackCalls == 1 and invokeCalls == 0, "dungeon click used wrong route")
 
+target = nil
+ok, delivery = performAutoClick()
+assert(ok and delivery == "normal attack")
+assert(attackCalls == 2 and invokeCalls == 0, "targetless click was suppressed")
+
 trainId = 3
 ok, delivery = performAutoClick()
 assert(ok and delivery == "training remote")
-assert(attackCalls == 1 and invokeCalls == 1, "training click used wrong route")
+assert(attackCalls == 2 and invokeCalls == 1, "training click used wrong route")
 print("autoclick_split_smoke=ok")
 """
         completed = run_luau(source)

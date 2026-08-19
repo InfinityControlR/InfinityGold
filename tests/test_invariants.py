@@ -347,6 +347,7 @@ class CombatDiagnosticsTests(unittest.TestCase):
             "if humanoid ~= nil and humanoid.Health <= 0 then return false end",
             self.source,
         )
+        self.assertIn("if target ~= nil and not setNowTarget(target) then", self.source)
         self.assertIn('return false, "NowTargetCurrent unavailable"', self.source)
         self.assertIn(
             "pcall(\n            input.simulateSlotPressRelease,",

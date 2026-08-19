@@ -682,7 +682,7 @@ return function(locomotionFactory, Library, Common)
     local function attackTarget(target)
         local input = resolveAttack()
         if input == nil then return false, attack.status end
-        if not setNowTarget(target) then
+        if target ~= nil and not setNowTarget(target) then
             return false, "NowTargetCurrent unavailable"
         end
         -- Match the game/original call context: only module resolution needs
@@ -708,7 +708,6 @@ return function(locomotionFactory, Library, Common)
         end
 
         local target = findAttackTarget(tonumber(cfg.AttackRange) or 120)
-        if target == nil then return false, "no attack target in range" end
         local ok, err = attackTarget(target)
         return ok, ok and "normal attack" or tostring(err)
     end
