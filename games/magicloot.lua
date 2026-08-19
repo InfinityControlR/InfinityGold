@@ -765,6 +765,16 @@ return function(locomotionFactory, Library, Common)
         craftAttempts = 0,
         pickupAttempts = 0,
         lastError = nil,
+        canUse = nil,
+        inProgress = nil,
+        ready = nil,
+        checkTotal = 0,
+        rebirthPassed = 0,
+        materialChecks = 0,
+        craftable = 0,
+        predicateErrors = 0,
+        chosenId = nil,
+        remoteResult = nil,
     }
 
     local function resolveAlchemy()
@@ -791,6 +801,58 @@ return function(locomotionFactory, Library, Common)
         return recipes
     end
 
+    local function isAsciiText(value)
+        if type(value) ~= "string" then return false end
+        for index = 1, #value do
+            if string.byte(value, index) > 127 then return false end
+        end
+        return true
+    end
+
+    local function translatedAlchemyRecipeName(raw, id, potionId)
+        local translationKey = nil
+        local cfgFind = resolveRuntimeModule("CfgFind")
+        if potionId > 0
+            and cfgFind ~= nil
+            and type(cfgFind.FindCfgByID) == "function"
+        then
+            -- 9 is the game's potion config type. The recipe list itself still
+            -- comes exclusively from Alchemy.GetRecipeList().
+            local cfgOk, potion = pcall(cfgFind.FindCfgByID, potionId, 9)
+            if cfgOk and type(potion) == "table" then
+                translationKey = potion.ZhName
+            end
+        end
+
+        local function translate(key)
+            if type(key) ~= "string" or key == "" then return nil end
+            local helper = resolveRuntimeModule("TranslationHelper")
+            if helper ~= nil and type(helper.TranslateByKey) == "function" then
+                local ok, translated = pcall(helper.TranslateByKey, key)
+                if ok and type(translated) == "string" and translated ~= "" then
+                    -- A not-yet-ready translator often echoes the Chinese key.
+                    -- Keep the neutral fallback until it can provide the same
+                    -- localized name shown by the game.
+                    if translated ~= key or isAsciiText(translated) then
+                        return translated
+                    end
+                end
+            end
+            if isAsciiText(key) then return key end
+            return nil
+        end
+
+        local translated = translate(translationKey)
+        if translated ~= nil then return translated end
+
+        local directName = raw.Name or raw.name
+        if type(directName) == "string" and directName ~= "" and isAsciiText(directName) then
+            return directName
+        end
+        translated = translate(raw.ZhName)
+        return translated or ("Recipe " .. tostring(id))
+    end
+
     local function alchemyRecipeCatalog(alchemy)
         local rawRecipes, err = rawAlchemyRecipes(alchemy)
         if rawRecipes == nil then return nil, err end
@@ -800,13 +862,11 @@ return function(locomotionFactory, Library, Common)
             if type(raw) == "table" then
                 local id = math.floor(tonumber(raw.recipeId) or 0)
                 if id > 0 then
-                    local name = raw.Name or raw.name or raw.ZhName
-                    if type(name) ~= "string" or name == "" then
-                        name = "Recipe " .. tostring(id)
-                    end
+                    local potionId = math.floor(tonumber(raw.PID) or 0)
+                    local name = translatedAlchemyRecipeName(raw, id, potionId)
                     table.insert(catalog, {
                         id = id,
-                        potionId = math.floor(tonumber(raw.PID) or 0),
+                        potionId = potionId,
                         rebirth = math.floor(tonumber(raw.Rebirth) or 0),
                         label = string.format("#%d %s", id, name),
                         recipe = raw,
@@ -824,19 +884,20 @@ return function(locomotionFactory, Library, Common)
         if type(alchemy.CanMeetRecipeRebirth) ~= "function"
             or type(alchemy.CanCraftRecipe) ~= "function"
         then
-            return false, "alchemy recipe checks unavailable"
+            return false, "alchemy recipe checks unavailable", "api"
         end
         local rebirthOk, meetsRebirth = pcall(
             alchemy.CanMeetRecipeRebirth,
             player,
             recipe.recipe
         )
-        if not rebirthOk then return false, tostring(meetsRebirth) end
-        if not meetsRebirth then return false end
+        if not rebirthOk then return false, tostring(meetsRebirth), "rebirth-error" end
+        if not meetsRebirth then return false, nil, "rebirth" end
 
         local craftOk, canCraft = pcall(alchemy.CanCraftRecipe, player, recipe.recipe)
-        if not craftOk then return false, tostring(canCraft) end
-        return not not canCraft
+        if not craftOk then return false, tostring(canCraft), "materials-error" end
+        if not canCraft then return false, nil, "materials" end
+        return true, nil, "craftable"
     end
 
     local function selectAlchemyRecipe(alchemy, selection)
@@ -844,22 +905,64 @@ return function(locomotionFactory, Library, Common)
         if catalog == nil then return nil, err end
 
         selection = tostring(selection or "Best craftable")
+        alchemyTelemetry.checkTotal = #catalog
+        alchemyTelemetry.rebirthPassed = 0
+        alchemyTelemetry.materialChecks = 0
+        alchemyTelemetry.craftable = 0
+        alchemyTelemetry.predicateErrors = 0
+        alchemyTelemetry.chosenId = nil
         if selection == "Best craftable" then
             local best = nil
             local lastError = nil
+            local rebirthRejected = 0
+            local materialsRejected = 0
             for _, recipe in ipairs(catalog) do
-                local craftable, checkError = isAlchemyRecipeCraftable(alchemy, recipe)
+                local craftable, checkError, reason = isAlchemyRecipeCraftable(alchemy, recipe)
                 if craftable then best = recipe end
                 if checkError ~= nil then lastError = checkError end
+                if reason ~= "rebirth" and reason ~= "rebirth-error" and reason ~= "api" then
+                    alchemyTelemetry.rebirthPassed += 1
+                    alchemyTelemetry.materialChecks += 1
+                end
+                if reason == "craftable" then alchemyTelemetry.craftable += 1 end
+                if reason == "rebirth-error" or reason == "materials-error" or reason == "api" then
+                    alchemyTelemetry.predicateErrors += 1
+                end
+                if reason == "rebirth" then rebirthRejected += 1 end
+                if reason == "materials" then materialsRejected += 1 end
             end
-            if best ~= nil then return best end
-            return nil, lastError or "no craftable recipe"
+            if best ~= nil then
+                alchemyTelemetry.chosenId = best.id
+                return best
+            end
+            if lastError ~= nil then return nil, lastError end
+            return nil, string.format(
+                "none eligible (materials %d, rebirth %d)",
+                materialsRejected,
+                rebirthRejected
+            )
+        end
+
+        local selectedId = math.floor(tonumber(selection) or 0)
+        if selectedId <= 0 then
+            selectedId = math.floor(tonumber(string.match(selection, "^#(%d+)")) or 0)
         end
 
         for _, recipe in ipairs(catalog) do
-            if selection == recipe.label or selection == tostring(recipe.id) then
-                local craftable, checkError = isAlchemyRecipeCraftable(alchemy, recipe)
-                if craftable then return recipe end
+            if selection == recipe.label or selectedId == recipe.id then
+                local craftable, checkError, reason = isAlchemyRecipeCraftable(alchemy, recipe)
+                if reason ~= "rebirth" and reason ~= "rebirth-error" and reason ~= "api" then
+                    alchemyTelemetry.rebirthPassed = 1
+                    alchemyTelemetry.materialChecks = 1
+                end
+                if reason == "craftable" then alchemyTelemetry.craftable = 1 end
+                if reason == "rebirth-error" or reason == "materials-error" or reason == "api" then
+                    alchemyTelemetry.predicateErrors = 1
+                end
+                if craftable then
+                    alchemyTelemetry.chosenId = recipe.id
+                    return recipe
+                end
                 return nil, checkError or "selected recipe is not craftable"
             end
         end
@@ -969,6 +1072,11 @@ return function(locomotionFactory, Library, Common)
         end
 
         local canUseOk, canUse = pcall(alchemy.CanUseAlchemy, player)
+        if canUseOk then
+            alchemyTelemetry.canUse = not not canUse
+        else
+            alchemyTelemetry.canUse = nil
+        end
         if not canUseOk or not canUse then
             alchemyTelemetry.status = "alchemy unavailable"
             alchemyTelemetry.lastError = canUseOk and nil or tostring(canUse)
@@ -982,6 +1090,11 @@ return function(locomotionFactory, Library, Common)
                 return false, alchemyTelemetry.lastError
             end
             local readyOk, ready = pcall(alchemy.IsBrewReadyForPickup, player)
+            if readyOk then
+                alchemyTelemetry.ready = not not ready
+            else
+                alchemyTelemetry.ready = nil
+            end
             if not readyOk then
                 alchemyTelemetry.status = "pickup check failed"
                 alchemyTelemetry.lastError = tostring(ready)
@@ -995,7 +1108,7 @@ return function(locomotionFactory, Library, Common)
                     return false, "pickup cancelled"
                 end
                 alchemyTelemetry.pickupAttempts += 1
-                local callOk, sent, _, err = pcall(
+                local callOk, sent, response, err = pcall(
                     invokeAction,
                     "ALCHEMY_PICKUP_FINISH_POTION"
                 )
@@ -1003,6 +1116,11 @@ return function(locomotionFactory, Library, Common)
                     err = tostring(sent)
                     sent = false
                 end
+                if sent and response == false then
+                    sent = false
+                    err = "server rejected pickup"
+                end
+                alchemyTelemetry.remoteResult = response
                 alchemyTelemetry.lastError = sent and nil or err
                 alchemyTelemetry.status = sent and "pickup requested" or "pickup failed"
                 refreshAlchemyUi()
@@ -1023,6 +1141,11 @@ return function(locomotionFactory, Library, Common)
         end
 
         local progressOk, inProgress = pcall(alchemy.IsBrewInProgress, player)
+        if progressOk then
+            alchemyTelemetry.inProgress = not not inProgress
+        else
+            alchemyTelemetry.inProgress = nil
+        end
         if not progressOk then
             alchemyTelemetry.status = "brew check failed"
             alchemyTelemetry.lastError = tostring(inProgress)
@@ -1049,7 +1172,7 @@ return function(locomotionFactory, Library, Common)
             return false, "brew cancelled"
         end
         alchemyTelemetry.craftAttempts += 1
-        local callOk, sent, _, err = pcall(
+        local callOk, sent, response, err = pcall(
             invokeAction,
             "ALCHEMY_CRAFT_RECIPE",
             { recipeId = recipe.id }
@@ -1058,6 +1181,11 @@ return function(locomotionFactory, Library, Common)
             err = tostring(sent)
             sent = false
         end
+        if sent and response == false then
+            sent = false
+            err = "server rejected recipe #" .. tostring(recipe.id)
+        end
+        alchemyTelemetry.remoteResult = response
         alchemyTelemetry.lastError = sent and nil or err
         alchemyTelemetry.status = sent and "brew requested" or "brew failed"
         task.wait(0.4)
@@ -2445,28 +2573,53 @@ return function(locomotionFactory, Library, Common)
             Default = "Best craftable",
             Multi = false,
         })
-        if #recipeValues == 1 then
-            task.spawn(function()
-                while sessionAlive do
-                    local refreshed = alchemyDropdownValues()
-                    if #refreshed > 1 then
-                        local desired = tostring(cfg.BrewRecipe or "Best craftable")
-                        local found = false
-                        for _, value in ipairs(refreshed) do
-                            if value == desired then found = true break end
+        task.spawn(function()
+            local fingerprint = table.concat(recipeValues, "\30")
+            while sessionAlive do
+                task.wait(2)
+                local refreshed = alchemyDropdownValues()
+                local refreshedFingerprint = table.concat(refreshed, "\30")
+                local previous = tostring(cfg.BrewRecipe or "Best craftable")
+                local desired = previous
+                local desiredId = math.floor(
+                    tonumber(desired)
+                        or tonumber(string.match(desired, "^#(%d+)"))
+                        or 0
+                )
+                local found = false
+                if #refreshed > 1 then
+                    for _, value in ipairs(refreshed) do
+                        if value == desired then
+                            found = true
+                            break
                         end
-                        if not found then desired = "Best craftable" end
-                        pcall(function()
-                            recipeDropdown:SetValues(refreshed)
-                            recipeDropdown:Set(desired)
-                        end)
-                        cfg.BrewRecipe = desired
-                        break
+                        if desiredId > 0
+                            and tonumber(string.match(value, "^#(%d+)")) == desiredId
+                        then
+                            desired = value
+                            found = true
+                            break
+                        end
                     end
-                    task.wait(2)
                 end
-            end)
-        end
+                if #refreshed > 1 and not found and desiredId <= 0 then
+                    desired = "Best craftable"
+                end
+
+                if #refreshed > 1
+                    and (refreshedFingerprint ~= fingerprint or desired ~= previous)
+                then
+                    pcall(function()
+                        if refreshedFingerprint ~= fingerprint then
+                            recipeDropdown:SetValues(refreshed)
+                        end
+                        recipeDropdown:Set(desired)
+                    end)
+                    cfg.BrewRecipe = desired
+                    fingerprint = refreshedFingerprint
+                end
+            end
+        end)
         group:AddToggle("AutoDrinkPotion", { Text = "Auto Drink Potion", Default = false })
         group:AddToggle("AutoPickupPotion", { Text = "Auto Pickup Brewed Potion", Default = true })
         local alchemyStatus = group:AddLabel("Alchemy: waiting...")
@@ -2479,14 +2632,43 @@ return function(locomotionFactory, Library, Common)
                     local lastError = alchemyTelemetry.lastError
                         and (" • " .. tostring(alchemyTelemetry.lastError))
                         or ""
+                    local function flag(value)
+                        if value == nil then return "?" end
+                        return value and "yes" or "no"
+                    end
+                    local chosen = alchemyTelemetry.chosenId ~= nil
+                        and ("#" .. tostring(alchemyTelemetry.chosenId))
+                        or "-"
+                    local remoteResult = alchemyTelemetry.remoteResult
+                    if remoteResult == nil then
+                        remoteResult = "-"
+                    elseif type(remoteResult) ~= "string"
+                        and type(remoteResult) ~= "number"
+                        and type(remoteResult) ~= "boolean"
+                    then
+                        remoteResult = type(remoteResult)
+                    end
                     alchemyStatus:Set(string.format(
-                        "Alchemy: %s • recipes: %d • craft: %d • pickup: %d%s%s",
+                        "Alchemy: %s • recipes: %d • craft: %d • pickup: %d%s%s\n"
+                            .. "Checks: use %s • brewing %s • ready %s • "
+                            .. "rebirth %d/%d • materials %d • craftable %d • "
+                            .. "errors %d • chosen %s • remote %s",
                         alchemyTelemetry.status,
                         alchemyTelemetry.recipes,
                         alchemyTelemetry.craftAttempts,
                         alchemyTelemetry.pickupAttempts,
                         selected,
-                        lastError
+                        lastError,
+                        flag(alchemyTelemetry.canUse),
+                        flag(alchemyTelemetry.inProgress),
+                        flag(alchemyTelemetry.ready),
+                        alchemyTelemetry.rebirthPassed,
+                        alchemyTelemetry.checkTotal,
+                        alchemyTelemetry.materialChecks,
+                        alchemyTelemetry.craftable,
+                        alchemyTelemetry.predicateErrors,
+                        chosen,
+                        tostring(remoteResult)
                     ))
                 end)
                 task.wait(1)
