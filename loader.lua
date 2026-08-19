@@ -79,7 +79,7 @@ end
 -- SHA URLs can never be served stale by the raw CDN, which caches /main/
 -- URLs for minutes and sometimes ignores cache-busting query strings.
 -- Only this loader itself is served from main.
-local UI = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/dcc321eca719249da58344f93f6bb7528dad2b4e/ui/InfinityUI.lua'
+local UI = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/11d313ac902b4c025608242b8b5e334c120b7c77/ui/InfinityUI.lua'
 local COMMON = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/c80662d1080f7dcf72d4bf89bec42861b7733d3b/games/magicloot_common.lua'
 local LOCOMOTION = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/c80662d1080f7dcf72d4bf89bec42861b7733d3b/games/magicloot_locomotion.lua'
 local CORE = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/c846d147f4887813a903c084bd25e262e92fe4d2/games/magicloot.lua'
