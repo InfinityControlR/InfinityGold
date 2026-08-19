@@ -239,6 +239,13 @@ return function(locomotionFactory, Library, Common)
         status = "resolving",
     }
 
+    local function isUtilsRegistry(value)
+        local valueType = type(value)
+        return valueType == "function"
+            or valueType == "table"
+            or valueType == "userdata"
+    end
+
     local function requireUtilsSystem(container)
         local function load()
             local allSide = container:WaitForChild("AllSideCode", 8)
@@ -249,7 +256,7 @@ return function(locomotionFactory, Library, Common)
         end
 
         local ok, utils = pcall(load)
-        if (not ok or type(utils) ~= "table")
+        if (not ok or not isUtilsRegistry(utils))
             and type(getthreadidentity) == "function"
             and type(setthreadidentity) == "function"
         then
@@ -265,7 +272,53 @@ return function(locomotionFactory, Library, Common)
                 ok, utils = true, elevatedUtils
             end
         end
-        if ok and type(utils) == "table" then return utils end
+        if ok and isUtilsRegistry(utils) then return utils end
+        return nil
+    end
+
+    local function readUtilsEntry(utils, name)
+        if not isUtilsRegistry(utils) then return nil end
+
+        local function readEntry()
+            local utilsType = type(utils)
+            if utilsType == "function" then
+                return utils(name)
+            end
+
+            local direct = utils[name]
+            if direct ~= nil then return direct end
+
+            -- Some builds expose a callable table/userdata rather than a
+            -- plain lookup table.  Calling it matches UtilsSystem's original
+            -- registry contract while retaining compatibility with tables.
+            if utilsType == "userdata" then
+                return utils(name)
+            end
+            local metatable = getmetatable(utils)
+            if type(metatable) == "table" and type(metatable.__call) == "function" then
+                return utils(name)
+            end
+            return nil
+        end
+
+        local ok, candidate = pcall(readEntry)
+        if (not ok or candidate == nil)
+            and type(getthreadidentity) == "function"
+            and type(setthreadidentity) == "function"
+        then
+            local elevatedOk, elevatedCandidate = pcall(function()
+                local identity = getthreadidentity()
+                setthreadidentity(2)
+                local readOk, result = pcall(readEntry)
+                setthreadidentity(identity)
+                if not readOk then error(result) end
+                return result
+            end)
+            if elevatedOk then
+                ok, candidate = true, elevatedCandidate
+            end
+        end
+        if ok then return candidate end
         return nil
     end
 
@@ -282,19 +335,18 @@ return function(locomotionFactory, Library, Common)
             return net.network
         end
         local utils = resolveClientUtils()
-        if utils == nil or utils.NetWork == nil then
+        local network = readUtilsEntry(utils, "NetWork")
+        if network == nil then
             -- Keep a compatibility fallback for game builds that mirror only
             -- the networking facade into ReplicatedStorage.
             utils = requireUtilsSystem(ReplicatedStorage)
+            network = readUtilsEntry(utils, "NetWork")
         end
-        if type(utils) ~= "table" then
+        if not isUtilsRegistry(utils) then
             net.status = "UtilsSystem unavailable"
             return nil
         end
-        local network = type(utils.NetWork) == "table" and utils.NetWork
-            or type(utils.NetWork) == "userdata" and utils.NetWork
-            or nil
-        if network == nil then
+        if type(network) ~= "table" and type(network) ~= "userdata" then
             net.status = "NetWork unavailable"
             return nil
         end
@@ -302,12 +354,15 @@ return function(locomotionFactory, Library, Common)
         net.network = network
         -- The action->remote map may live on the facade itself depending on
         -- the game build; try the known shapes before giving up.
-        local messages = utils.NetMsg
-        if messages == nil and type(network) == "table" then
-            messages = network.NetMsg
+        local messages = readUtilsEntry(utils, "NetMsg")
+        if messages == nil then
+            local embeddedOk, embedded = pcall(function()
+                return network.NetMsg
+            end)
+            if embeddedOk then messages = embedded end
         end
         if messages == nil then
-            messages = utils.Net
+            messages = readUtilsEntry(utils, "Net")
         end
         net.messages = messages
         net.status = messages ~= nil and "ready" or "NetMsg unavailable"
@@ -335,11 +390,17 @@ return function(locomotionFactory, Library, Common)
         if network == nil then return false, net.status end
         local remote = remoteFor(action)
         if remote == nil then return false, action .. " remote unavailable" end
+        local methodOk, fireServer = pcall(function()
+            return network.FireServer
+        end)
+        if not methodOk or type(fireServer) ~= "function" then
+            return false, "NetWork.FireServer unavailable"
+        end
         local ok, err
         if payload == nil then
-            ok, err = pcall(function() network:FireServer(remote) end)
+            ok, err = pcall(fireServer, remote)
         else
-            ok, err = pcall(function() network:FireServer(remote, payload) end)
+            ok, err = pcall(fireServer, remote, payload)
         end
         if not ok then return false, tostring(err) end
         return true
@@ -350,11 +411,17 @@ return function(locomotionFactory, Library, Common)
         if network == nil then return false, nil, net.status end
         local remote = remoteFor(action)
         if remote == nil then return false, nil, action .. " remote unavailable" end
-        local ok, result, err
+        local methodOk, invokeServer = pcall(function()
+            return network.InvokeServer
+        end)
+        if not methodOk or type(invokeServer) ~= "function" then
+            return false, nil, "NetWork.InvokeServer unavailable"
+        end
+        local ok, result
         if payload == nil then
-            ok, result, err = pcall(function() return network:InvokeServer(remote) end)
+            ok, result = pcall(invokeServer, remote)
         else
-            ok, result, err = pcall(function() return network:InvokeServer(remote, payload) end)
+            ok, result = pcall(invokeServer, remote, payload)
         end
         if not ok then return false, nil, tostring(result) end
         return true, result
@@ -380,30 +447,11 @@ return function(locomotionFactory, Library, Common)
         local utils = resolveClientUtils()
         if utils == nil then return nil end
 
-        local function readModule()
-            return utils[name]
-        end
-
-        local ok, candidate = pcall(readModule)
-        if (not ok or candidate == nil)
-            and type(getthreadidentity) == "function"
-            and type(setthreadidentity) == "function"
-        then
-            local elevatedOk, elevatedCandidate = pcall(function()
-                local identity = getthreadidentity()
-                setthreadidentity(2)
-                local readOk, result = pcall(readModule)
-                setthreadidentity(identity)
-                if not readOk then error(result) end
-                return result
-            end)
-            if elevatedOk then
-                ok, candidate = true, elevatedCandidate
-            end
-        end
-        if not ok or candidate == nil then return nil end
+        local candidate = readUtilsEntry(utils, name)
+        if candidate == nil then return nil end
 
         if typeof(candidate) == "Instance" then
+            local ok
             ok, candidate = pcall(require, candidate)
             if not ok then return nil end
         end

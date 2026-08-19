@@ -357,8 +357,17 @@ class CombatDiagnosticsTests(unittest.TestCase):
 
     def test_netmsg_fallbacks(self):
         self.assertIn("network.NetMsg", self.source)
-        self.assertIn("utils.Net", self.source)
+        self.assertIn('readUtilsEntry(utils, "NetMsg")', self.source)
+        self.assertIn('readUtilsEntry(utils, "Net")', self.source)
         self.assertIn("net.lastMissedAction", self.source)
+
+    def test_utils_registry_and_network_static_call_contract(self):
+        self.assertIn('return utils(name)', self.source)
+        self.assertIn('readUtilsEntry(utils, "NetWork")', self.source)
+        self.assertIn("pcall(fireServer, remote, payload)", self.source)
+        self.assertIn("pcall(invokeServer, remote, payload)", self.source)
+        self.assertNotIn("network:FireServer", self.source)
+        self.assertNotIn("network:InvokeServer", self.source)
 
     def test_combat_telemetry_exists(self):
         for marker in (
