@@ -110,54 +110,97 @@ print("attack_resolver_smoke=ok")
         )
         self.assertIn("attack_resolver_smoke=ok", completed.stdout)
 
-    def test_autoclick_splits_dungeon_and_training_delivery(self):
+    def test_autoclick_sends_power_and_attack_in_every_context(self):
         helper = helper_source(
-            "    local function performAutoClick()",
+            "    local powerClick = {",
             "    -- Locomotion bridge",
         )
         source = f"""
 local cfg = {{ AttackRange = 120 }}
-local trainId = 0
 local target = {{ Name = "Monster" }}
 local attackCalls = 0
 local invokeCalls = 0
+local callLog = {{}}
+local attackSucceeds = true
+local invokeSucceeds = true
+local pendingSpawn = nil
+local spawnImmediately = true
+local combatStats = {{
+    powerRequestsOk = 0,
+    powerRequestsFailed = 0,
+    lastPowerError = "none",
+}}
+local task = {{
+    spawn = function(callback)
+        if spawnImmediately then
+            callback()
+        else
+            assert(pendingSpawn == nil, "spawned overlapping power requests")
+            pendingSpawn = callback
+        end
+    end,
+}}
 local function characterParts() return {{}} end
-local function playerNumber(name)
-    assert(name == "TrainGroundId")
-    return trainId
-end
 local function findAttackTarget(range)
     assert(range == 120)
     return target
 end
 local function attackTarget(value)
     assert(value == target)
+    table.insert(callLog, "attack")
     attackCalls += 1
-    return true
+    return attackSucceeds, attackSucceeds and nil or "skill unavailable"
 end
 local function invokeAction(action, payload)
     assert(action == "TRAIN_MANUAL_CLICK")
     assert(type(payload) == "table")
+    assert(next(payload) == nil, "power-click payload must stay empty")
+    table.insert(callLog, "power")
     invokeCalls += 1
-    return true, true, nil
+    return invokeSucceeds, nil, invokeSucceeds and nil or "remote unavailable"
 end
 
 {helper}
 
 local ok, delivery = performAutoClick()
-assert(ok and delivery == "normal attack")
-assert(attackCalls == 1 and invokeCalls == 0, "dungeon click used wrong route")
+assert(ok and delivery == "power request queued + normal attack")
+assert(attackCalls == 1 and invokeCalls == 1, "click did not send both routes")
+assert(callLog[1] == "power" and callLog[2] == "attack",
+    "the first power request was not dispatched before attack resolution")
+assert(combatStats.powerRequestsOk == 1 and combatStats.powerRequestsFailed == 0)
 
 target = nil
 ok, delivery = performAutoClick()
-assert(ok and delivery == "normal attack")
-assert(attackCalls == 2 and invokeCalls == 0, "targetless click was suppressed")
+assert(ok and delivery == "power request queued + normal attack")
+assert(attackCalls == 2 and invokeCalls == 2, "targetless click lost a route")
 
-trainId = 3
+target = {{ Name = "Monster" }}
+attackSucceeds = false
 ok, delivery = performAutoClick()
-assert(ok and delivery == "training remote")
-assert(attackCalls == 2 and invokeCalls == 1, "training click used wrong route")
-print("autoclick_split_smoke=ok")
+assert(ok and string.find(delivery, "power request queued; attack failed", 1, true))
+assert(attackCalls == 3 and invokeCalls == 3, "attack failure skipped power")
+
+attackSucceeds = true
+invokeSucceeds = false
+ok, delivery = performAutoClick()
+assert(ok and delivery == "power request queued + normal attack")
+assert(attackCalls == 4 and invokeCalls == 4, "power failure skipped attack")
+assert(combatStats.powerRequestsFailed == 1, "async power failure was not reported")
+
+invokeSucceeds = true
+spawnImmediately = false
+ok, delivery = performAutoClick()
+assert(ok and delivery == "power request queued + normal attack")
+assert(pendingSpawn ~= nil and invokeCalls == 4, "deferred request ran early")
+ok, delivery = performAutoClick()
+assert(ok and delivery == "power request pending + normal attack")
+assert(invokeCalls == 4, "a second power request overlapped the first")
+local resume = pendingSpawn
+pendingSpawn = nil
+resume()
+assert(invokeCalls == 5 and combatStats.powerRequestsOk == 4,
+    "deferred power request did not complete")
+print("autoclick_dual_route_smoke=ok")
 """
         completed = run_luau(source)
         self.assertEqual(
@@ -165,7 +208,7 @@ print("autoclick_split_smoke=ok")
             0,
             f"autoclick smoke failed:\n{completed.stdout}\n{completed.stderr}",
         )
-        self.assertIn("autoclick_split_smoke=ok", completed.stdout)
+        self.assertIn("autoclick_dual_route_smoke=ok", completed.stdout)
 
 
 if __name__ == "__main__":

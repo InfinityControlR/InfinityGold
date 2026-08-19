@@ -331,11 +331,14 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function resolveNet()
-        if net.network ~= nil then
+        if net.network ~= nil and net.messages ~= nil then
             return net.network
         end
-        local utils = resolveClientUtils()
-        local network = readUtilsEntry(utils, "NetWork")
+        -- NetWork can appear a little before NetMsg while the client is
+        -- loading. Keep retrying the message registry instead of caching a
+        -- permanent half-resolved state.
+        local utils = net.utils or resolveClientUtils()
+        local network = net.network or readUtilsEntry(utils, "NetWork")
         if network == nil then
             -- Keep a compatibility fallback for game builds that mirror only
             -- the networking facade into ReplicatedStorage.
@@ -378,7 +381,13 @@ return function(locomotionFactory, Library, Common)
         local ok, remote = pcall(function()
             return net.messages[action]
         end)
-        if ok and typeof(remote) == "Instance" then
+        -- NetMsg entries are opaque descriptors consumed by the NetWork
+        -- facade. The observed live network call ultimately receives the
+        -- string "训练点屏"; NetMsg itself may expose strings, Instances or
+        -- tables depending on the build.
+        -- The original client only rejects a missing entry and forwards the
+        -- descriptor unchanged.
+        if ok and remote ~= nil then
             return remote
         end
         net.lastMissedAction = action
@@ -622,6 +631,9 @@ return function(locomotionFactory, Library, Common)
         lastAttackError = "none",
         lastClickError = "none",
         clickDelivery = "none",
+        powerRequestsOk = 0,
+        powerRequestsFailed = 0,
+        lastPowerError = "none",
     }
 
     local function withElevatedIdentity(callback)
@@ -744,20 +756,73 @@ return function(locomotionFactory, Library, Common)
         return true
     end
 
-    -- Exact original Auto Click split: training uses the manual-click
-    -- RemoteFunction; everywhere else it performs the normal attack skill
-    -- against the closest live monster. It never moves the real cursor.
-    local function performAutoClick()
-        if characterParts() == nil then return false, "character unavailable" end
-        local trainId = playerNumber("TrainGroundId") or 0
-        if trainId > 0 then
-            local ok, _, err = invokeAction("TRAIN_MANUAL_CLICK", {})
-            return ok, ok and "training remote" or tostring(err)
+    -- Auto Click combines the power route confirmed from real world clicks
+    -- with the existing normal-attack route. The server calculates the
+    -- awarded power from the player's current weapon/rebirth state; no gain
+    -- is hard-coded here. Neither route injects mouse input or moves the
+    -- real cursor.
+    --
+    -- InvokeServer is yielding and cannot be cancelled safely. Keep exactly
+    -- one power request in flight so a slow response never freezes combat or
+    -- creates an unbounded pile of remote calls.
+    local powerClick = {
+        inFlight = false,
+    }
+
+    local function queuePowerClick()
+        if powerClick.inFlight then
+            return true, "power request pending"
         end
 
+        powerClick.inFlight = true
+        local spawnOk, spawnError = pcall(task.spawn, function()
+            local callOk, sent, _, sendError = pcall(
+                invokeAction,
+                "TRAIN_MANUAL_CLICK",
+                {}
+            )
+            powerClick.inFlight = false
+            if callOk and sent then
+                combatStats.powerRequestsOk = combatStats.powerRequestsOk + 1
+                combatStats.lastPowerError = "none"
+            else
+                combatStats.powerRequestsFailed = combatStats.powerRequestsFailed + 1
+                combatStats.lastPowerError = tostring(
+                    callOk and sendError or sent or "power request failed"
+                )
+            end
+        end)
+        if not spawnOk then
+            powerClick.inFlight = false
+            combatStats.powerRequestsFailed = combatStats.powerRequestsFailed + 1
+            combatStats.lastPowerError = tostring(spawnError)
+            return false, "power queue failed: " .. tostring(spawnError)
+        end
+        return true, "power request queued"
+    end
+
+    local function performAutoClick()
+        if characterParts() == nil then return false, "character unavailable" end
+
+        local powerAccepted, powerDelivery = queuePowerClick()
         local target = findAttackTarget(tonumber(cfg.AttackRange) or 120)
-        local ok, err = attackTarget(target)
-        return ok, ok and "normal attack" or tostring(err)
+        local attackOk, attackErr = attackTarget(target)
+
+        if powerAccepted and attackOk then
+            return true, powerDelivery .. " + normal attack"
+        end
+        if not powerAccepted and not attackOk then
+            return false, tostring(powerDelivery)
+                .. "; attack failed: " .. tostring(attackErr)
+        end
+        if not powerAccepted then
+            return false, tostring(powerDelivery)
+                .. "; normal attack sent"
+        end
+        -- Power is Auto Click's primary effect. A missing attack module is
+        -- reported in diagnostics but must not turn a successful power click
+        -- into a failed click.
+        return true, powerDelivery .. "; attack failed: " .. tostring(attackErr)
     end
 
     -- Locomotion bridge --------------------------------------------------------
@@ -1663,7 +1728,9 @@ return function(locomotionFactory, Library, Common)
                             .. "click remote: %s\nlast missed action: %s\n"
                             .. "NowTargetCurrent: %s\nmonsters nearby containers: %d\n"
                             .. "attacks: %d ok / %d fail\nclicks: %d ok / %d fail\n"
-                            .. "last attack error: %s\nlast click error: %s",
+                            .. "power requests: %d ok / %d fail / %s\n"
+                            .. "last attack error: %s\nlast click error: %s\n"
+                            .. "last power error: %s",
                         tostring(attack.status),
                         tostring(combatStats.clickDelivery),
                         tostring(net.status),
@@ -1673,8 +1740,11 @@ return function(locomotionFactory, Library, Common)
                         monsters,
                         combatStats.attacksOk, combatStats.attacksFailed,
                         combatStats.clicksOk, combatStats.clicksFailed,
+                        combatStats.powerRequestsOk, combatStats.powerRequestsFailed,
+                        powerClick.inFlight and "pending" or "idle",
                         tostring(combatStats.lastAttackError),
-                        tostring(combatStats.lastClickError)
+                        tostring(combatStats.lastClickError),
+                        tostring(combatStats.lastPowerError)
                     ))
                 end)
                 task.wait(1)
@@ -1683,9 +1753,9 @@ return function(locomotionFactory, Library, Common)
 
         tab:CreateSection("Notes"):AddParagraph({
             Title = "How clicking works",
-            Text = "Auto Click uses the training remote while training and "
-                .. "the normal attack skill inside the dungeon, without "
-                .. "moving the real mouse. Auto Attack "
+            Text = "Auto Click continuously sends the confirmed power-click "
+                .. "request (one at a time) and releases the normal attack "
+                .. "skill, without moving the real mouse. Auto Attack "
                 .. "pauses while Walking or Running has not entered the "
                 .. "stage yet.",
         })

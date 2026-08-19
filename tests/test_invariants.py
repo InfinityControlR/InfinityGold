@@ -284,12 +284,22 @@ class CombatDiagnosticsTests(unittest.TestCase):
     def setUp(self):
         self.source = read("games/magicloot.lua")
 
-    def test_autoclick_matches_original_training_and_dungeon_split(self):
-        self.assertIn("local function performAutoClick()", self.source)
-        self.assertIn('local trainId = playerNumber("TrainGroundId") or 0', self.source)
-        self.assertIn('invokeAction("TRAIN_MANUAL_CLICK", {})', self.source)
-        self.assertIn("local target = findAttackTarget", self.source)
-        self.assertIn("local ok, err = attackTarget(target)", self.source)
+    def test_autoclick_always_sends_confirmed_power_click_and_attack(self):
+        section = self.source.split("local powerClick = {", 1)[1].split(
+            "-- Locomotion bridge", 1
+        )[0]
+        self.assertIn("pcall(\n                invokeAction,", section)
+        self.assertIn('"TRAIN_MANUAL_CLICK"', section)
+        self.assertIn("local function queuePowerClick()", section)
+        self.assertIn("if powerClick.inFlight then", section)
+        self.assertIn("local target = findAttackTarget", section)
+        self.assertIn("local attackOk, attackErr = attackTarget(target)", section)
+        self.assertNotIn('playerNumber("TrainGroundId")', section)
+        perform = section.split("local function performAutoClick()", 1)[1]
+        self.assertLess(
+            perform.index("local powerAccepted, powerDelivery = queuePowerClick()"),
+            perform.index("local attackOk, attackErr = attackTarget(target)"),
+        )
 
     def test_clicks_never_inject_real_input(self):
         # Background clicks only: the mouse and the dashboard must stay
@@ -304,9 +314,31 @@ class CombatDiagnosticsTests(unittest.TestCase):
             self.assertNotIn(banned, attack_section)
 
     def test_autoclick_reports_its_real_delivery(self):
-        self.assertIn('ok and "training remote"', self.source)
-        self.assertIn('ok and "normal attack"', self.source)
+        self.assertIn('return true, "power request pending"', self.source)
+        self.assertIn('return true, "power request queued"', self.source)
+        self.assertIn("combatStats.powerRequestsOk", self.source)
+        self.assertIn("combatStats.powerRequestsFailed", self.source)
+        self.assertIn("combatStats.lastPowerError", self.source)
         self.assertIn("combatStats.clickDelivery = delivery", self.source)
+
+    def test_netmsg_descriptors_are_forwarded_without_instance_assumptions(self):
+        remote_for = self.source.split("local function remoteFor(action)", 1)[1].split(
+            "local function sendAction", 1
+        )[0]
+        self.assertIn("remote ~= nil", remote_for)
+        self.assertNotIn('typeof(remote) == "Instance"', remote_for)
+
+    def test_network_retries_a_half_resolved_message_registry(self):
+        resolve_net = self.source.split("local function resolveNet()", 1)[1].split(
+            "local function remoteFor", 1
+        )[0]
+        self.assertIn(
+            "if net.network ~= nil and net.messages ~= nil then", resolve_net
+        )
+        self.assertIn(
+            'local network = net.network or readUtilsEntry(utils, "NetWork")',
+            resolve_net,
+        )
 
     def test_autoattack_never_falls_back_to_training(self):
         worker = self.source.split("-- Combat workers", 1)[1].split(

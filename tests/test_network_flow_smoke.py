@@ -1,10 +1,10 @@
 """Execute the real UtilsSystem/network helpers against Luau fixtures.
 
 The game's UtilsSystem export is a registry: supported builds expose it as an
-invocable function, while older/mirrored builds may expose a table.  NetWork's
+invocable function, while older/mirrored builds may expose a table. NetWork's
 FireServer/InvokeServer functions are static wrappers whose first argument is
-the resolved RemoteEvent/RemoteFunction; using ``:`` inserts an invalid extra
-``self`` argument.  These smokes exercise both contracts from the shipped
+the opaque descriptor returned by NetMsg; using ``:`` inserts an invalid extra
+``self`` argument. These smokes exercise both contracts from the shipped
 helper bodies rather than merely matching source strings.
 """
 
@@ -57,8 +57,8 @@ RUNTIME_MODULE_HELPER = helper_source(
 
 def fixture(registry_expression: str) -> str:
     return f"""
-local fireRemote = {{ __instance = true, Name = "FireRemote" }}
-local invokeRemote = {{ __instance = true, Name = "InvokeRemote" }}
+local fireRemote = "fire-message-descriptor"
+local invokeRemote = "训练点屏"
 local fireCalls = {{}}
 local invokeCalls = {{}}
 local registryReads = {{}}
@@ -88,6 +88,7 @@ local modules = {{
         FIRE_EMPTY = fireRemote,
         INVOKE = invokeRemote,
         INVOKE_EMPTY = invokeRemote,
+        TRAIN_MANUAL_CLICK = invokeRemote,
     }},
     GetData = {{ marker = "get-data" }},
 }}
@@ -117,15 +118,17 @@ local ReplicatedStorage = fallbackContainer
 local function require(module)
     return module.payload
 end
-local function typeof(value)
-    if type(value) == "table" and value.__instance == true then
-        return "Instance"
-    end
-    return type(value)
-end
-
 {NETWORK_HELPERS}
 {RUNTIME_MODULE_HELPER}
+
+local savedMessages = modules.NetMsg
+modules.NetMsg = nil
+assert(remoteFor("FIRE") == nil, "missing NetMsg unexpectedly resolved")
+assert(net.network == network and net.messages == nil,
+    "half-resolved network state was not reproduced")
+modules.NetMsg = savedMessages
+assert(remoteFor("FIRE") == fireRemote,
+    "NetMsg was not retried after becoming available")
 
 local sent, sendError = sendAction("FIRE", {{ value = 17 }})
 assert(sent, "sendAction failed: " .. tostring(sendError))
@@ -142,6 +145,12 @@ invoked, result, invokeError = invokeAction("INVOKE_EMPTY")
 assert(invoked, "payload-free invokeAction failed: " .. tostring(invokeError))
 assert(result.accepted == "empty", "wrong payload-free InvokeServer result")
 assert(#invokeCalls == 2 and invokeCalls[2] == "empty", "wrong payload-free InvokeServer call")
+
+invoked, result, invokeError = invokeAction("TRAIN_MANUAL_CLICK", {{}})
+assert(invoked, "power-click invoke failed: " .. tostring(invokeError))
+assert(#invokeCalls == 3, "power-click descriptor was rejected")
+assert(type(invokeCalls[3]) == "table" and next(invokeCalls[3]) == nil,
+    "power-click payload was not empty")
 
 local getData = resolveRuntimeModule("GetData")
 assert(getData == modules.GetData, "runtime module did not use UtilsSystem registry")

@@ -38,8 +38,10 @@ is implemented fail-open and is listed under *Runtime verification* below.
   block (`enteredStage` latch).
 - **Combat**: Auto Attack (0.2 s cadence) and Auto Click
   (`1 / max(1, ClickRate)`), sharing one attack block fed by the locomotion
-  bridge. Auto Click uses `TRAIN_MANUAL_CLICK` only while training; in dungeon
-  stages it targets the nearest monster and invokes the normal attack skill.
+  bridge. Auto Click continuously sends the confirmed `TRAIN_MANUAL_CLICK`
+  power request (one request in flight at a time) and releases the normal
+  attack skill against the nearest monster, without injecting mouse input or
+  moving the real cursor.
 - **Loot**: Auto Pickup with the modern drop schema (`ItemId` attribute,
   `DropLanded`, `GoldValue`, `Xyd`) plus legacy `DropItem` models. Event drops
   (numeric `GoldValue` exactly equal to 0) bypass minimum value and rarity filters
