@@ -82,6 +82,8 @@ end
 local inProgress = false
 local readyForPickup = false
 local recipeListReads = 0
+local potionConfReads = 0
+local recipesReady = false
 local recipes = {{
     {{ recipeId = 1, PID = 101, Rebirth = 0, craftable = true }},
     {{ recipeId = 4, PID = 104, Rebirth = 1, craftable = true }},
@@ -108,6 +110,11 @@ local alchemy = {{
         assert(actualPlayer == player, "craft check received the wrong player")
         return raw.craftable
     end,
+    GetRecipeList = function()
+        recipeListReads += 1
+        if not recipesReady then error("recipe data still loading") end
+        return recipes
+    end,
     ResolveBrewActorCFrame = function() return makeCFrame("actor") end,
     ResolveFinishSpawnCFrame = function() return makeCFrame("finish") end,
 }}
@@ -117,8 +124,8 @@ local function resolveRuntimeModule(name)
     return {{
         GetCfgByName = function(configName)
             assert(configName == "potionConf", "wrong Alchemy config " .. tostring(configName))
-            recipeListReads += 1
-            return recipes
+            potionConfReads += 1
+            return {{ {{ potionId = 999, Name = "Potion item, not recipe" }} }}
         end,
     }}
 end
@@ -139,13 +146,26 @@ end
 
 pauseAlchemyMovement = function() pauseCalls += 1 end
 
+local loadingValues = alchemyDropdownValues()
+assert(#loadingValues == 1 and loadingValues[1] == "Best craftable",
+    "loading recipe data should remain retryable")
+recipesReady = true
+local recipeValues = alchemyDropdownValues()
+assert(#recipeValues == 4, "recipe dropdown did not discover GetRecipeList rows")
+assert(recipeValues[1] == "Best craftable"
+    and string.find(recipeValues[2], "#1", 1, true)
+    and string.find(recipeValues[3], "#4", 1, true)
+    and string.find(recipeValues[4], "#7", 1, true),
+    "recipe dropdown order/labels changed")
+
 local sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil, "craft cycle failed")
 assert(#calls == 1 and calls[1].action == "ALCHEMY_CRAFT_RECIPE",
     "craft used the wrong transport/action")
 assert(calls[1].payload.recipeId == 4,
     "Best craftable did not choose the highest eligible recipe")
-assert(recipeListReads == 1, "potionConf was not used as the canonical recipe list")
+assert(recipeListReads == 3, "Alchemy.GetRecipeList was not retried by UI and worker")
+assert(potionConfReads == 0, "potionConf incorrectly replaced the recipe list")
 assert(calls[1].root.name == "actor+offset", "craft request was not sent at the actor")
 assert(root.CFrame == home, "craft did not restore the player's position")
 assert(waits[1] == 0.2 and waits[2] == 0.4, "craft cadence changed")
@@ -198,6 +218,8 @@ print("alchemy_flow_smoke=ok")
         self.assertIn('BrewRecipe = "Best craftable"', source)
         self.assertIn("AutoPickupPotion = true", source)
         self.assertIn('group:AddDropdown("BrewRecipe"', source)
+        self.assertIn("pcall(alchemy.GetRecipeList)", ALCHEMY_HELPERS)
+        self.assertNotIn('GetCfgByName, "potionConf"', ALCHEMY_HELPERS)
         self.assertLess(
             source.index("pauseAlchemyMovement()", source.index("local function beginAlchemyTravel")),
             source.index("root.CFrame = destination", source.index("local function beginAlchemyTravel")),

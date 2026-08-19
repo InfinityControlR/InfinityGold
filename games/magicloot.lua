@@ -777,18 +777,18 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function rawAlchemyRecipes(alchemy)
-        -- The original client builds this list from potionConf. Keep recipe
-        -- ids dynamic; the Alchemy method is only a compatibility fallback.
-        local cfgFind = resolveRuntimeModule("CfgFind")
-        if cfgFind ~= nil and type(cfgFind.GetCfgByName) == "function" then
-            local ok, recipes = pcall(cfgFind.GetCfgByName, "potionConf")
-            if ok and type(recipes) == "table" then return recipes end
+        -- GetRecipeList is the Alchemy-owned recipe source used by the game.
+        -- potionConf contains potion item definitions, not the raw recipe
+        -- objects expected by CanCraftRecipe/CanMeetRecipeRebirth.
+        if type(alchemy.GetRecipeList) ~= "function" then
+            return nil, "Alchemy.GetRecipeList unavailable"
         end
-        if type(alchemy.GetRecipeList) == "function" then
-            local ok, recipes = pcall(alchemy.GetRecipeList)
-            if ok and type(recipes) == "table" then return recipes end
+        local ok, recipes = pcall(alchemy.GetRecipeList)
+        if not ok then return nil, "recipe list failed: " .. tostring(recipes) end
+        if type(recipes) ~= "table" then
+            return nil, "Alchemy.GetRecipeList returned " .. type(recipes)
         end
-        return nil, "alchemy recipe list unavailable"
+        return recipes
     end
 
     local function alchemyRecipeCatalog(alchemy)
@@ -796,9 +796,9 @@ return function(locomotionFactory, Library, Common)
         if rawRecipes == nil then return nil, err end
 
         local catalog = {}
-        for _, raw in pairs(rawRecipes) do
+        for _, raw in ipairs(rawRecipes) do
             if type(raw) == "table" then
-                local id = math.floor(tonumber(raw.recipeId or raw.id) or 0)
+                local id = math.floor(tonumber(raw.recipeId) or 0)
                 if id > 0 then
                     local name = raw.Name or raw.name or raw.ZhName
                     if type(name) ~= "string" or name == "" then
