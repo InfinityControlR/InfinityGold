@@ -1792,7 +1792,11 @@ return function(locomotionFactory, Library, Common)
     -- the watchdog below. It is draggable so the user can place it anywhere,
     -- and the chosen position survives watchdog re-creation.
     local floatingGui
-    local floatingPosition = UDim2.new(1, -16, 1, -16)
+    -- Top-left anchored: AbsolutePosition reports the top-left corner, so
+    -- drag math and clamping must operate on the same reference point. A
+    -- bottom-right anchor makes the button jump by its own size on the
+    -- first drag move.
+    local floatingPosition = UDim2.new(1, -70, 1, -70)
 
     local function ensureFloatingToggle()
         pcall(function()
@@ -1808,7 +1812,7 @@ return function(locomotionFactory, Library, Common)
 
             local button = Instance.new("TextButton")
             button.Name = "IG"
-            button.AnchorPoint = Vector2.new(1, 1)
+            button.AnchorPoint = Vector2.new(0, 0)
             button.Position = floatingPosition
             button.Size = UDim2.new(0, 54, 0, 54)
             button.BackgroundColor3 = Color3.fromRGB(245, 197, 66)

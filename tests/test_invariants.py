@@ -247,6 +247,13 @@ class FloatingButtonTests(unittest.TestCase):
         self.assertIn("math.clamp(buttonOrigin.X + delta.X", self.source)
         self.assertIn("math.clamp(buttonOrigin.Y + delta.Y", self.source)
 
+    def test_floating_button_anchor_matches_drag_math(self):
+        # AbsolutePosition is the top-left corner; the button must be
+        # top-left anchored or the first drag move jumps by its own size.
+        self.assertIn("button.AnchorPoint = Vector2.new(0, 0)", self.source)
+        self.assertIn("local floatingPosition = UDim2.new(1, -70, 1, -70)", self.source)
+        self.assertNotIn("button.AnchorPoint = Vector2.new(1, 1)", self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
