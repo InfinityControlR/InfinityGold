@@ -890,6 +890,13 @@ function Module.create(context)
         resetAll()
     end
 
+    -- Temporarily suspend the per-frame walking driver without forgetting the
+    -- prepared route or restarting EnterDelay. Alchemy uses this while it
+    -- performs its short hidden actor/finish interaction.
+    function api:PauseWalking()
+        stopMovement()
+    end
+
     function api:Stop()
         invalidateBroomTransaction()
         broom.alive = false

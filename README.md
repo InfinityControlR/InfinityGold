@@ -131,5 +131,7 @@ These surfaces need confirmation inside Roblox (fail-open until then):
 - `PLAYER_REBIRTH`, `INDEX_CLAIM_REWARD` and `DRINK_POTION` payload shapes
   (currently sent without arguments).
 - `GetData.GetCfgByName("weaponConf"|"armorConf")` shape for shop automation.
-- Brew recipe selection currently picks the first entry of
-  `GetData.GetRecipeList()`.
+- Alchemy resolves `GetData.Alchemy`, selects the highest recipe that passes
+  the game's rebirth and material checks, and uses the verified craft/pickup
+  InvokeServer actions. Walking and Running pause only for the brief hidden
+  Alchemy interaction, then resume from the previous position.

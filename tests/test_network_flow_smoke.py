@@ -61,6 +61,7 @@ local fireRemote = "fire-message-descriptor"
 local invokeRemote = "训练点屏"
 local fireCalls = {{}}
 local invokeCalls = {{}}
+local bindableCalls = {{}}
 local registryReads = {{}}
 
 local network = {{
@@ -82,6 +83,11 @@ local network = {{
         if payload == nil then accepted = "empty" end
         return {{ accepted = accepted }}
     end,
+    FireBindable = function(...)
+        local packed = table.pack(...)
+        assert(packed[1] == fireRemote, "FireBindable first arg was not the descriptor")
+        table.insert(bindableCalls, packed)
+    end,
 }}
 
 local modules = {{
@@ -94,6 +100,7 @@ local modules = {{
         TRAIN_MANUAL_CLICK = invokeRemote,
         CLAIM_ONLINE_AWARD = invokeRemote,
         DUNGEON_RETURN_TOWN = fireRemote,
+        SHOW_LOCAL_UI = fireRemote,
     }},
     GetData = {{ marker = "get-data" }},
 }}
@@ -167,6 +174,22 @@ assert(invoked and result.accepted == 12,
     "online reward did not preserve its numeric award id")
 assert(#invokeCalls == 4 and invokeCalls[4] == 12,
     "online reward did not use InvokeServer with a scalar id")
+
+sent, sendError = fireBindableAction(
+    "SHOW_LOCAL_UI",
+    "PotionBrewingGame",
+    nil,
+    false,
+    false
+)
+assert(sent, "PotionBrewingGame FireBindable failed: " .. tostring(sendError))
+assert(#bindableCalls == 1 and bindableCalls[1].n == 5,
+    "PotionBrewingGame bindable arity changed")
+assert(bindableCalls[1][2] == "PotionBrewingGame"
+    and bindableCalls[1][3] == nil
+    and bindableCalls[1][4] == false
+    and bindableCalls[1][5] == false,
+    "PotionBrewingGame bindable payload changed")
 
 local getData = resolveRuntimeModule("GetData")
 assert(getData == modules.GetData, "runtime module did not use UtilsSystem registry")
