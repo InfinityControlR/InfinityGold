@@ -65,10 +65,10 @@ the InfinityGold dashboard.
   and are collected first. Auto Sell and Sell All Now enumerate the player's
   Bag and send the eligible materials' unique `onlyID` values, excluding
   locked items and materials reserved for Alchemy recipes.
-- **Broom**: exactly the observed two-step remote flow
-  (`关卡跳关请求` then `上下扫帚` after 0.25 s), single-flight with epoch
-  tokens, invalidation on toggle/stage/return changes, base detection through
-  the numeric `InDungeonChallenge` transition.
+- **Broom**: sends only the selected-stage request (`关卡跳关请求`) and never
+  toggles/equips the broom. It keeps single-flight epoch tokens, invalidation
+  on toggle/stage/return changes, and base detection through the numeric
+  `InDungeonChallenge` transition.
 - **Progress**: Auto Rebirth (with limit), Auto Train (current zone via
   `TRAIN_ZONE_UPDATE`), Auto Return when the bag is full, index/online claims,
   potion brewing/drinking, best-affordable shop automation (fail-open).

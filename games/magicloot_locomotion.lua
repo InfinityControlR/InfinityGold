@@ -90,9 +90,8 @@ function Module.create(context)
 
     local api = {}
 
-    -- Broom starts the two-step flow observed after a native StageJump click.
-    -- Both remotes must exist before the request is sent, and one arm can run
-    -- the transaction only once; the game keeps ownership of flight/landing.
+    -- Broom only asks the server to jump to the selected stage. It deliberately
+    -- never toggles/equips the broom; the game keeps ownership of the transition.
     local broomStages = { 4, 8, 13, 18, 23 }
     local broomStageSet = { [4] = true, [8] = true, [13] = true, [18] = true, [23] = true }
     local broom = {
@@ -150,53 +149,27 @@ function Module.create(context)
         return ok and result or nil
     end
 
-    local function locateBroomRemotes()
+    local function locateBroomRequestRemote()
         local msg = replicatedStorage:FindFirstChild("Msg")
         local eventFolder = msg and msg:FindFirstChild("RemoteEvent") or nil
         local requestRemote = eventFolder and eventFolder:FindFirstChild("NetWorkRemoteEvent") or nil
-        local functionFolder = msg and msg:FindFirstChild("RemoteFunction") or nil
-        local broomRemote = functionFolder and functionFolder:FindFirstChild("NetWorkRemoteFunction") or nil
         if requestRemote == nil or not requestRemote:IsA("RemoteEvent") then
-            return nil, nil, "NetWorkRemoteEvent unavailable"
-        end
-        if broomRemote == nil or not broomRemote:IsA("RemoteFunction") then
-            return nil, nil, "NetWorkRemoteFunction unavailable"
+            return nil, "NetWorkRemoteEvent unavailable"
         end
         local requestOk, requestCurrent = pcall(function()
             return requestRemote:IsDescendantOf(replicatedStorage)
         end)
-        local broomOk, broomCurrent = pcall(function()
-            return broomRemote:IsDescendantOf(replicatedStorage)
-        end)
         if not requestOk or not requestCurrent then
-            return nil, nil, "NetWorkRemoteEvent is stale"
+            return nil, "NetWorkRemoteEvent is stale"
         end
-        if not broomOk or not broomCurrent then
-            return nil, nil, "NetWorkRemoteFunction is stale"
-        end
-        return requestRemote, broomRemote, nil
+        return requestRemote, nil
     end
 
     local function invalidateBroomTransaction()
         broom.epoch = broom.epoch + 1
     end
 
-    local function transactionStillCurrent(token, stage)
-        if broom.epoch ~= token or not broom.transactionActive then return false end
-        if not broomToggle() then return false end
-        if broomStage(broomOption("BroomStage", "4")) ~= stage then return false end
-        local challenge = inDungeonChallenge()
-        if broom.lastChallenge ~= nil
-            and broom.lastChallenge > 0
-            and challenge ~= nil
-            and challenge <= 0
-        then
-            return false
-        end
-        return true
-    end
-
-    local function requestBroomStage(requestRemote, broomRemote, stage, now)
+    local function requestBroomStage(requestRemote, stage, now)
         if broom.transactionActive then return false, "transaction already active" end
         broom.epoch = broom.epoch + 1
         local token = broom.epoch
@@ -205,28 +178,15 @@ function Module.create(context)
         local requested, requestError = pcall(function()
             requestRemote:FireServer("关卡跳关请求", stage)
         end)
+        local stillCurrent = broom.epoch == token
+        broom.transactionActive = false
         if not requested then
-            if broom.epoch == token then broom.transactionActive = false end
             return false, "request failed: " .. tostring(requestError)
         end
-        task.wait(0.25)
-        if not transactionStillCurrent(token, stage) then
-            if broom.epoch == token then invalidateBroomTransaction() end
-            broom.transactionActive = false
-            return false, "request sent; broom toggle cancelled by newer state"
-        end
-        local toggled, toggleError = pcall(function()
-            return broomRemote:InvokeServer("上下扫帚")
-        end)
-        local stillCurrent = transactionStillCurrent(token, stage)
-        broom.transactionActive = false
-        if not toggled then
-            return false, "request sent; broom toggle failed: " .. tostring(toggleError)
-        end
         if not stillCurrent then
-            return false, "broom toggle completed after transaction was superseded"
+            return false, "stage request sent; result superseded by newer state"
         end
-        return true, "request + broom toggle"
+        return true, "stage request"
     end
 
     local function disarmBroom()
@@ -316,8 +276,8 @@ function Module.create(context)
             broom.status = string.format("broom stage %d armed in %.1fs", selected, broom.readyAt - now)
             return
         end
-        local requestRemote, broomRemote, locateError = locateBroomRemotes()
-        if requestRemote == nil or broomRemote == nil then
+        local requestRemote, locateError = locateBroomRequestRemote()
+        if requestRemote == nil then
             broom.status = "broom waiting: " .. tostring(locateError)
             return
         end
@@ -325,7 +285,6 @@ function Module.create(context)
         disarmBroom()
         local requested, detail = requestBroomStage(
             requestRemote,
-            broomRemote,
             selected,
             now
         )
@@ -333,7 +292,7 @@ function Module.create(context)
             if reason == "inventory return" and not broom.waitingForBase then
                 broom.returnEpisode = false
             end
-            broom.status = "broom transaction failed: " .. tostring(detail)
+            broom.status = "broom stage request failed: " .. tostring(detail)
             return
         end
         broom.activations = broom.activations + 1

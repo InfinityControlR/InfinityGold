@@ -4,8 +4,7 @@ These checks encode the project rules that must never regress:
 
   * Walking never teleports, never changes speed, drives humanoid:Move from a
     render-step binding, and is the only place allowed to request a reset.
-  * Broom uses exactly the observed two-step remote flow with single-flight
-    protection.
+  * Broom sends only the selected-stage request and never toggles/equips it.
   * The core keeps the documented worker cadences and the shared attack block.
 """
 
@@ -79,16 +78,21 @@ class LocomotionInvariantTests(unittest.TestCase):
         self.assertIn("enteredStage", self.source)
         self.assertIn("function api:BlocksAttack()", self.source)
 
-    def test_broom_two_step_remote_flow(self):
+    def test_broom_stage_only_remote_flow(self):
         self.assertIn('FireServer("关卡跳关请求", stage)', self.source)
-        self.assertIn('InvokeServer("上下扫帚")', self.source)
+        self.assertNotIn('InvokeServer("上下扫帚")', self.source)
+        self.assertNotIn("NetWorkRemoteFunction", self.source)
+        request_start = self.source.index("    local function requestBroomStage(")
+        request_end = self.source.index("    local function disarmBroom()", request_start)
+        request = self.source[request_start:request_end]
+        self.assertNotIn("task.wait(0.25)", request)
+        self.assertIn('return true, "stage request"', request)
 
     def test_broom_single_flight_protection(self):
         for marker in (
             "transactionActive",
             "epoch",
             "invalidateBroomTransaction",
-            "transactionStillCurrent",
         ):
             self.assertIn(marker, self.source)
 
