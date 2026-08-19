@@ -91,8 +91,14 @@ class CoreInvariantTests(unittest.TestCase):
     def test_click_cadence_formula(self):
         self.assertIn("1 / math.max(1, tonumber(cfg.ClickRate) or 10)", self.source)
 
-    def test_pickup_wait_after_activation(self):
-        self.assertIn("task.wait(0.4)", self.source)
+    def test_pickup_batches_every_scan_at_original_cadence(self):
+        pickup = self.source[
+            self.source.index("    -- Pickup worker") :
+            self.source.index("    -- Progress workers")
+        ]
+        self.assertIn("activateSortedDrops(sorted, minValue, tierSet)", pickup)
+        self.assertIn("task.wait(0.4)", pickup)
+        self.assertNotIn("task.wait(0.5)", pickup)
 
     def test_sell_cadence(self):
         self.assertIn('local ReplicatedFirst = game:GetService("ReplicatedFirst")', self.source)

@@ -904,14 +904,25 @@ return function(locomotionFactory, Library, Common)
         root = nil,
     }
 
-    local stageEntryWaiting = false
-
     local function shouldWaitForPhysicalStage(mode, stage, challenge)
         local physical = mode == "Walking" or mode == "Running"
         local challengeNumber = tonumber(challenge)
         return physical
             and (tonumber(stage) or 1) > 1
             and (challengeNumber == nil or challengeNumber <= 0)
+    end
+
+    local stageEntryWaiting = false
+
+    local function blocksPhysicalTransit()
+        if loco ~= nil and cfg.FarmMode == "Walking" then
+            local ok, blocked = pcall(function() return loco:BlocksAttack() end)
+            if ok and blocked then return true end
+        end
+        if cfg.FarmMode == "Running" and running.active and not running.arrived then
+            return true
+        end
+        return false
     end
 
     local function blocksAttack()
@@ -921,14 +932,7 @@ return function(locomotionFactory, Library, Common)
         then
             return true
         end
-        if loco ~= nil and cfg.FarmMode == "Walking" then
-            local ok, blocked = pcall(function() return loco:BlocksAttack() end)
-            if ok and blocked then return true end
-        end
-        if cfg.FarmMode == "Running" and running.active and not running.arrived then
-            return true
-        end
-        return false
+        return blocksPhysicalTransit()
     end
 
     local function stopMovementModes()
@@ -1297,7 +1301,7 @@ return function(locomotionFactory, Library, Common)
 
     task.spawn(function()
         while sessionAlive do
-            if cfg.AutoClick and not blocksAttack() then
+            if cfg.AutoClick and not blocksPhysicalTransit() then
                 local clicked, delivery = performAutoClick()
                 if clicked then
                     combatStats.clicksOk = combatStats.clicksOk + 1
@@ -1375,6 +1379,23 @@ return function(locomotionFactory, Library, Common)
     local pickupCount = 0
     local dropsNearby = 0
 
+    local function activateSortedDrops(sorted, minValue, tierSet)
+        local activatedCount = 0
+        for _, entry in ipairs(sorted) do
+            if Common.gateDrop(entry, {
+                minValue = minValue,
+                filterRarity = cfg.PickupFilterRarity == true,
+                tiers = tierSet,
+            }) then
+                local prompt = pickupPrompt(entry.primaryPart)
+                if prompt ~= nil and activatePrompt(prompt) then
+                    activatedCount = activatedCount + 1
+                end
+            end
+        end
+        return activatedCount
+    end
+
     local function collectDrops()
         local container = resolveDropsClient()
         if container == nil then return end
@@ -1429,23 +1450,7 @@ return function(locomotionFactory, Library, Common)
         end
 
         local sorted = Common.sortDrops(candidates)
-        for _, entry in ipairs(sorted) do
-            if Common.gateDrop(entry, {
-                minValue = minValue,
-                filterRarity = cfg.PickupFilterRarity == true,
-                tiers = tierSet,
-            }) then
-                local prompt = pickupPrompt(entry.primaryPart)
-                if prompt ~= nil then
-                    local activated = activatePrompt(prompt)
-                    if activated then
-                        pickupCount = pickupCount + 1
-                        task.wait(0.4)
-                        return
-                    end
-                end
-            end
-        end
+        pickupCount = pickupCount + activateSortedDrops(sorted, minValue, tierSet)
     end
 
     task.spawn(function()
@@ -1456,7 +1461,7 @@ return function(locomotionFactory, Library, Common)
                     -- transient scan failure; retry on the next tick
                 end
             end
-            task.wait(0.5)
+            task.wait(0.4)
         end
     end)
 

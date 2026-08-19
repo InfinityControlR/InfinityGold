@@ -140,8 +140,62 @@ print("running_stop_smoke=ok")
         self.assertLess(gate, movement.index("local stagePartInstance = stagePart(stage)"))
         self.assertLess(gate, movement.index('loco:Update("Walking"'))
         self.assertLess(gate, movement.index("updateRunning(stage"))
-        self.assertIn("stageEntryWaiting", source)
         self.assertIn('setMovementStatus("stage " .. stage .. " waiting for dungeon entry")', movement)
+
+    def test_waiting_at_base_does_not_block_background_autoclick(self):
+        helper = core_slice(
+            "    local function blocksPhysicalTransit()",
+            "    local function stopMovementModes()",
+        )
+        fixture = f"""
+local cfg = {{
+    AutoFarm = true,
+    AutoFarmSpecific = false,
+    FarmMode = "Running",
+}}
+local running = {{ active = false, arrived = false }}
+local loco = nil
+local stageEntryWaiting = true
+
+{helper}
+
+-- This is the base-wait state: physical movement is stopped, but power clicks
+-- must remain available in the background. AutoAttack keeps the broader gate.
+assert(blocksPhysicalTransit() == false, "base waiting incorrectly blocked AutoClick")
+assert(blocksAttack() == true, "base waiting did not block AutoAttack")
+
+running.active = true
+assert(blocksPhysicalTransit() == true, "active Running did not block AutoClick")
+assert(blocksAttack() == true, "active Running did not block AutoAttack")
+running.arrived = true
+stageEntryWaiting = false
+assert(blocksPhysicalTransit() == false, "arrived Running kept AutoClick blocked")
+assert(blocksAttack() == false, "arrived Running kept AutoAttack blocked")
+
+cfg.FarmMode = "Walking"
+loco = {{ BlocksAttack = function() return true end }}
+assert(blocksPhysicalTransit() == true, "Walking entry gate was bypassed")
+assert(blocksAttack() == true, "Walking did not block AutoAttack")
+loco.BlocksAttack = function() return false end
+assert(blocksPhysicalTransit() == false, "entered Walking stage kept AutoClick blocked")
+assert(blocksAttack() == false, "entered Walking stage kept AutoAttack blocked")
+print("base_autoclick_gate_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"base AutoClick smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("base_autoclick_gate_smoke=ok", completed.stdout)
+
+        source = (REPO_ROOT / "games" / "magicloot.lua").read_text(encoding="utf-8")
+        combat = core_slice("    -- Combat workers", "    -- Pickup worker")
+        autoattack = combat[: combat.index("task.wait(0.2)")]
+        autoclick = combat[combat.index("task.wait(0.2)") :]
+        self.assertIn("not blocksAttack()", autoattack)
+        self.assertIn("not blocksPhysicalTransit()", autoclick)
+        self.assertNotIn("not blocksAttack()", autoclick)
 
 
 if __name__ == "__main__":
