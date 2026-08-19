@@ -228,6 +228,27 @@ class UiLifecycleTests(unittest.TestCase):
         self.assertIn("visible = false", self.source)
         self.assertIn("main.Visible = false", self.source)
 
+    def test_dynamic_text_properties_reach_labels(self):
+        helper = self.source.split("local function label", 1)[1].split(
+            "local function resolveParent", 1
+        )[0]
+        for property_name in (
+            "AnchorPoint",
+            "AutomaticSize",
+            "LayoutOrder",
+            "TextTruncate",
+            "TextWrapped",
+        ):
+            self.assertIn(
+                f"textLabel.{property_name} = options.{property_name}",
+                helper,
+            )
+
+    def test_multiline_content_participates_in_vertical_layout(self):
+        self.assertIn('local paragraphLayout = Instance.new("UIListLayout")', self.source)
+        self.assertIn("AutomaticSize = Enum.AutomaticSize.Y", self.source)
+        self.assertIn("TextYAlignment = Enum.TextYAlignment.Top", self.source)
+
 
 class FloatingButtonTests(unittest.TestCase):
     def setUp(self):
@@ -273,6 +294,16 @@ class DropdownTests(unittest.TestCase):
         self.assertIn("math.min(#values, maxVisible)", self.source)
         self.assertIn("ScrollBarThickness", self.source)
         self.assertIn("AutomaticCanvasSize", self.source)
+
+    def test_open_list_reserves_layout_space(self):
+        self.assertIn("local function listHeight()", self.source)
+        self.assertIn("open and (54 + listHeight()) or 48", self.source)
+
+    def test_set_values_rebuilds_visible_options(self):
+        set_values = self.source.split("function element.SetValues", 1)[1].split(
+            "function element.Get", 1
+        )[0]
+        self.assertIn("rebuildList()", set_values)
 
     def test_arrow_sits_inside_the_header(self):
         self.assertIn("Position = UDim2.new(1, -10, 0.5, 0)", self.source)

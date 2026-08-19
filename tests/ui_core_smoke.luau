@@ -107,8 +107,16 @@ function InstanceMethods:Destroy()
     rawset(self, "Parent", nil)
 end
 
-function InstanceMethods:GetPropertyChangedSignal()
-    return makeSignal()
+function InstanceMethods:GetPropertyChangedSignal(propertyName)
+    local signals = rawget(self, "__propertySignals")
+    if signals == nil then
+        signals = {}
+        rawset(self, "__propertySignals", signals)
+    end
+    if signals[propertyName] == nil then
+        signals[propertyName] = makeSignal()
+    end
+    return signals[propertyName]
 end
 
 InstanceMT = {
@@ -366,6 +374,9 @@ game = setmetatable({
 })
 
 workspace = service("Workspace")
+local camera = makeService("Camera")
+camera.ViewportSize = Vector2.new(1024, 640)
+workspace.CurrentCamera = camera
 
 TweenService = nil -- accessed through game:GetService
 
@@ -498,6 +509,62 @@ do
     end
 
     local windowFrame = Library._windows[1] and Library._windows[1].Frame
+    local navigation = windowFrame and findDescendant(windowFrame, "Navigation")
+    local firstTab = navigation and navigation:FindFirstChild("Tab1")
+    local firstTabName = firstTab and firstTab:FindFirstChild("Name")
+    local navigationCaption = navigation and navigation:FindFirstChild("NavigationCaption")
+
+    -- Roblox may expose CurrentCamera before its viewport has settled. That
+    -- transient state must never collapse the dashboard to a 1x1 frame.
+    camera.ViewportSize = Vector2.new(0, 0)
+    camera:GetPropertyChangedSignal("ViewportSize"):Fire()
+    pump(2)
+    if windowFrame.Size.X.Offset ~= 720 or windowFrame.Size.Y.Offset ~= 520 then
+        fail("zero-sized bootstrap viewport collapsed the dashboard")
+    end
+
+    camera.ViewportSize = Vector2.new(360, 640)
+    camera:GetPropertyChangedSignal("ViewportSize"):Fire()
+    pump(2)
+    if windowFrame.Size.X.Offset ~= 328
+        or navigation == nil or navigation.Size.X.Offset ~= 72
+        or firstTabName == nil or firstTabName.Visible ~= false
+        or navigationCaption == nil or navigationCaption.Text ~= "IG"
+    then
+        fail("dashboard did not switch to its compact navigation rail")
+    end
+
+    camera.ViewportSize = Vector2.new(1024, 640)
+    camera:GetPropertyChangedSignal("ViewportSize"):Fire()
+    pump(2)
+    if windowFrame.Size.X.Offset ~= 760
+        or navigation.Size.X.Offset ~= 168
+        or firstTabName.Visible ~= true
+        or navigationCaption.Text ~= "NAVIGATION"
+    then
+        fail("dashboard did not restore its full navigation after resize")
+    end
+
+    local paragraph = windowFrame and findDescendant(windowFrame, "Paragraph")
+    local paragraphBody = paragraph and paragraph:FindFirstChild("ParagraphBody")
+    if paragraphBody == nil then
+        fail("paragraph body was not constructed")
+    elseif paragraphBody.TextWrapped ~= true
+        or paragraphBody.AutomaticSize ~= Enum.AutomaticSize.Y
+        or paragraphBody.LayoutOrder ~= 2
+    then
+        fail("paragraph body is not participating in dynamic vertical layout")
+    end
+
+    local dynamicLabel = windowFrame and findDescendant(windowFrame, "DynamicLabel")
+    if dynamicLabel == nil then
+        fail("dynamic diagnostic label was not constructed")
+    elseif dynamicLabel.TextWrapped ~= true
+        or dynamicLabel.AutomaticSize ~= Enum.AutomaticSize.Y
+    then
+        fail("dynamic diagnostic label cannot grow with multiline text")
+    end
+
     local dropdown = windowFrame and findDescendant(windowFrame, "Dropdown")
     if dropdown == nil then
         fail("cannot simulate a dropdown: none found in the window")
@@ -512,10 +579,16 @@ do
             if list.Visible ~= true then
                 fail("clicking the dropdown header did not open it")
             end
-            if list.Size.Y.Offset ~= 138 then
+            if list.Size.Y.Offset ~= 188 then
                 fail(string.format(
                     "list height not capped to 5 rows: %d",
                     list.Size.Y.Offset
+                ))
+            end
+            if dropdown.Size.Y.Offset ~= 242 then
+                fail(string.format(
+                    "open dropdown did not reserve list space: %d",
+                    dropdown.Size.Y.Offset
                 ))
             end
 
@@ -525,6 +598,9 @@ do
                 option.MouseButton1Click:Fire()
                 if list.Visible ~= false then
                     fail("choosing an option did not close the dropdown")
+                end
+                if dropdown.Size.Y.Offset ~= 48 then
+                    fail("closed dropdown did not release its list space")
                 end
             end
 
