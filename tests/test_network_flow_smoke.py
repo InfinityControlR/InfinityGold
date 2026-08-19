@@ -89,6 +89,7 @@ local modules = {{
         INVOKE = invokeRemote,
         INVOKE_EMPTY = invokeRemote,
         TRAIN_MANUAL_CLICK = invokeRemote,
+        DUNGEON_RETURN_TOWN = fireRemote,
     }},
     GetData = {{ marker = "get-data" }},
 }}
@@ -136,6 +137,11 @@ assert(#fireCalls == 1 and fireCalls[1].value == 17, "wrong FireServer payload")
 sent, sendError = sendAction("FIRE_EMPTY")
 assert(sent, "payload-free sendAction failed: " .. tostring(sendError))
 assert(#fireCalls == 2 and fireCalls[2] == "empty", "wrong payload-free FireServer call")
+
+sent, sendError = sendAction("DUNGEON_RETURN_TOWN")
+assert(sent, "dungeon return FireServer failed: " .. tostring(sendError))
+assert(#fireCalls == 3 and fireCalls[3] == "empty",
+    "dungeon return did not send only its descriptor")
 
 local invoked, result, invokeError = invokeAction("INVOKE", {{ value = 23 }})
 assert(invoked, "invokeAction failed: " .. tostring(invokeError))

@@ -141,6 +141,31 @@ class CoreInvariantTests(unittest.TestCase):
     def test_return_flow_uses_challenge_transitions(self):
         self.assertIn("playerNumber(\"InDungeonChallenge\")", self.source)
 
+    def test_return_check_runs_independently_of_auto_farm(self):
+        movement = self.source[
+            self.source.index("    local function updateMovement()") :
+            self.source.index("    -- Combat", self.source.index("    local function updateMovement()"))
+        ]
+        self.assertLess(
+            movement.index("local full = bagFull()"),
+            movement.index("if not (cfg.AutoFarm or cfg.AutoFarmSpecific) then"),
+        )
+
+    def test_return_capacity_uses_original_game_contract(self):
+        self.assertIn("local BAG_CAPACITY_ITEM_ID = 5", self.source)
+        self.assertIn("data.GetItemCountByID,", self.source)
+        self.assertIn("player,\n                BAG_CAPACITY_ITEM_ID", self.source)
+        self.assertNotIn("local getDataResolved", self.source)
+
+    def test_return_has_live_bag_diagnostics(self):
+        self.assertIn('group:AddLabel("Bag check: waiting...")', self.source)
+        self.assertIn('"Bag: %s / %s • %s\\nAuto return: %s"', self.source)
+
+    def test_return_retries_are_bounded_and_visible(self):
+        self.assertIn("local MAX_RETURN_ATTEMPTS = 15", self.source)
+        self.assertIn("returnEpisode.blocked = true", self.source)
+        self.assertIn('notify("Auto return paused: "', self.source)
+
     def test_walking_reset_only_in_locomotion(self):
         self.assertNotIn("Enum.HumanoidStateType.Dead", self.source)
 

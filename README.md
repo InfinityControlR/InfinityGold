@@ -118,8 +118,10 @@ if the click behaviour differs by context.
 
 These surfaces need confirmation inside Roblox (fail-open until then):
 
-- `LimitBagMax` / capacity value name for the bag-full check — if unknown,
-  auto-return stays disabled instead of guessing.
+- Auto-return now follows the original game contract exactly: bag capacity is
+  `GetData.GetItemCountByID(LocalPlayer, 5)` and usage is
+  `LocalPlayer.LimitBagUsed`. The Farm tab shows both live values and the
+  capacity source so this can be verified without another diagnostic script.
 - `PLAYER_REBIRTH`, `INDEX_CLAIM_REWARD`, `CLAIM_ONLINE_AWARD`,
   `DRINK_POTION` payload shapes (currently sent without arguments).
 - `GetData.GetCfgByName("weaponConf"|"armorConf")` shape for shop automation.

@@ -447,7 +447,6 @@ return function(locomotionFactory, Library, Common)
     end
 
     local getData = nil
-    local getDataResolved = false
 
     local runtimeModules = {}
 
@@ -471,8 +470,10 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function resolveGetData()
-        if getDataResolved then return getData end
-        getDataResolved = true
+        -- UtilsSystem is populated asynchronously on some clients. Cache only
+        -- a successful resolution so an early probe cannot disable every
+        -- GetData-backed feature for the rest of the session.
+        if getData ~= nil then return getData end
         getData = resolveRuntimeModule("GetData")
         return getData
     end
@@ -532,32 +533,66 @@ return function(locomotionFactory, Library, Common)
         return nil
     end
 
+    -- The original Magic Loot client does not expose the bag limit through a
+    -- guessed LimitBagMax value. It asks GetData for item/count id 5 and then
+    -- compares that result with LocalPlayer.LimitBagUsed.
+    local BAG_CAPACITY_ITEM_ID = 5
     local bagCapacityNames = { "LimitBagMax", "LimitBagCapacity", "LimitBagCount" }
+    local bagTelemetry = {
+        used = nil,
+        capacity = nil,
+        source = "waiting",
+        known = false,
+        full = false,
+        checkedAt = 0,
+    }
 
     local function bagCapacity()
+        local data = resolveGetData()
+        if data ~= nil and type(data.GetItemCountByID) == "function" then
+            local ok, value = pcall(
+                data.GetItemCountByID,
+                player,
+                BAG_CAPACITY_ITEM_ID
+            )
+            value = ok and tonumber(value) or nil
+            if value ~= nil and value > 0 then
+                return value, "GetItemCountByID(5)"
+            end
+        end
+
+        -- Compatibility fallbacks for builds that mirror the limit directly
+        -- on the player. They are deliberately secondary to the proven game
+        -- contract above.
         for _, name in ipairs(bagCapacityNames) do
             local value = playerNumber(name)
-            if value ~= nil and value > 0 then return value end
+            if value ~= nil and value > 0 then return value, name end
         end
-        local data = resolveGetData()
         if data ~= nil and type(data.GetPlrDataByKey) == "function" then
             for _, key in ipairs({ "LimitBagMax", "LimitBagCapacity" }) do
-                local ok, value = pcall(data.GetPlrDataByKey, key)
+                local ok, value = pcall(data.GetPlrDataByKey, player, key)
                 if ok and tonumber(value) ~= nil and tonumber(value) > 0 then
-                    return tonumber(value)
+                    return tonumber(value), "GetPlrDataByKey(" .. key .. ")"
                 end
             end
         end
-        return nil
+        return nil, "unavailable"
     end
 
     local function bagFull()
         local used = playerNumber("LimitBagUsed")
-        local capacity = bagCapacity()
+        if used ~= nil then used = math.floor(used) end
+        local capacity, source = bagCapacity()
+        bagTelemetry.used = used
+        bagTelemetry.capacity = capacity
+        bagTelemetry.source = source
+        bagTelemetry.known = used ~= nil and capacity ~= nil and capacity > 0
+        bagTelemetry.full = bagTelemetry.known and used >= capacity or false
+        bagTelemetry.checkedAt = os.clock()
         if used == nil or capacity == nil or capacity <= 0 then
-            return false, false -- not full, capacity unknown
+            return false, false, used, capacity, source
         end
-        return used >= capacity, true
+        return used >= capacity, true, used, capacity, source
     end
 
     -- Stages -----------------------------------------------------------------
@@ -888,56 +923,101 @@ return function(locomotionFactory, Library, Common)
 
     -- Return episode (inventory full) ------------------------------------------
 
+    local MAX_RETURN_ATTEMPTS = 15
     local returnEpisode = {
         active = false,
         requestedAt = 0,
         fired = false,
         lastChallenge = nil,
+        lastAttemptAt = 0,
+        lastError = nil,
+        attempts = 0,
+        blocked = false,
+        broomArmed = false,
     }
+
+    local function resetReturnEpisode()
+        returnEpisode.active = false
+        returnEpisode.requestedAt = 0
+        returnEpisode.fired = false
+        returnEpisode.lastChallenge = nil
+        returnEpisode.lastAttemptAt = 0
+        returnEpisode.lastError = nil
+        returnEpisode.attempts = 0
+        returnEpisode.blocked = false
+        returnEpisode.broomArmed = false
+    end
 
     local function startReturnEpisode(reason)
         if returnEpisode.active then return end
         returnEpisode.active = true
         returnEpisode.requestedAt = os.clock()
         returnEpisode.fired = false
-        if loco ~= nil then
-            pcall(function() loco:OnAutoReturnFull() end)
-        end
+        returnEpisode.lastAttemptAt = 0
+        returnEpisode.lastError = nil
+        returnEpisode.attempts = 0
+        returnEpisode.blocked = false
+        returnEpisode.broomArmed = false
         notify("Inventory full; returning to base (" .. tostring(reason) .. ")")
     end
 
-    local function updateReturnEpisode()
-        if not returnEpisode.active then return end
+    local function updateReturnEpisode(full)
         local now = os.clock()
         local challenge = playerNumber("InDungeonChallenge")
 
-        if challenge ~= nil and challenge > 0 then
-            returnEpisode.lastChallenge = challenge
+        -- Auto Return is its own feature, not an Auto Farm sub-mode. Cancel
+        -- immediately when its real gates no longer hold and re-arm cleanly on
+        -- the next full-bag dungeon episode.
+        if not cfg.AutoReturnFull
+            or not full
+            or challenge == nil
+            or challenge <= 0
+        then
+            resetReturnEpisode()
+            return
+        end
+        returnEpisode.lastChallenge = challenge
+
+        if returnEpisode.blocked then return end
+
+        if not returnEpisode.active then
+            startReturnEpisode("bag")
         end
 
-        if not returnEpisode.fired then
-            if now - returnEpisode.requestedAt < math.max(0, tonumber(cfg.ReturnDelay) or 0) then
+        if now - returnEpisode.requestedAt
+            < math.max(0, tonumber(cfg.ReturnDelay) or 0)
+        then
+            return
+        end
+        -- FireServer confirms only that the local facade accepted the call,
+        -- not that the server returned us. Match the original worker and retry
+        -- at most once every two seconds until InDungeonChallenge reaches 0.
+        -- A bounded latch prevents an unavailable server route from freezing
+        -- movement and sending forever; changing any real gate re-arms it.
+        if now - returnEpisode.lastAttemptAt >= 2 then
+            if returnEpisode.attempts >= MAX_RETURN_ATTEMPTS then
+                returnEpisode.active = false
+                returnEpisode.blocked = true
+                returnEpisode.lastError = "return not confirmed after "
+                    .. tostring(MAX_RETURN_ATTEMPTS) .. " requests"
+                notify("Auto return paused: " .. returnEpisode.lastError)
                 return
             end
-            if challenge ~= nil and challenge > 0 then
-                local ok = sendAction("DUNGEON_RETURN_TOWN")
-                if ok then
-                    returnEpisode.fired = true
-                end
-            else
-                -- already at base; nothing to request
-                returnEpisode.fired = true
+            if not returnEpisode.broomArmed and loco ~= nil then
+                local armedOk, armed = pcall(function()
+                    return loco:OnAutoReturnFull()
+                end)
+                returnEpisode.broomArmed = armedOk and armed ~= false
             end
-        end
-
-        local settled = returnEpisode.fired
-            and challenge ~= nil
-            and challenge <= 0
-        local timedOut = now - returnEpisode.requestedAt > 30
-        if settled or timedOut then
-            returnEpisode.active = false
-            returnEpisode.fired = false
-            returnEpisode.lastChallenge = nil
+            returnEpisode.lastAttemptAt = now
+            returnEpisode.attempts = returnEpisode.attempts + 1
+            local ok, err = sendAction("DUNGEON_RETURN_TOWN")
+            if ok then
+                returnEpisode.fired = true
+                returnEpisode.lastError = nil
+            else
+                returnEpisode.lastError = err or "return request failed"
+            end
         end
     end
 
@@ -1048,15 +1128,8 @@ return function(locomotionFactory, Library, Common)
             running.arrived = false
         end
 
-        updateReturnEpisode()
-
-        if not (cfg.AutoFarm or cfg.AutoFarmSpecific) then
-            if movementStatus ~= "idle" then
-                stopMovementModes()
-                setMovementStatus("idle")
-            end
-            return
-        end
+        local full = bagFull()
+        updateReturnEpisode(full)
 
         if returnEpisode.active then
             stopMovementModes()
@@ -1064,10 +1137,11 @@ return function(locomotionFactory, Library, Common)
             return
         end
 
-        local full, capacityKnown = bagFull()
-        if cfg.AutoReturnFull and full then
-            stopMovementModes()
-            startReturnEpisode("bag")
+        if not (cfg.AutoFarm or cfg.AutoFarmSpecific) then
+            if movementStatus ~= "idle" then
+                stopMovementModes()
+                setMovementStatus("idle")
+            end
             return
         end
 
@@ -1651,6 +1725,47 @@ return function(locomotionFactory, Library, Common)
             Text = "Return delay (s)",
             Default = 0, Min = 0, Max = 30, Rounding = 0,
         })
+        local returnDiagnostics = group:AddLabel("Bag check: waiting...")
+        task.spawn(function()
+            while sessionAlive do
+                pcall(function()
+                    bagFull()
+                    local usedText = bagTelemetry.used ~= nil
+                        and tostring(math.floor(bagTelemetry.used)) or "?"
+                    local capacityText = bagTelemetry.capacity ~= nil
+                        and tostring(math.floor(bagTelemetry.capacity)) or "?"
+                    local state
+                    if not cfg.AutoReturnFull then
+                        state = "disabled"
+                    elseif returnEpisode.blocked then
+                        state = "paused after " .. tostring(returnEpisode.attempts)
+                            .. " requests"
+                    elseif returnEpisode.active then
+                        state = returnEpisode.fired
+                            and ("request sent x" .. tostring(returnEpisode.attempts)
+                                .. "; waiting for base")
+                            or "return pending"
+                    elseif bagTelemetry.known then
+                        state = bagTelemetry.full
+                            and "bag full; waiting for dungeon"
+                            or "armed"
+                    else
+                        state = "capacity unavailable"
+                    end
+                    if returnEpisode.lastError ~= nil then
+                        state = state .. "; " .. tostring(returnEpisode.lastError)
+                    end
+                    returnDiagnostics:Set(string.format(
+                        "Bag: %s / %s • %s\nAuto return: %s",
+                        usedText,
+                        capacityText,
+                        tostring(bagTelemetry.source),
+                        state
+                    ))
+                end)
+                task.wait(1)
+            end
+        end)
 
         local runningGroup = bindGroup(tab:CreateSection("Running points"))
         runningGroup:AddButton({
