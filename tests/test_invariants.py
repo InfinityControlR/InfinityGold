@@ -102,6 +102,23 @@ class LocomotionInvariantTests(unittest.TestCase):
         self.assertNotIn("CharacterAdded", self.source)
         self.assertNotIn("Humanoid.Died", self.source)
 
+    def test_broom_startup_waits_for_config_and_room_confirmation(self):
+        for marker in (
+            "configReady",
+            "function api:OnConfigLoaded()",
+            "local BROOM_INITIAL_DELAY = 1",
+            "local BROOM_CONFIRM_TIMEOUT = 5",
+            "local MAX_BROOM_REQUEST_ATTEMPTS = 3",
+            "broom.requestAttempts = broom.requestAttempts + 1",
+            'broom.status = "broom waiting for InDungeonChallenge"',
+        ):
+            self.assertIn(marker, self.source)
+        challenge_guard = self.source.index("        if challenge > 0 then")
+        request_lookup = self.source.index(
+            "        local requestRemote, locateError = locateBroomRequestRemote()"
+        )
+        self.assertLess(challenge_guard, request_lookup)
+
 
 class CoreInvariantTests(unittest.TestCase):
     def setUp(self):
@@ -255,6 +272,7 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn("cfg[name] = value", self.source)
         self.assertIn('notify("Config auto-loaded", 3)', self.source)
         self.assertIn("local loaded = loadConfig()", self.source)
+        self.assertGreaterEqual(self.source.count("loco:OnConfigLoaded()"), 2)
 
 
 class CommonInvariantTests(unittest.TestCase):

@@ -68,7 +68,9 @@ the InfinityGold dashboard.
 - **Broom**: sends only the selected-stage request (`关卡跳关请求`) and never
   toggles/equips the broom. It keeps single-flight epoch tokens, invalidation
   on toggle/stage/return changes, and base detection through the numeric
-  `InDungeonChallenge` transition.
+  `InDungeonChallenge` transition. Startup waits until config restoration has
+  finished; an unconfirmed request is retried at most three times, five seconds
+  apart, and room entry cancels every pending retry immediately.
 - **Progress**: Auto Rebirth (with limit), Auto Train (current zone via
   `TRAIN_ZONE_UPDATE`), Auto Return when the bag is full and index/online
   claims. Online rewards are filtered through the live `OnlineBox` state and

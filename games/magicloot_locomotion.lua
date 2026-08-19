@@ -94,10 +94,14 @@ function Module.create(context)
     -- never toggles/equips the broom; the game keeps ownership of the transition.
     local broomStages = { 4, 8, 13, 18, 23 }
     local broomStageSet = { [4] = true, [8] = true, [13] = true, [18] = true, [23] = true }
+    local BROOM_INITIAL_DELAY = 1
+    local BROOM_CONFIRM_TIMEOUT = 5
+    local MAX_BROOM_REQUEST_ATTEMPTS = 3
     local broom = {
         alive = true,
         installed = false,
         workerStarted = false,
+        configReady = false,
         enabled = false,
         stage = nil,
         armed = false,
@@ -112,6 +116,7 @@ function Module.create(context)
         transactionActive = false,
         lastAttemptAt = -math.huge,
         lastActivatedAt = -math.huge,
+        requestAttempts = 0,
         activations = 0,
         status = "broom disabled",
     }
@@ -138,6 +143,12 @@ function Module.create(context)
 
     local function broomReturnDelay()
         return math.clamp(tonumber(broomOption("BroomReturnDelay", 5)) or 5, 1, 30)
+    end
+
+    local function broomNotify(text)
+        if type(context.notify) == "function" then
+            pcall(context.notify, text)
+        end
     end
 
     local function inDungeonChallenge()
@@ -193,6 +204,7 @@ function Module.create(context)
         broom.armed = false
         broom.readyAt = 0
         broom.reason = nil
+        broom.requestAttempts = 0
     end
 
     local function armBroom(reason, now)
@@ -200,11 +212,21 @@ function Module.create(context)
         broom.sawDungeon = false
         broom.armed = true
         broom.reason = reason
-        local delay = reason == "inventory return" and broomReturnDelay() or 0
+        broom.requestAttempts = 0
+        local delay = 0
+        if reason == "inventory return" then
+            delay = broomReturnDelay()
+        elseif reason == "initial" then
+            delay = BROOM_INITIAL_DELAY
+        end
         broom.readyAt = math.max(now + delay, broom.lastAttemptAt + 2)
     end
 
     local function updateBroom()
+        if not broom.configReady then
+            broom.status = "broom waiting for config"
+            return
+        end
         local enabled = broomToggle()
         local selected = broomStage(broomOption("BroomStage", "4"))
         local now = os.clock()
@@ -264,14 +286,31 @@ function Module.create(context)
             broom.status = "broom waiting for InDungeonChallenge >0 -> 0"
             return
         end
-        if broom.transactionActive then return end
-        if not broom.armed then return end
-        if broom.reason == "inventory return"
-            and (challenge == nil or challenge > 0)
-        then
-            broom.status = "broom waiting until InDungeonChallenge confirms base"
+        if challenge == nil then
+            broom.status = "broom waiting for InDungeonChallenge"
             return
         end
+        if challenge > 0 then
+            local attempts = broom.requestAttempts
+            local reason = broom.reason
+            if reason == "inventory return" then broom.returnEpisode = false end
+            disarmBroom()
+            if attempts > 0 then
+                broom.status = string.format(
+                    "broom stage %d confirmed after %d request(s)",
+                    selected,
+                    attempts
+                )
+            else
+                broom.status = string.format(
+                    "broom stage %d already active; request skipped",
+                    selected
+                )
+            end
+            return
+        end
+        if broom.transactionActive then return end
+        if not broom.armed then return end
         if now < broom.readyAt then
             broom.status = string.format("broom stage %d armed in %.1fs", selected, broom.readyAt - now)
             return
@@ -282,23 +321,57 @@ function Module.create(context)
             return
         end
         local reason = broom.reason
-        disarmBroom()
         local requested, detail = requestBroomStage(
             requestRemote,
             selected,
             now
         )
+        broom.requestAttempts = broom.requestAttempts + 1
         if not requested then
-            if reason == "inventory return" and not broom.waitingForBase then
-                broom.returnEpisode = false
+            if broom.requestAttempts >= MAX_BROOM_REQUEST_ATTEMPTS then
+                local attempts = broom.requestAttempts
+                if reason == "inventory return" then broom.returnEpisode = false end
+                disarmBroom()
+                broom.status = string.format(
+                    "broom stage %d paused after %d failed request(s): %s",
+                    selected,
+                    attempts,
+                    tostring(detail)
+                )
+                broomNotify(broom.status)
+            else
+                broom.readyAt = now + BROOM_CONFIRM_TIMEOUT
+                broom.status = string.format(
+                    "broom stage %d request %d/%d failed; retrying in %.0fs",
+                    selected,
+                    broom.requestAttempts,
+                    MAX_BROOM_REQUEST_ATTEMPTS,
+                    BROOM_CONFIRM_TIMEOUT
+                )
             end
-            broom.status = "broom stage request failed: " .. tostring(detail)
             return
         end
         broom.activations = broom.activations + 1
         broom.lastActivatedAt = os.clock()
-        if reason == "inventory return" then broom.returnEpisode = false end
-        broom.status = string.format("broom stage %d requested once via %s", selected, tostring(detail))
+        if broom.requestAttempts >= MAX_BROOM_REQUEST_ATTEMPTS then
+            local attempts = broom.requestAttempts
+            if reason == "inventory return" then broom.returnEpisode = false end
+            disarmBroom()
+            broom.status = string.format(
+                "broom stage %d sent %d time(s); no dungeon confirmation",
+                selected,
+                attempts
+            )
+            broomNotify(broom.status)
+            return
+        end
+        broom.readyAt = now + BROOM_CONFIRM_TIMEOUT
+        broom.status = string.format(
+            "broom stage %d request %d/%d sent; waiting for room entry",
+            selected,
+            broom.requestAttempts,
+            MAX_BROOM_REQUEST_ATTEMPTS
+        )
     end
 
     local function startBroomWorker()
@@ -529,6 +602,24 @@ function Module.create(context)
         return true
     end
 
+    -- The core calls this only after every saved option has been restored.
+    -- It also deliberately creates a fresh activation edge when the same
+    -- already-enabled config is loaded again.
+    function api:OnConfigLoaded()
+        if not broom.alive then return false end
+        invalidateBroomTransaction()
+        broom.configReady = true
+        broom.enabled = false
+        broom.stage = nil
+        broom.waitingForBase = false
+        broom.sawDungeon = false
+        broom.returnEpisode = false
+        broom.lastChallenge = nil
+        disarmBroom()
+        broom.status = "broom config ready"
+        return true
+    end
+
     function api:OnAutoReturnFull()
         if not broomToggle() then return false end
         local selected = broomStage(broomOption("BroomStage", "4"))
@@ -561,6 +652,8 @@ function Module.create(context)
             epoch = broom.epoch,
             transactionActive = broom.transactionActive,
             lastChallenge = broom.lastChallenge,
+            configReady = broom.configReady,
+            requestAttempts = broom.requestAttempts,
             activationCount = broom.activations,
             message = broom.status,
         }
@@ -800,6 +893,7 @@ function Module.create(context)
     function api:Stop()
         invalidateBroomTransaction()
         broom.alive = false
+        broom.configReady = false
         broom.enabled = false
         broom.returnEpisode = false
         broom.waitingForBase = false

@@ -2272,6 +2272,9 @@ return function(locomotionFactory, Library, Common)
             Text = "Load config",
             Callback = function()
                 local ok, detail = loadConfig()
+                if ok and loco ~= nil and type(loco.OnConfigLoaded) == "function" then
+                    pcall(function() loco:OnConfigLoaded() end)
+                end
                 notify(ok and "Config loaded" or ("Config load failed: " .. tostring(detail)))
             end,
         })
@@ -2284,6 +2287,9 @@ return function(locomotionFactory, Library, Common)
         -- Restore the saved values after every control has been registered.
         -- Missing filesystem support or a first run remains intentionally quiet.
         local loaded = loadConfig()
+        if loco ~= nil and type(loco.OnConfigLoaded) == "function" then
+            pcall(function() loco:OnConfigLoaded() end)
+        end
         if loaded then notify("Config auto-loaded", 3) end
     end
 
