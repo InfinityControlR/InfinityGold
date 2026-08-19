@@ -47,6 +47,24 @@ class LocomotionInvariantTests(unittest.TestCase):
     def test_walking_detects_footprint_in_object_space(self):
         self.assertIn("PointToObjectSpace", self.source)
 
+    def test_walking_stops_halfway_between_entry_and_center(self):
+        self.assertIn("function Module._entryDirection2D", self.source)
+        self.assertIn("local directionSign = stage > 1 and 1 or -1", self.source)
+        self.assertIn("function Module._halfwayFootprintDistance", self.source)
+        self.assertIn("return edgeDistance * 0.5", self.source)
+        self.assertIn("resolveWalkingDestination", self.source)
+        self.assertIn("resolveStagePart(neighborStage)", self.source)
+        self.assertIn("centerDestination + entryDirection * halfwayDistance", self.source)
+        self.assertIn("state.finalDestination = finalDestination", self.source)
+        self.assertIn("state.destination = finalDestination", self.source)
+
+    def test_running_still_targets_the_stage_center(self):
+        core = read("games/magicloot.lua")
+        self.assertIn(
+            "updateRunning(stage, stagePartInstance, parts, groundPoint(stagePartInstance))",
+            core,
+        )
+
     def test_reset_flow_is_gated_and_bounded(self):
         self.assertIn("Enum.HumanoidStateType.Dead", self.source)
         self.assertIn("state.resetUsedStage", self.source)

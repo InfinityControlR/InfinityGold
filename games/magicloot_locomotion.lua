@@ -6,6 +6,53 @@
 
 local Module = {}
 
+function Module._entryDirection2D(stage, centerX, centerZ, neighborX, neighborZ)
+    stage = tonumber(stage)
+    centerX = tonumber(centerX)
+    centerZ = tonumber(centerZ)
+    neighborX = tonumber(neighborX)
+    neighborZ = tonumber(neighborZ)
+    if stage == nil or centerX == nil or centerZ == nil
+        or neighborX == nil or neighborZ == nil
+    then
+        return nil, nil
+    end
+
+    local directionSign = stage > 1 and 1 or -1
+    local deltaX = (neighborX - centerX) * directionSign
+    local deltaZ = (neighborZ - centerZ) * directionSign
+    local magnitude = math.sqrt(deltaX * deltaX + deltaZ * deltaZ)
+    if magnitude < 1 then return nil, nil end
+    return deltaX / magnitude, deltaZ / magnitude
+end
+
+-- Pure geometry helper kept on the module so the exact oriented-footprint
+-- calculation can be exercised by the offline Luau smoke suite. The caller
+-- supplies a unit direction already transformed into the stage's local space.
+function Module._halfwayFootprintDistance(sizeX, sizeZ, localX, localZ)
+    sizeX = tonumber(sizeX)
+    sizeZ = tonumber(sizeZ)
+    localX = tonumber(localX)
+    localZ = tonumber(localZ)
+    if sizeX == nil or sizeZ == nil or sizeX <= 0 or sizeZ <= 0
+        or localX == nil or localZ == nil
+    then
+        return nil
+    end
+
+    local distanceToX = math.huge
+    local distanceToZ = math.huge
+    if math.abs(localX) > 0.0001 then
+        distanceToX = sizeX * 0.5 / math.abs(localX)
+    end
+    if math.abs(localZ) > 0.0001 then
+        distanceToZ = sizeZ * 0.5 / math.abs(localZ)
+    end
+    local edgeDistance = math.min(distanceToX, distanceToZ)
+    if edgeDistance == math.huge then return nil end
+    return edgeDistance * 0.5
+end
+
 function Module.create(context)
     context = type(context) == "table" and context or {}
     local runService = game:GetService("RunService")
@@ -412,42 +459,62 @@ function Module.create(context)
         return state.enteredStage
     end
 
-    local function chooseInitialDestination(stage, stagePart, root, destination)
+    local function resolveWalkingDestination(stage, stagePart, centerDestination)
+        local stageNumber = tonumber(stage)
+        if stageNumber == nil then return centerDestination, nil, nil end
+        stageNumber = math.floor(stageNumber)
+
+        local neighborStage = stageNumber > 1 and (stageNumber - 1) or 2
+        local neighborPart = resolveStagePart(neighborStage)
+        if neighborPart == nil then return centerDestination, nil, nil end
+
+        local neighborPoint = groundPoint(neighborPart)
+        -- Later stages face their predecessor. Stage 1 has no predecessor,
+        -- so its entrance is the side opposite stage 2.
+        local directionX, directionZ = Module._entryDirection2D(
+            stageNumber,
+            centerDestination.X,
+            centerDestination.Z,
+            neighborPoint.X,
+            neighborPoint.Z
+        )
+        if directionX == nil then return centerDestination, nil, nil end
+
+        local entryDirection = Vector3.new(directionX, 0, directionZ)
+        local localDirection = stagePart.CFrame:VectorToObjectSpace(entryDirection)
+        local halfwayDistance = Module._halfwayFootprintDistance(
+            stagePart.Size.X,
+            stagePart.Size.Z,
+            localDirection.X,
+            localDirection.Z
+        )
+        if halfwayDistance == nil then return centerDestination, nil, nil end
+
+        return centerDestination + entryDirection * halfwayDistance,
+            entryDirection,
+            halfwayDistance * 2
+    end
+
+    local function chooseInitialDestination(
+        stage,
+        stagePart,
+        root,
+        centerDestination,
+        finalDestination,
+        entryDirection,
+        entryOffset
+    )
         if stage ~= 1 or isOverFootprint(stagePart, root.Position) then
-            return destination, "final"
-        end
-
-        local secondStagePart = resolveStagePart(2)
-        if secondStagePart == nil then
-            return destination, "final"
-        end
-
-        local firstPoint = destination
-        local secondPoint = groundPoint(secondStagePart)
-        local axisDelta = secondPoint - firstPoint
-        local planarAxis = Vector3.new(axisDelta.X, 0, axisDelta.Z)
-        if planarAxis.Magnitude < 1 then
-            return destination, "final"
+            return finalDestination, "final"
         end
 
         -- Stages 1 and 2 define the centre line. Approaching stage 1 from
         -- the opposite side first prevents a diagonal cut from a train corner.
-        local entryDirection = -planarAxis.Unit
-        local localDirection = stagePart.CFrame:VectorToObjectSpace(entryDirection)
-        local distanceToX = math.huge
-        local distanceToZ = math.huge
-        if math.abs(localDirection.X) > 0.0001 then
-            distanceToX = stagePart.Size.X * 0.5 / math.abs(localDirection.X)
+        if entryDirection == nil or entryOffset == nil then
+            return finalDestination, "final"
         end
-        if math.abs(localDirection.Z) > 0.0001 then
-            distanceToZ = stagePart.Size.Z * 0.5 / math.abs(localDirection.Z)
-        end
-        local entryOffset = math.min(distanceToX, distanceToZ)
-        if entryOffset == math.huge then
-            return destination, "final"
-        end
-        local entry = firstPoint + entryDirection * (entryOffset + 6)
-        return Vector3.new(entry.X, destination.Y, entry.Z), "align"
+        local entry = centerDestination + entryDirection * (entryOffset + 6)
+        return Vector3.new(entry.X, finalDestination.Y, entry.Z), "align"
     end
 
     local function notifyReset()
@@ -630,7 +697,9 @@ function Module.create(context)
             return "stage " .. tostring(stage) .. " walking paused after repeated stall"
         end
 
-        local finalDistance = planarDistance(destination, root.Position)
+        local finalDestination, entryDirection, entryOffset =
+            resolveWalkingDestination(stage, stagePart, destination)
+        local finalDistance = planarDistance(finalDestination, root.Position)
         if finalDistance <= 4 then
             stopMovement()
             return "stage " .. tostring(stage) .. " walking arrived"
@@ -642,7 +711,7 @@ function Module.create(context)
             and state.humanoid == humanoid
             and state.root == root
             and state.finalDestination ~= nil
-            and planarDistance(state.finalDestination, destination) <= 0.25
+            and planarDistance(state.finalDestination, finalDestination) <= 0.25
 
         if not sameRoute then
             stopMovement()
@@ -650,7 +719,10 @@ function Module.create(context)
                 stage,
                 stagePart,
                 root,
-                destination
+                destination,
+                finalDestination,
+                entryDirection,
+                entryOffset
             )
             state.active = true
             state.enteredStage = isOverFootprint(stagePart, root.Position)
@@ -660,7 +732,7 @@ function Module.create(context)
             state.humanoid = humanoid
             state.root = root
             state.destination = initialDestination
-            state.finalDestination = destination
+            state.finalDestination = finalDestination
             state.phase = phase
             state.lastPosition = root.Position
             state.lastMovedAt = now
@@ -710,10 +782,10 @@ function Module.create(context)
         local distance = planarDistance(state.destination, root.Position)
         if state.phase == "align" and distance <= 4 then
             state.phase = "final"
-            state.destination = destination
+            state.destination = finalDestination
             state.lastPosition = root.Position
             state.lastMovedAt = now
-            distance = planarDistance(destination, root.Position)
+            distance = planarDistance(finalDestination, root.Position)
         end
 
         if state.phase == "final" and distance <= 4 then

@@ -48,9 +48,10 @@ the InfinityGold dashboard.
   `Orbit`, `Running`, `Walking`, configurable height/orbit/enter delay.
 - **Walking**: `humanoid:Move` driven from a render-step binding at
   `Enum.RenderPriority.Character + 1`. No teleports, no WalkSpeed/JumpPower
-  changes, EnterDelay per stage change, 20-second stuck detection with a
-  single bounded character reset per stage, stage-entry releases the attack
-  block (`enteredStage` latch).
+  changes. Its final farm point is halfway between the stage entrance edge
+  and its centre; EnterDelay applies per stage change, 20-second stuck
+  detection performs a single bounded character reset per stage, and stage
+  entry releases the attack block (`enteredStage` latch).
 - **Combat**: Auto Attack (0.2 s cadence) and Auto Click
   (`1 / max(1, ClickRate)`), sharing one attack block fed by the locomotion
   bridge. Auto Click continuously sends the confirmed `TRAIN_MANUAL_CLICK`
