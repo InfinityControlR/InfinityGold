@@ -1058,8 +1058,8 @@ function Library:CreateWindow(options)
                 TextColor3 = Library.Theme.Gold,
                 TextXAlignment = Enum.TextXAlignment.Right,
                 TextTruncate = Enum.TextTruncate.AtEnd,
-                Position = UDim2.new(0, 120, 0, 0),
-                Size = UDim2.new(1, -140, 1, 0),
+                Position = UDim2.new(0, 118, 0, 0),
+                Size = UDim2.new(1, -144, 1, 0),
             })
 
             local arrow = label(button, {
@@ -1068,19 +1068,25 @@ function Library:CreateWindow(options)
                 TextSize = 12,
                 TextColor3 = Library.Theme.TextDim,
                 TextXAlignment = Enum.TextXAlignment.Center,
-                AnchorPoint = Vector2.new(1, 0),
-                Position = UDim2.new(1, -8, 0, 0),
-                Size = UDim2.new(0, 14, 1, 0),
+                AnchorPoint = Vector2.new(1, 0.5),
+                Position = UDim2.new(1, -10, 0.5, 0),
+                Size = UDim2.new(0, 16, 0, 16),
             })
 
-            local listFrame = Instance.new("Frame")
+            local maxVisible = math.max(1, math.floor(tonumber(dropdownOptions.MaxVisible) or 5))
+
+            local listFrame = Instance.new("ScrollingFrame")
             listFrame.Name = "List"
             listFrame.BackgroundColor3 = Library.Theme.SurfaceLight
             listFrame.BorderSizePixel = 0
             listFrame.Position = UDim2.new(0, 0, 0, 34)
             listFrame.Size = UDim2.new(1, 0, 0, 0)
-            listFrame.AutomaticSize = Enum.AutomaticSize.Y
             listFrame.Visible = false
+            listFrame.ScrollingDirection = Enum.ScrollingDirection.Y
+            listFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+            listFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+            listFrame.ScrollBarThickness = 4
+            listFrame.ScrollBarImageColor3 = Library.Theme.Gold
             listFrame.Parent = holder
             corner(listFrame, 6)
             stroke(listFrame, Library.Theme.Border, 1)
@@ -1136,10 +1142,22 @@ function Library:CreateWindow(options)
                 end
             end
 
-            local function rebuildList()
+            local rebuildList
+
+            local function setOpen(open)
+                listFrame.Visible = open
+                arrow.Text = open and "v" or ">"
+                if open then
+                    rebuildList()
+                end
+            end
+
+            rebuildList = function()
                 for _, child in ipairs(listFrame:GetChildren()) do
                     if child:IsA("TextButton") then child:Destroy() end
                 end
+                local rows = math.min(#values, maxVisible)
+                listFrame.Size = UDim2.new(1, 0, 0, rows * 26 + 8)
                 for index, entry in ipairs(values) do
                     local optionButton = Instance.new("TextButton")
                     optionButton.Name = entry
@@ -1168,8 +1186,7 @@ function Library:CreateWindow(options)
                             selected[entry] = not selected[entry] or nil
                         else
                             selected = { [entry] = true }
-                            listFrame.Visible = false
-                            arrow.Text = ">"
+                            setOpen(false)
                         end
                         emit()
                         rebuildList()
@@ -1177,11 +1194,28 @@ function Library:CreateWindow(options)
                 end
             end
 
+            -- The header click toggles; a tap anywhere outside the dropdown
+            -- also closes it, so an accidental open never needs a selection.
             button.MouseButton1Click:Connect(function()
-                listFrame.Visible = not listFrame.Visible
-                arrow.Text = listFrame.Visible and "v" or ">"
-                if listFrame.Visible then
-                    rebuildList()
+                setOpen(not listFrame.Visible)
+            end)
+
+            connectGlobal(UserInputService.InputBegan, function(input, gameProcessed)
+                if not listFrame.Visible then return end
+                if input.UserInputType ~= Enum.UserInputType.MouseButton1
+                    and input.UserInputType ~= Enum.UserInputType.Touch
+                then
+                    return
+                end
+                local position = input.Position
+                local topLeft = holder.AbsolutePosition
+                local size = holder.AbsoluteSize
+                if position.X < topLeft.X
+                    or position.X > topLeft.X + size.X
+                    or position.Y < topLeft.Y
+                    or position.Y > topLeft.Y + size.Y
+                then
+                    setOpen(false)
                 end
             end)
 

@@ -485,6 +485,65 @@ do
     end
 end
 
+-- Dropdown interaction: header toggles open/closed, the list height is
+-- capped, choosing an option closes it, and a tap outside closes it too.
+do
+    local function findDescendant(root, name)
+        for _, child in ipairs(root:GetChildren()) do
+            if child.Name == name then return child end
+            local found = findDescendant(child, name)
+            if found then return found end
+        end
+        return nil
+    end
+
+    local windowFrame = Library._windows[1] and Library._windows[1].Frame
+    local dropdown = windowFrame and findDescendant(windowFrame, "Dropdown")
+    if dropdown == nil then
+        fail("cannot simulate a dropdown: none found in the window")
+    else
+        local header = dropdown:FindFirstChild("Button")
+        local list = dropdown:FindFirstChild("List")
+        if header == nil or list == nil then
+            fail("dropdown is missing its header or list")
+        else
+            -- Open via the header: the 27-stage list must cap at 5 rows.
+            header.MouseButton1Click:Fire()
+            if list.Visible ~= true then
+                fail("clicking the dropdown header did not open it")
+            end
+            if list.Size.Y.Offset ~= 138 then
+                fail(string.format(
+                    "list height not capped to 5 rows: %d",
+                    list.Size.Y.Offset
+                ))
+            end
+
+            -- Choosing an option closes a single-select dropdown.
+            local option = list:FindFirstChildOfClass("TextButton")
+            if option ~= nil then
+                option.MouseButton1Click:Fire()
+                if list.Visible ~= false then
+                    fail("choosing an option did not close the dropdown")
+                end
+            end
+
+            -- Reopen, then a tap far outside must close it.
+            header.MouseButton1Click:Fire()
+            if list.Visible ~= true then
+                fail("dropdown did not reopen")
+            end
+            service("UserInputService").InputBegan:Fire({
+                UserInputType = Enum.UserInputType.Touch,
+                Position = Vector3.new(5000, 5000, 0),
+            })
+            if list.Visible ~= false then
+                fail("tap outside did not close the dropdown")
+            end
+        end
+    end
+end
+
 if #failures > 0 then
     print(string.format("ui_core_smoke: %d failure(s)", #failures))
     error("ui_core_smoke failed")

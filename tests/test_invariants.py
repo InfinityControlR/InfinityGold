@@ -255,5 +255,30 @@ class FloatingButtonTests(unittest.TestCase):
         self.assertNotIn("button.AnchorPoint = Vector2.new(1, 1)", self.source)
 
 
+class DropdownTests(unittest.TestCase):
+    def setUp(self):
+        self.source = read("ui/InfinityUI.lua")
+
+    def test_header_click_toggles_the_list(self):
+        self.assertIn("local function setOpen(open)", self.source)
+        self.assertIn("setOpen(not listFrame.Visible)", self.source)
+
+    def test_tap_outside_closes_the_list(self):
+        self.assertIn("connectGlobal(UserInputService.InputBegan", self.source)
+        self.assertIn("setOpen(false)", self.source)
+
+    def test_list_is_capped_and_scrollable(self):
+        self.assertIn('local listFrame = Instance.new("ScrollingFrame")', self.source)
+        self.assertIn("MaxVisible", self.source)
+        self.assertIn("math.min(#values, maxVisible)", self.source)
+        self.assertIn("ScrollBarThickness", self.source)
+        self.assertIn("AutomaticCanvasSize", self.source)
+
+    def test_arrow_sits_inside_the_header(self):
+        self.assertIn("Position = UDim2.new(1, -10, 0.5, 0)", self.source)
+        self.assertIn("AnchorPoint = Vector2.new(1, 0.5)", self.source)
+        self.assertNotIn("Position = UDim2.new(1, -8, 0, 0)", self.source)
+
+
 if __name__ == "__main__":
     unittest.main()
