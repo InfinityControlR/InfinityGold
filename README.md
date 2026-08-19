@@ -13,6 +13,21 @@ values, stage layout, drop schema) follow the behaviour documented during
 the Magic Loot analysis; everything that could not be verified statically
 is implemented fail-open and is listed under *Runtime verification* below.
 
+## Load InfinityGold
+
+Use this permanent loader. It follows `main`, while every executable module
+downloaded by the loader remains pinned to an audited commit:
+
+```lua
+loadstring(game:HttpGet(
+    "https://raw.githubusercontent.com/InfinityControlR/InfinityGold/refs/heads/main/loader.lua?t="
+    .. tostring(os.time())
+))()
+```
+
+The scripts under `diagnostics/` are standalone inspectors; they do not load
+the InfinityGold dashboard.
+
 ## Layout
 
 | File | Purpose |
@@ -80,7 +95,7 @@ an inspected callback or sending a remote.
 
 ```lua
 loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/InfinityControlR/InfinityGold/main/diagnostics/click_action_inspector.lua?t="
+    "https://raw.githubusercontent.com/InfinityControlR/InfinityGold/refs/heads/main/diagnostics/click_action_inspector.lua?t="
     .. tostring(os.time())
 ))()
 ```
