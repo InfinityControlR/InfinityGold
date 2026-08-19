@@ -82,7 +82,7 @@ end
 local UI = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/c80662d1080f7dcf72d4bf89bec42861b7733d3b/ui/InfinityUI.lua'
 local COMMON = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/c80662d1080f7dcf72d4bf89bec42861b7733d3b/games/magicloot_common.lua'
 local LOCOMOTION = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/c80662d1080f7dcf72d4bf89bec42861b7733d3b/games/magicloot_locomotion.lua'
-local CORE = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/d4cfeeb87138b56a6d94c4ac1363ea837e8df346/games/magicloot.lua'
+local CORE = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/5db492c7c43a6d3e36f60a3d32299828cb6ecce6/games/magicloot.lua'
 
 -- Belt and braces: a fresh cache key per run for the pinned URLs too.
 local CACHE_BUST = '?t=' .. tostring(os.time())
