@@ -493,6 +493,93 @@ return function(locomotionFactory, Library, Common)
         return nil, "Bag data unavailable"
     end
 
+    local onlineClaimTelemetry = {
+        available = 0,
+        attempts = 0,
+        claimed = 0,
+        lastError = nil,
+        status = "waiting",
+    }
+
+    local function claimableOnlineAwardIds()
+        local playerData = resolveRuntimeModule("PlayerData")
+        if playerData == nil or type(playerData.GetPlrDataByKey) ~= "function" then
+            return nil, "PlayerData unavailable"
+        end
+
+        local onlineOk, onlineBox = pcall(
+            playerData.GetPlrDataByKey,
+            player,
+            "OnlineBox"
+        )
+        if not onlineOk then
+            return nil, "OnlineBox read failed: " .. tostring(onlineBox)
+        end
+        if type(onlineBox) ~= "table" then
+            return nil, "OnlineBox unavailable"
+        end
+
+        local cfgFind = resolveRuntimeModule("CfgFind")
+        if cfgFind == nil
+            or type(cfgFind.GetOnlineAwardList) ~= "function"
+            or type(cfgFind.IsOnlineTierClaimable) ~= "function"
+        then
+            return nil, "online reward config unavailable"
+        end
+
+        local listOk, awardList = pcall(cfgFind.GetOnlineAwardList)
+        if not listOk or type(awardList) ~= "table" then
+            return nil, "online reward list unavailable"
+        end
+
+        local ids = {}
+        for _, award in ipairs(awardList) do
+            if type(award) == "table" then
+                local claimOk, claimable = pcall(
+                    cfgFind.IsOnlineTierClaimable,
+                    onlineBox,
+                    award
+                )
+                local id = math.floor(tonumber(award.id) or 0)
+                if claimOk and claimable and id > 0 then
+                    table.insert(ids, id)
+                end
+            end
+        end
+        return ids
+    end
+
+    local function claimOnlineAwards()
+        local ids, scanError = claimableOnlineAwardIds()
+        if ids == nil then
+            onlineClaimTelemetry.available = 0
+            onlineClaimTelemetry.lastError = scanError
+            onlineClaimTelemetry.status = scanError or "waiting"
+            return 0, scanError
+        end
+
+        onlineClaimTelemetry.available = #ids
+        onlineClaimTelemetry.lastError = nil
+        onlineClaimTelemetry.status = #ids > 0 and "claiming" or "waiting"
+
+        local claimed = 0
+        for _, awardId in ipairs(ids) do
+            if not sessionAlive or not cfg.AutoClaimOnline then break end
+            onlineClaimTelemetry.attempts = onlineClaimTelemetry.attempts + 1
+            local ok, _, err = invokeAction("CLAIM_ONLINE_AWARD", awardId)
+            if ok then
+                claimed = claimed + 1
+                onlineClaimTelemetry.claimed = onlineClaimTelemetry.claimed + 1
+            else
+                onlineClaimTelemetry.lastError = err
+            end
+            task.wait(0.35)
+        end
+
+        onlineClaimTelemetry.status = claimed > 0 and "claimed" or "waiting"
+        return claimed, onlineClaimTelemetry.lastError
+    end
+
     local function isProtectedAlchemyMaterial(itemId)
         local data = resolveGetData()
         if data == nil
@@ -1508,15 +1595,21 @@ return function(locomotionFactory, Library, Common)
         end
     end)
 
-    task.spawn(function() -- claims
+    task.spawn(function() -- index claims
         while sessionAlive do
             if cfg.AutoClaimIndex then
                 sendAction("INDEX_CLAIM_REWARD")
             end
-            if cfg.AutoClaimOnline then
-                sendAction("CLAIM_ONLINE_AWARD")
-            end
             task.wait(5)
+        end
+    end)
+
+    task.spawn(function() -- online claims
+        while sessionAlive do
+            if cfg.AutoClaimOnline then
+                claimOnlineAwards()
+            end
+            task.wait(2)
         end
     end)
 

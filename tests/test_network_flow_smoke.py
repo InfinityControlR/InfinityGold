@@ -77,7 +77,10 @@ local network = {{
         assert(count == 1 or count == 2, "InvokeServer received " .. tostring(count) .. " args")
         assert(remote == invokeRemote, "InvokeServer first arg was not the remote")
         table.insert(invokeCalls, payload or "empty")
-        return {{ accepted = payload and payload.value or "empty" }}
+        local accepted = payload
+        if type(payload) == "table" then accepted = payload.value end
+        if payload == nil then accepted = "empty" end
+        return {{ accepted = accepted }}
     end,
 }}
 
@@ -89,6 +92,7 @@ local modules = {{
         INVOKE = invokeRemote,
         INVOKE_EMPTY = invokeRemote,
         TRAIN_MANUAL_CLICK = invokeRemote,
+        CLAIM_ONLINE_AWARD = invokeRemote,
         DUNGEON_RETURN_TOWN = fireRemote,
     }},
     GetData = {{ marker = "get-data" }},
@@ -157,6 +161,12 @@ assert(invoked, "power-click invoke failed: " .. tostring(invokeError))
 assert(#invokeCalls == 3, "power-click descriptor was rejected")
 assert(type(invokeCalls[3]) == "table" and next(invokeCalls[3]) == nil,
     "power-click payload was not empty")
+
+invoked, result, invokeError = invokeAction("CLAIM_ONLINE_AWARD", 12)
+assert(invoked and result.accepted == 12,
+    "online reward did not preserve its numeric award id")
+assert(#invokeCalls == 4 and invokeCalls[4] == 12,
+    "online reward did not use InvokeServer with a scalar id")
 
 local getData = resolveRuntimeModule("GetData")
 assert(getData == modules.GetData, "runtime module did not use UtilsSystem registry")

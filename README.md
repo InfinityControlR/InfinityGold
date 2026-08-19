@@ -70,8 +70,10 @@ the InfinityGold dashboard.
   on toggle/stage/return changes, and base detection through the numeric
   `InDungeonChallenge` transition.
 - **Progress**: Auto Rebirth (with limit), Auto Train (current zone via
-  `TRAIN_ZONE_UPDATE`), Auto Return when the bag is full, index/online claims,
-  potion brewing/drinking, best-affordable shop automation (fail-open).
+  `TRAIN_ZONE_UPDATE`), Auto Return when the bag is full and index/online
+  claims. Online rewards are filtered through the live `OnlineBox` state and
+  claimed individually by numeric award ID. Potion brewing/drinking and
+  best-affordable shop automation remain fail-open.
 - **Dashboard**: InfinityUI — obsidian-black surface, gold accents, draggable
   window, Right Shift toggles visibility, toasts with progress bars, session
   info, config save/load, rejoin, unload.
@@ -124,8 +126,8 @@ These surfaces need confirmation inside Roblox (fail-open until then):
   `GetData.GetItemCountByID(LocalPlayer, 5)` and usage is
   `LocalPlayer.LimitBagUsed`. The Farm tab shows both live values and the
   capacity source so this can be verified without another diagnostic script.
-- `PLAYER_REBIRTH`, `INDEX_CLAIM_REWARD`, `CLAIM_ONLINE_AWARD`,
-  `DRINK_POTION` payload shapes (currently sent without arguments).
+- `PLAYER_REBIRTH`, `INDEX_CLAIM_REWARD` and `DRINK_POTION` payload shapes
+  (currently sent without arguments).
 - `GetData.GetCfgByName("weaponConf"|"armorConf")` shape for shop automation.
 - Brew recipe selection currently picks the first entry of
   `GetData.GetRecipeList()`.
