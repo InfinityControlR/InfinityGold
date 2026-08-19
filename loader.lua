@@ -81,7 +81,7 @@ end
 -- Only this loader itself is served from main.
 local UI = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/11d313ac902b4c025608242b8b5e334c120b7c77/ui/InfinityUI.lua'
 local COMMON = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/c80662d1080f7dcf72d4bf89bec42861b7733d3b/games/magicloot_common.lua'
-local LOCOMOTION = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/e1a3169c112d40a27196e0e0f7b51936a0fc66a6/games/magicloot_locomotion.lua'
+local LOCOMOTION = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/f779ffc190f30e0bb53c743bd8f1404c45023add/games/magicloot_locomotion.lua'
 local CORE = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/4a30cdae18632c43cb6c418dc3c6934dfd200d8f/games/magicloot.lua'
 
 -- Belt and braces: a fresh cache key per run for the pinned URLs too.
