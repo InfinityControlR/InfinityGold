@@ -300,14 +300,24 @@ return function(locomotionFactory, Library, Common)
         end
         net.utils = utils
         net.network = network
-        net.messages = utils.NetMsg
-        net.status = "ready"
+        -- The action->remote map may live on the facade itself depending on
+        -- the game build; try the known shapes before giving up.
+        local messages = utils.NetMsg
+        if messages == nil and type(network) == "table" then
+            messages = network.NetMsg
+        end
+        if messages == nil then
+            messages = utils.Net
+        end
+        net.messages = messages
+        net.status = messages ~= nil and "ready" or "NetMsg unavailable"
         return network
     end
 
     local function remoteFor(action)
         local network = resolveNet()
         if network == nil or net.messages == nil then
+            net.lastMissedAction = action
             return nil
         end
         local ok, remote = pcall(function()
@@ -316,6 +326,7 @@ return function(locomotionFactory, Library, Common)
         if ok and typeof(remote) == "Instance" then
             return remote
         end
+        net.lastMissedAction = action
         return nil
     end
 
@@ -553,6 +564,17 @@ return function(locomotionFactory, Library, Common)
         status = "resolving",
     }
 
+    -- Live combat telemetry: the Combat tab renders these so a silent
+    -- fail-open (missing skill module, missing remote) is always visible.
+    local combatStats = {
+        attacksOk = 0,
+        attacksFailed = 0,
+        clicksOk = 0,
+        clicksFailed = 0,
+        lastAttackError = "none",
+        lastClickError = "none",
+    }
+
     local function withElevatedIdentity(callback)
         local getIdentity = getthreadidentity
         local setIdentity = setthreadidentity
@@ -574,40 +596,48 @@ return function(locomotionFactory, Library, Common)
         end
         local ok, result = withElevatedIdentity(function()
             local playerScripts = player:WaitForChild("PlayerScripts", 8)
-            if playerScripts == nil then return nil end
+            if playerScripts == nil then return { error = "PlayerScripts not found" } end
             local manager = playerScripts:WaitForChild("PlayerSkillClientManager", 8)
-            if manager == nil then return nil end
+            if manager == nil then return { error = "PlayerSkillClientManager not found" } end
             local inputModule = manager:WaitForChild("PlayerSkillInput", 8)
+            if inputModule == nil then return { error = "PlayerSkillInput not found" } end
             local configModule = manager:WaitForChild("SkillSlotConfig", 8)
-            if inputModule == nil or configModule == nil then return nil end
-            local inputTable = require(inputModule)
-            local configTable = require(configModule)
-            if type(inputTable) ~= "table"
-                or type(inputTable.simulateSlotPressRelease) ~= "function"
-                or type(configTable) ~= "table"
-                or configTable.NORMAL_ATTACK_SLOT_INDEX == nil
-            then
-                return nil
+            if configModule == nil then return { error = "SkillSlotConfig not found" } end
+            local inputOk, inputTable = pcall(require, inputModule)
+            if not inputOk or type(inputTable) ~= "table" then
+                return { error = "PlayerSkillInput require failed" }
             end
-            return { input = inputTable, slot = configTable.NORMAL_ATTACK_SLOT_INDEX }
+            local configOk, configTable = pcall(require, configModule)
+            if not configOk or type(configTable) ~= "table" then
+                return { error = "SkillSlotConfig require failed" }
+            end
+            if type(inputTable.simulateSlotPressRelease) ~= "function" then
+                return { error = "simulateSlotPressRelease missing" }
+            end
+            if configTable.NORMAL_ATTACK_SLOT_INDEX == nil then
+                return { error = "NORMAL_ATTACK_SLOT_INDEX missing" }
+            end
+            return {
+                input = inputTable,
+                slot = configTable.NORMAL_ATTACK_SLOT_INDEX,
+            }
         end)
-        if ok and type(result) == "table" then
+        if ok and type(result) == "table" and result.error == nil then
             attack.skillInput = result.input
             attack.slotIndex = result.slot
             attack.status = "ready"
             return attack.skillInput
         end
-        attack.status = "skill modules unavailable"
+        attack.status = (ok and type(result) == "table" and result.error)
+            or "skill modules unavailable"
         return nil
     end
 
     local function setNowTarget(target)
         local value = player:FindFirstChild("NowTargetCurrent")
-        if value == nil then
-            value = player:FindFirstChildOfClass("ObjectValue")
-        end
-        if value == nil then return end
-        pcall(function() value.Value = target end)
+        if value == nil then return false end
+        local ok = pcall(function() value.Value = target end)
+        return ok
     end
 
     local function findAttackTarget(range)
@@ -993,8 +1023,12 @@ return function(locomotionFactory, Library, Common)
                 local target = findAttackTarget(tonumber(cfg.AttackRange) or 120)
                 if target ~= nil then
                     local ok, err = attackTarget(target)
-                    if not ok and attack.status ~= "skill modules unavailable" then
-                        attack.status = tostring(err or "attack failed")
+                    if ok then
+                        combatStats.attacksOk = combatStats.attacksOk + 1
+                        combatStats.lastAttackError = "none"
+                    else
+                        combatStats.attacksFailed = combatStats.attacksFailed + 1
+                        combatStats.lastAttackError = tostring(err or "attack failed")
                     end
                 end
             end
@@ -1006,10 +1040,25 @@ return function(locomotionFactory, Library, Common)
         while sessionAlive do
             if cfg.AutoClick and not blocksAttack() then
                 local target = findAttackTarget(tonumber(cfg.AttackRange) or 120)
+                local delivered = false
                 if target ~= nil then
-                    attackTarget(target)
-                else
-                    sendAction("TRAIN_MANUAL_CLICK", {})
+                    local ok, err = attackTarget(target)
+                    delivered = ok
+                    if not ok then
+                        combatStats.lastAttackError = tostring(err or "attack failed")
+                    end
+                end
+                if not delivered then
+                    -- Fall back to the training click so strength training
+                    -- keeps working even when the skill modules do not load.
+                    local ok, err = sendAction("TRAIN_MANUAL_CLICK", {})
+                    if ok then
+                        combatStats.clicksOk = combatStats.clicksOk + 1
+                        combatStats.lastClickError = "none"
+                    else
+                        combatStats.clicksFailed = combatStats.clicksFailed + 1
+                        combatStats.lastClickError = tostring(err)
+                    end
                 end
             end
             task.wait(1 / math.max(1, tonumber(cfg.ClickRate) or 10))
@@ -1506,8 +1555,64 @@ return function(locomotionFactory, Library, Common)
         group:AddToggle("AutoClick", { Text = "Auto Click", Default = false })
         group:AddSlider("ClickRate", {
             Text = "Click rate",
-            Default = 10, Min = 1, Max = 20, Rounding = 0,
+            Default = 10, Min = 1, Max = 50, Rounding = 0,
         })
+        group:AddButton({
+            Text = "Send test click now",
+            Callback = function()
+                local ok, err = sendAction("TRAIN_MANUAL_CLICK", {})
+                local message = ok
+                    and "test click sent"
+                    or ("test click failed: " .. tostring(err))
+                notify(message)
+                banner(message)
+            end,
+        })
+        group:AddButton({
+            Text = "Probe skill modules",
+            Callback = function()
+                task.spawn(function()
+                    attack.skillInput = nil
+                    resolveAttack()
+                    local message = "skill: " .. tostring(attack.status)
+                    notify(message)
+                    banner(message)
+                end)
+            end,
+        })
+
+        local diagnostics = tab:CreateSection("Diagnostics"):AddLabel("probing...")
+        task.spawn(function()
+            while sessionAlive do
+                pcall(function()
+                    local monsters = 0
+                    for _, folderName in ipairs({ "Monster", "LocalMonster" }) do
+                        local folder = workspace:FindFirstChild(folderName)
+                        if folder ~= nil then
+                            monsters = monsters + #folder:GetChildren()
+                        end
+                    end
+                    diagnostics:Set(string.format(
+                        "skill: %s\nnet: %s\nclick remote: %s\nlast missed action: %s\n"
+                            .. "NowTargetCurrent: %s\nmonsters nearby containers: %d\n"
+                            .. "attacks: %d ok / %d fail\nclicks: %d ok / %d fail\n"
+                            .. "last attack error: %s\nlast click error: %s",
+                        tostring(attack.status),
+                        tostring(net.status),
+                        remoteFor("TRAIN_MANUAL_CLICK") ~= nil and "found" or "missing",
+                        tostring(net.lastMissedAction or "-"),
+                        player:FindFirstChild("NowTargetCurrent") ~= nil and "yes" or "no",
+                        monsters,
+                        combatStats.attacksOk, combatStats.attacksFailed,
+                        combatStats.clicksOk, combatStats.clicksFailed,
+                        tostring(combatStats.lastAttackError),
+                        tostring(combatStats.lastClickError)
+                    ))
+                end)
+                task.wait(1)
+            end
+        end)
+
         tab:CreateSection("Notes"):AddParagraph({
             Title = "Attack blocking",
             Text = "Auto Attack and Auto Click pause while Walking or Running "

@@ -280,5 +280,45 @@ class DropdownTests(unittest.TestCase):
         self.assertNotIn("Position = UDim2.new(1, -8, 0, 0)", self.source)
 
 
+class CombatDiagnosticsTests(unittest.TestCase):
+    def setUp(self):
+        self.source = read("games/magicloot.lua")
+
+    def test_click_worker_falls_back_to_training_click(self):
+        self.assertIn("if not delivered then", self.source)
+        self.assertIn(
+            'sendAction("TRAIN_MANUAL_CLICK", {})', self.source
+        )
+
+    def test_skill_resolution_reports_the_failing_step(self):
+        for marker in (
+            '"PlayerScripts not found"',
+            '"PlayerSkillClientManager not found"',
+            '"PlayerSkillInput not found"',
+            '"SkillSlotConfig not found"',
+            '"simulateSlotPressRelease missing"',
+        ):
+            self.assertIn(marker, self.source)
+
+    def test_netmsg_fallbacks(self):
+        self.assertIn("network.NetMsg", self.source)
+        self.assertIn("utils.Net", self.source)
+        self.assertIn("net.lastMissedAction", self.source)
+
+    def test_combat_telemetry_exists(self):
+        for marker in (
+            "local combatStats",
+            "attacksOk",
+            "clicksOk",
+            "lastClickError",
+        ):
+            self.assertIn(marker, self.source)
+
+    def test_combat_tab_has_probe_buttons(self):
+        self.assertIn("Send test click now", self.source)
+        self.assertIn("Probe skill modules", self.source)
+        self.assertIn("Max = 50", self.source)
+
+
 if __name__ == "__main__":
     unittest.main()
