@@ -685,46 +685,84 @@ return function(locomotionFactory, Library, Common)
         return true
     end
 
-    -- Simulated screen clicks: the most robust training path. The current
-    -- game build ships no PlayerSkillClientManager, so Auto Attack/Auto
-    -- Click drive the same input events a real tap produces. Chain:
-    -- VirtualInputManager (input-level mouse events) -> VirtualUser ->
-    -- executor mouse1click -> TRAIN_MANUAL_CLICK remote (last resort).
-    local function screenCenter()
-        local ok, camera = pcall(function()
-            return workspace.CurrentCamera
-        end)
-        if ok and camera ~= nil then
-            local viewport = camera.ViewportSize
-            return math.floor(viewport.X / 2), math.floor(viewport.Y / 2)
+    -- Background clicks: the game registers the tap without touching the
+    -- real cursor. Nothing here injects input events, so the dashboard (and
+    -- the mouse) stay fully usable while Auto Click runs. Chain:
+    -- TRAIN_MANUAL_CLICK remote (what the game itself sends) -> the training
+    -- button's connected handlers (getconnections) -> firesignal fallback.
+    local cachedTrainingButton = nil
+
+    local function findTrainingButton(playerGui)
+        if cachedTrainingButton ~= nil and cachedTrainingButton.Parent ~= nil then
+            return cachedTrainingButton
         end
-        return 512, 288
+        cachedTrainingButton = nil
+        local best, bestArea = nil, 0
+        local ok, descendants = pcall(playerGui.GetDescendants, playerGui)
+        if not ok or type(descendants) ~= "table" then
+            return nil
+        end
+        for _, child in ipairs(descendants) do
+            local okArea, area = pcall(function()
+                if not child:IsA("GuiButton") then return -1 end
+                if child.Visible == false then return -1 end
+                local size = child.AbsoluteSize
+                return size.X * size.Y
+            end)
+            if okArea and area ~= nil and area > bestArea then
+                best, bestArea = child, area
+            end
+        end
+        cachedTrainingButton = best
+        return best
     end
 
-    local function simulateScreenClick()
-        local x, y = screenCenter()
+    local BUTTON_SIGNALS = { "MouseButton1Click", "Activated", "TouchTap" }
 
-        local ok = pcall(function()
-            local manager = game:GetService("VirtualInputManager")
-            manager:SendMouseButtonEvent(x, y, 0, true, game, 0)
-            manager:SendMouseButtonEvent(x, y, 0, false, game, 0)
-        end)
-        if ok then return true, "virtual input" end
-
-        ok = pcall(function()
-            local virtualUser = game:GetService("VirtualUser")
-            virtualUser:CaptureController()
-            virtualUser:Button1Down(Vector2.new(x, y))
-            virtualUser:Button1Up(Vector2.new(x, y))
-        end)
-        if ok then return true, "virtual user" end
-
-        if type(mouse1click) == "function" then
-            ok = pcall(mouse1click)
-            if ok then return true, "mouse1click" end
+    local function fireTrainingButton(button)
+        -- Calling the connected handlers directly is verifiable delivery:
+        -- only claims success when at least one handler really ran.
+        if type(getconnections) == "function" then
+            for _, signalName in ipairs(BUTTON_SIGNALS) do
+                local ok, connections = pcall(getconnections, button[signalName])
+                if ok and type(connections) == "table" then
+                    for _, connection in ipairs(connections) do
+                        local handlerOk, handler = pcall(function()
+                            return connection.Function or connection.fn
+                        end)
+                        if handlerOk and type(handler) == "function" then
+                            if pcall(handler) then
+                                return true, "ui handlers"
+                            end
+                        end
+                    end
+                end
+            end
         end
+        if type(firesignal) == "function" then
+            for _, signalName in ipairs(BUTTON_SIGNALS) do
+                local ok = pcall(firesignal, button[signalName])
+                if ok then
+                    return true, "ui signal"
+                end
+            end
+        end
+        return false, "no handlers fired"
+    end
 
-        return false, "no click simulator available"
+    local function simulateBackgroundClick()
+        local ok = sendAction("TRAIN_MANUAL_CLICK", {})
+        if ok then return true, "remote" end
+
+        local playerGui = player:FindFirstChildOfClass("PlayerGui")
+        if playerGui ~= nil then
+            local button = findTrainingButton(playerGui)
+            if button ~= nil then
+                local fired, delivery = fireTrainingButton(button)
+                if fired then return true, delivery end
+            end
+        end
+        return false, "no background click path"
     end
 
     -- Locomotion bridge --------------------------------------------------------
@@ -1067,9 +1105,10 @@ return function(locomotionFactory, Library, Common)
                 if target ~= nil then
                     local ok, err = attackTarget(target)
                     if not ok then
-                        -- Skill modules missing: click the screen instead,
-                        -- exactly like a manual attack/training tap.
-                        ok = simulateScreenClick()
+                        -- Skill modules missing: run a background training
+                        -- click instead, without touching real input.
+                        local clicked = simulateBackgroundClick()
+                        ok = clicked
                     end
                     if ok then
                         combatStats.attacksOk = combatStats.attacksOk + 1
@@ -1087,24 +1126,17 @@ return function(locomotionFactory, Library, Common)
     task.spawn(function()
         while sessionAlive do
             if cfg.AutoClick and not blocksAttack() then
-                -- Pure screen clicks at the game's tap zone: the same input
-                -- a real tap produces, no target hunting involved.
-                local clicked, delivery = simulateScreenClick()
+                -- Background clicks: the game registers the tap while the
+                -- mouse and the dashboard stay untouched.
+                local clicked, delivery = simulateBackgroundClick()
                 if clicked then
                     combatStats.clicksOk = combatStats.clicksOk + 1
                     combatStats.lastClickError = "none"
                     combatStats.clickDelivery = delivery
                 else
-                    local ok, err = sendAction("TRAIN_MANUAL_CLICK", {})
-                    if ok then
-                        combatStats.clicksOk = combatStats.clicksOk + 1
-                        combatStats.lastClickError = "none"
-                        combatStats.clickDelivery = "remote"
-                    else
-                        combatStats.clicksFailed = combatStats.clicksFailed + 1
-                        combatStats.lastClickError = tostring(err)
-                        combatStats.clickDelivery = "none"
-                    end
+                    combatStats.clicksFailed = combatStats.clicksFailed + 1
+                    combatStats.lastClickError = tostring(delivery)
+                    combatStats.clickDelivery = "none"
                 end
             end
             task.wait(1 / math.max(1, tonumber(cfg.ClickRate) or 10))
@@ -1606,16 +1638,10 @@ return function(locomotionFactory, Library, Common)
         group:AddButton({
             Text = "Send test click now",
             Callback = function()
-                local clicked, delivery = simulateScreenClick()
-                local message
-                if clicked then
-                    message = "test click sent via " .. tostring(delivery)
-                else
-                    local ok, err = sendAction("TRAIN_MANUAL_CLICK", {})
-                    message = ok
-                        and "test click sent via remote"
-                        or ("test click failed: " .. tostring(err))
-                end
+                local clicked, delivery = simulateBackgroundClick()
+                local message = clicked
+                    and ("test click sent via " .. tostring(delivery))
+                    or ("test click failed: " .. tostring(delivery))
                 notify(message)
                 banner(message)
             end,
@@ -1669,11 +1695,12 @@ return function(locomotionFactory, Library, Common)
 
         tab:CreateSection("Notes"):AddParagraph({
             Title = "How clicking works",
-            Text = "Auto Click taps the centre of the screen with real input "
-                .. "events, so it trains exactly like your own taps. Hide the "
-                .. "dashboard (IG button) while it runs, or the clicks land "
-                .. "on the window instead of the game. Auto Attack pauses "
-                .. "while Walking or Running has not entered the stage yet.",
+            Text = "Auto Click runs in the background: the game registers "
+                .. "each tap (training remote first, then the training "
+                .. "button's own handlers) without moving the mouse, so the "
+                .. "dashboard stays fully usable while it runs. Auto Attack "
+                .. "pauses while Walking or Running has not entered the "
+                .. "stage yet.",
         })
     end
 

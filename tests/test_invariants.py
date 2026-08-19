@@ -285,22 +285,28 @@ class CombatDiagnosticsTests(unittest.TestCase):
         self.source = read("games/magicloot.lua")
 
     def test_click_worker_falls_back_to_training_click(self):
-        self.assertIn("local function simulateScreenClick()", self.source)
-        self.assertIn("SendMouseButtonEvent", self.source)
-        self.assertIn("VirtualUser", self.source)
-        self.assertIn("mouse1click", self.source)
+        self.assertIn("local function simulateBackgroundClick()", self.source)
+        self.assertIn("local function fireTrainingButton(button)", self.source)
+        self.assertIn("getconnections", self.source)
+        self.assertIn("firesignal", self.source)
         self.assertIn('sendAction("TRAIN_MANUAL_CLICK", {})', self.source)
+
+    def test_clicks_never_inject_real_input(self):
+        # Background clicks only: the mouse and the dashboard must stay
+        # usable while Auto Click runs.
+        for banned in ("VirtualInputManager", "SendMouseButtonEvent", "mouse1click"):
+            self.assertNotIn(banned, self.source)
 
     def test_autoclick_is_pure_screen_taps(self):
         self.assertIn(
-            "Pure screen clicks at the game's tap zone",
+            "Background clicks: the game registers the tap",
             self.source,
         )
         self.assertIn("combatStats.clickDelivery = delivery", self.source)
 
     def test_autoattack_falls_back_to_screen_click(self):
         self.assertIn(
-            "ok = simulateScreenClick()",
+            "local clicked = simulateBackgroundClick()",
             self.source,
         )
 
