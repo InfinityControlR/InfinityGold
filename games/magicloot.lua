@@ -900,9 +900,27 @@ return function(locomotionFactory, Library, Common)
         retryUntil = 0,
         arrived = false,
         active = false,
+        humanoid = nil,
+        root = nil,
     }
 
+    local stageEntryWaiting = false
+
+    local function shouldWaitForPhysicalStage(mode, stage, challenge)
+        local physical = mode == "Walking" or mode == "Running"
+        local challengeNumber = tonumber(challenge)
+        return physical
+            and (tonumber(stage) or 1) > 1
+            and (challengeNumber == nil or challengeNumber <= 0)
+    end
+
     local function blocksAttack()
+        if stageEntryWaiting
+            and (cfg.AutoFarm or cfg.AutoFarmSpecific)
+            and (cfg.FarmMode == "Walking" or cfg.FarmMode == "Running")
+        then
+            return true
+        end
         if loco ~= nil and cfg.FarmMode == "Walking" then
             local ok, blocked = pcall(function() return loco:BlocksAttack() end)
             if ok and blocked then return true end
@@ -917,8 +935,19 @@ return function(locomotionFactory, Library, Common)
         if loco ~= nil then
             pcall(function() loco:StopWalking() end)
         end
+        local humanoid = running.humanoid
+        local root = running.root
         running.active = false
         running.arrived = false
+        running.humanoid = nil
+        running.root = nil
+        running.lastPosition = nil
+        running.lastProgress = 0
+        running.retryUntil = 0
+        if humanoid ~= nil and root ~= nil then
+            pcall(function() humanoid:MoveTo(root.Position) end)
+            pcall(function() humanoid:Move(Vector3.new(0, 0, 0), false) end)
+        end
     end
 
     -- Return episode (inventory full) ------------------------------------------
@@ -1083,6 +1112,8 @@ return function(locomotionFactory, Library, Common)
 
         running.active = true
         running.arrived = false
+        running.humanoid = humanoid
+        running.root = root
 
         if now >= running.retryUntil then
             if now - running.lastEmit >= 3.5 then
@@ -1121,6 +1152,7 @@ return function(locomotionFactory, Library, Common)
             if lastFarmMode == "Walking" or lastFarmMode == "Running" then
                 stopMovementModes()
             end
+            stageEntryWaiting = false
             lastFarmMode = cfg.FarmMode
             enterDelay.stage = nil
             running.lastPosition = nil
@@ -1132,12 +1164,15 @@ return function(locomotionFactory, Library, Common)
         updateReturnEpisode(full)
 
         if returnEpisode.active then
+            stageEntryWaiting = (cfg.AutoFarm or cfg.AutoFarmSpecific)
+                and (cfg.FarmMode == "Walking" or cfg.FarmMode == "Running")
             stopMovementModes()
             setMovementStatus("inventory full; returning to base")
             return
         end
 
         if not (cfg.AutoFarm or cfg.AutoFarmSpecific) then
+            stageEntryWaiting = false
             if movementStatus ~= "idle" then
                 stopMovementModes()
                 setMovementStatus("idle")
@@ -1152,6 +1187,16 @@ return function(locomotionFactory, Library, Common)
             cfg.AutoFarmSpecific == true,
             MAX_FARM_STAGE
         )
+
+        local mode = cfg.FarmMode
+        local challenge = playerNumber("InDungeonChallenge")
+        if shouldWaitForPhysicalStage(mode, stage, challenge) then
+            stageEntryWaiting = true
+            stopMovementModes()
+            setMovementStatus("stage " .. stage .. " waiting for dungeon entry")
+            return
+        end
+        stageEntryWaiting = false
 
         local stagePartInstance = stagePart(stage)
         if stagePartInstance == nil then
@@ -1168,8 +1213,6 @@ return function(locomotionFactory, Library, Common)
             setMovementStatus("waiting for character")
             return
         end
-
-        local mode = cfg.FarmMode
 
         if mode == "Walking" then
             if loco == nil then
