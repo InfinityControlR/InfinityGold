@@ -573,6 +573,7 @@ return function(locomotionFactory, Library, Common)
         clicksFailed = 0,
         lastAttackError = "none",
         lastClickError = "none",
+        clickDelivery = "none",
     }
 
     local function withElevatedIdentity(callback)
@@ -682,6 +683,48 @@ return function(locomotionFactory, Library, Common)
         end)
         if not ok then return false, "simulateSlotPressRelease failed" end
         return true
+    end
+
+    -- Simulated screen clicks: the most robust training path. The current
+    -- game build ships no PlayerSkillClientManager, so Auto Attack/Auto
+    -- Click drive the same input events a real tap produces. Chain:
+    -- VirtualInputManager (input-level mouse events) -> VirtualUser ->
+    -- executor mouse1click -> TRAIN_MANUAL_CLICK remote (last resort).
+    local function screenCenter()
+        local ok, camera = pcall(function()
+            return workspace.CurrentCamera
+        end)
+        if ok and camera ~= nil then
+            local viewport = camera.ViewportSize
+            return math.floor(viewport.X / 2), math.floor(viewport.Y / 2)
+        end
+        return 512, 288
+    end
+
+    local function simulateScreenClick()
+        local x, y = screenCenter()
+
+        local ok = pcall(function()
+            local manager = game:GetService("VirtualInputManager")
+            manager:SendMouseButtonEvent(x, y, 0, true, game, 0)
+            manager:SendMouseButtonEvent(x, y, 0, false, game, 0)
+        end)
+        if ok then return true, "virtual input" end
+
+        ok = pcall(function()
+            local virtualUser = game:GetService("VirtualUser")
+            virtualUser:CaptureController()
+            virtualUser:Button1Down(Vector2.new(x, y))
+            virtualUser:Button1Up(Vector2.new(x, y))
+        end)
+        if ok then return true, "virtual user" end
+
+        if type(mouse1click) == "function" then
+            ok = pcall(mouse1click)
+            if ok then return true, "mouse1click" end
+        end
+
+        return false, "no click simulator available"
     end
 
     -- Locomotion bridge --------------------------------------------------------
@@ -1023,6 +1066,11 @@ return function(locomotionFactory, Library, Common)
                 local target = findAttackTarget(tonumber(cfg.AttackRange) or 120)
                 if target ~= nil then
                     local ok, err = attackTarget(target)
+                    if not ok then
+                        -- Skill modules missing: click the screen instead,
+                        -- exactly like a manual attack/training tap.
+                        ok = simulateScreenClick()
+                    end
                     if ok then
                         combatStats.attacksOk = combatStats.attacksOk + 1
                         combatStats.lastAttackError = "none"
@@ -1039,25 +1087,23 @@ return function(locomotionFactory, Library, Common)
     task.spawn(function()
         while sessionAlive do
             if cfg.AutoClick and not blocksAttack() then
-                local target = findAttackTarget(tonumber(cfg.AttackRange) or 120)
-                local delivered = false
-                if target ~= nil then
-                    local ok, err = attackTarget(target)
-                    delivered = ok
-                    if not ok then
-                        combatStats.lastAttackError = tostring(err or "attack failed")
-                    end
-                end
-                if not delivered then
-                    -- Fall back to the training click so strength training
-                    -- keeps working even when the skill modules do not load.
+                -- Pure screen clicks at the game's tap zone: the same input
+                -- a real tap produces, no target hunting involved.
+                local clicked, delivery = simulateScreenClick()
+                if clicked then
+                    combatStats.clicksOk = combatStats.clicksOk + 1
+                    combatStats.lastClickError = "none"
+                    combatStats.clickDelivery = delivery
+                else
                     local ok, err = sendAction("TRAIN_MANUAL_CLICK", {})
                     if ok then
                         combatStats.clicksOk = combatStats.clicksOk + 1
                         combatStats.lastClickError = "none"
+                        combatStats.clickDelivery = "remote"
                     else
                         combatStats.clicksFailed = combatStats.clicksFailed + 1
                         combatStats.lastClickError = tostring(err)
+                        combatStats.clickDelivery = "none"
                     end
                 end
             end
@@ -1560,10 +1606,16 @@ return function(locomotionFactory, Library, Common)
         group:AddButton({
             Text = "Send test click now",
             Callback = function()
-                local ok, err = sendAction("TRAIN_MANUAL_CLICK", {})
-                local message = ok
-                    and "test click sent"
-                    or ("test click failed: " .. tostring(err))
+                local clicked, delivery = simulateScreenClick()
+                local message
+                if clicked then
+                    message = "test click sent via " .. tostring(delivery)
+                else
+                    local ok, err = sendAction("TRAIN_MANUAL_CLICK", {})
+                    message = ok
+                        and "test click sent via remote"
+                        or ("test click failed: " .. tostring(err))
+                end
                 notify(message)
                 banner(message)
             end,
@@ -1593,11 +1645,13 @@ return function(locomotionFactory, Library, Common)
                         end
                     end
                     diagnostics:Set(string.format(
-                        "skill: %s\nnet: %s\nclick remote: %s\nlast missed action: %s\n"
+                        "skill: %s\nclick delivery: %s\nnet: %s\n"
+                            .. "click remote: %s\nlast missed action: %s\n"
                             .. "NowTargetCurrent: %s\nmonsters nearby containers: %d\n"
                             .. "attacks: %d ok / %d fail\nclicks: %d ok / %d fail\n"
                             .. "last attack error: %s\nlast click error: %s",
                         tostring(attack.status),
+                        tostring(combatStats.clickDelivery),
                         tostring(net.status),
                         remoteFor("TRAIN_MANUAL_CLICK") ~= nil and "found" or "missing",
                         tostring(net.lastMissedAction or "-"),
@@ -1614,10 +1668,12 @@ return function(locomotionFactory, Library, Common)
         end)
 
         tab:CreateSection("Notes"):AddParagraph({
-            Title = "Attack blocking",
-            Text = "Auto Attack and Auto Click pause while Walking or Running "
-                .. "has not entered the target stage yet, then resume for the "
-                .. "rest of the route.",
+            Title = "How clicking works",
+            Text = "Auto Click taps the centre of the screen with real input "
+                .. "events, so it trains exactly like your own taps. Hide the "
+                .. "dashboard (IG button) while it runs, or the clicks land "
+                .. "on the window instead of the game. Auto Attack pauses "
+                .. "while Walking or Running has not entered the stage yet.",
         })
     end
 

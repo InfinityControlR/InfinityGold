@@ -285,9 +285,23 @@ class CombatDiagnosticsTests(unittest.TestCase):
         self.source = read("games/magicloot.lua")
 
     def test_click_worker_falls_back_to_training_click(self):
-        self.assertIn("if not delivered then", self.source)
+        self.assertIn("local function simulateScreenClick()", self.source)
+        self.assertIn("SendMouseButtonEvent", self.source)
+        self.assertIn("VirtualUser", self.source)
+        self.assertIn("mouse1click", self.source)
+        self.assertIn('sendAction("TRAIN_MANUAL_CLICK", {})', self.source)
+
+    def test_autoclick_is_pure_screen_taps(self):
         self.assertIn(
-            'sendAction("TRAIN_MANUAL_CLICK", {})', self.source
+            "Pure screen clicks at the game's tap zone",
+            self.source,
+        )
+        self.assertIn("combatStats.clickDelivery = delivery", self.source)
+
+    def test_autoattack_falls_back_to_screen_click(self):
+        self.assertIn(
+            "ok = simulateScreenClick()",
+            self.source,
         )
 
     def test_skill_resolution_reports_the_failing_step(self):
