@@ -70,7 +70,9 @@ the InfinityGold dashboard.
   already brewing; a pickup confirmation alone never unlocks selling. Best
   Craftable ranks the game's positive local material checks first, so it sends
   the best reported recipe immediately instead of remotely probing every higher
-  recipe before reaching an available lower one.
+  recipe before reaching an available lower one. If every local eligibility
+  check is stale/false, its server-validated fallback starts at the lowest
+  recipe so a basic craft is attempted immediately.
 - **Broom**: sends only the selected-stage request (`关卡跳关请求`) and never
   toggles/equips the broom. It keeps single-flight epoch tokens, invalidation
   on toggle/stage/return changes, and base detection through the numeric
@@ -137,10 +139,11 @@ These surfaces need confirmation inside Roblox (fail-open until then):
 - `PLAYER_REBIRTH`, `INDEX_CLAIM_REWARD` and `DRINK_POTION` payload shapes
   (currently sent without arguments).
 - `GetData.GetCfgByName("weaponConf"|"armorConf")` shape for shop automation.
-- Alchemy resolves `GetData.Alchemy` and tests recipes in stable descending ID
-  order. It still excludes recipes locked by rebirth, but treats the local
-  material check as diagnostic because it can be stale away from the Alchemy
-  UI. Craft and pickup use the verified
+- Alchemy resolves `GetData.Alchemy`, prioritizes positive local checks from
+  highest to lowest ID, and keeps every false/error result as a server-validated
+  fallback from the lowest ID upward. Neither the rebirth nor material hint can
+  veto a recipe because both can be stale away from the Alchemy UI. Craft and
+  pickup use the verified
   InvokeServer actions remotely only when `InDungeonChallenge <= 0`, without
   moving the character or suspending Walking, Running or Broom. Success is
   confirmed from the replicated brewing state.

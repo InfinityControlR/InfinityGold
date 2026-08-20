@@ -273,7 +273,7 @@ closeOnWait = true
 local closed, _, closedError, closedPending = invokeAlchemyAction(
     "ALCHEMY_CRAFT_RECIPE",
     {{ recipeId = 4 }},
-    {{ key = "priority-v2|Best craftable|4,1", candidateIds = {{ 4, 1 }}, cursor = 1 }}
+    {{ key = "priority-v4|Best craftable|4,1", candidateIds = {{ 4, 1 }}, cursor = 1 }}
 )
 assert(closed == false and closedPending == true
     and string.find(closedError, "session closed", 1, true) ~= nil,
@@ -294,7 +294,7 @@ completeDuringClosedWait = true
 local raced, racedResponse = invokeAlchemyAction(
     "ALCHEMY_CRAFT_RECIPE",
     {{ recipeId = 4 }},
-    {{ key = "priority-v2|Best craftable|4,1", candidateIds = {{ 4, 1 }}, cursor = 1 }}
+    {{ key = "priority-v4|Best craftable|4,1", candidateIds = {{ 4, 1 }}, cursor = 1 }}
 )
 assert(raced == false and racedResponse == nil,
     "a callback that had not started before unload still sent its request")
@@ -795,23 +795,25 @@ assert(sent == true and craftError == nil,
 assert(calls[#calls].payload.recipeId == 4,
     "Best craftable did not rotate to the next server-validated candidate")
 
--- This is the live regression: away from the UI both material predicates can
--- say false, while the same explicit recipe is accepted by the server. Best
--- must still emit the highest rebirth-eligible candidate instead of no-oping.
+-- This is the live regression: away from the UI every material predicate can
+-- say false. The player only owns the materials for the first/lowest recipe,
+-- and selecting it explicitly works immediately. Best must try that safe
+-- fallback first instead of spending one confirmation window per higher id.
 fakeClock = 15
 inProgress = false
 recipes[1].craftable = false
 recipes[2].craftable = false
 cfg.BrewRecipe = "Best craftable"
 resetAlchemyRecovery()
+remoteMode = "accept-one"
 local callsBeforeStaleMaterials = #calls
 sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil,
     "Best craftable trusted stale material predicates")
 assert(#calls == callsBeforeStaleMaterials + 1
-    and calls[#calls].payload.recipeId == 4
+    and calls[#calls].payload.recipeId == 1
     and alchemyTelemetry.craftable == 0,
-    "Best did not server-validate the highest rebirth-eligible recipe")
+    "Best did not immediately try the lowest safe fallback recipe")
 recipes[1].craftable = true
 recipes[2].craftable = true
 
@@ -863,16 +865,20 @@ assert(#calls == callsBeforeExplicitRejection + 1
 assert(root.CFrame == home and alchemyTelemetry.confirmed == false,
     "rejected craft did not cleanly restore its transaction")
 
+-- A false CanMeetRecipeRebirth is advisory for remote Alchemy too. Manual
+-- selection sends the id regardless; Best must not silently drop the recipe.
 fakeClock = 35
 cfg.BrewRecipe = "Best craftable"
 recipes[1].Rebirth = 9
 recipes[2].Rebirth = 9
 resetAlchemyRecovery()
-local callsBeforeRebirthGate = #calls
+remoteMode = "accept-one"
+local callsBeforeStaleRebirth = #calls
 sent, craftError = runAlchemyCycle()
-assert(sent == false and craftError == "no rebirth-eligible recipe"
-    and #calls == callsBeforeRebirthGate,
-    "Best sent a server probe when every recipe was rebirth-locked")
+assert(sent == true and craftError == nil
+    and #calls == callsBeforeStaleRebirth + 1
+    and calls[#calls].payload.recipeId == 1,
+    "Best dropped a server-valid recipe after a stale rebirth predicate")
 recipes[1].Rebirth = 0
 recipes[2].Rebirth = 1
 
@@ -889,8 +895,8 @@ alchemyInvokeLease.completed = {{
     sent = true,
     response = {{ success = false, error = "late fixture rejection" }},
     recovery = {{
-        key = "priority-v2|Best craftable|4,1",
-        candidateIds = {{ 4, 1 }},
+        key = "priority-v4|Best craftable|7,4,1",
+        candidateIds = {{ 4, 1, 7 }},
         cursor = 1,
         inventoryEpoch = alchemyInvokeLease.inventoryEpoch,
     }},
@@ -922,8 +928,8 @@ alchemyInvokeLease.completed = {{
     sent = true,
     response = {{ success = false, error = "stale pre-trip rejection" }},
     recovery = {{
-        key = "priority-v2|Best craftable|4,1",
-        candidateIds = {{ 4, 1 }},
+        key = "priority-v4|Best craftable|7,4,1",
+        candidateIds = {{ 4, 1, 7 }},
         cursor = 1,
         inventoryEpoch = oldInventoryEpoch,
     }},
@@ -952,8 +958,8 @@ alchemyInvokeLease.completed = {{
     sent = true,
     response = {{ success = false, error = "legacy rejection without epoch" }},
     recovery = {{
-        key = "priority-v2|Best craftable|4,1",
-        candidateIds = {{ 4, 1 }},
+        key = "priority-v4|Best craftable|7,4,1",
+        candidateIds = {{ 4, 1, 7 }},
         cursor = 1,
     }},
 }}
@@ -976,8 +982,8 @@ alchemyInvokeLease.completed = {{
     sent = false,
     err = "alchemy session closed before request",
     recovery = {{
-        key = "priority-v2|Best craftable|4,1",
-        candidateIds = {{ 4, 1 }},
+        key = "priority-v4|Best craftable|7,4,1",
+        candidateIds = {{ 4, 1, 7 }},
         cursor = 1,
         inventoryEpoch = alchemyInvokeLease.inventoryEpoch,
     }},
@@ -1085,9 +1091,10 @@ print("alchemy_flow_smoke=ok")
         self.assertIn("pcall(cfgFind.FindCfgByID, potionId, 9)", ALCHEMY_HELPERS)
         self.assertIn("pcall(helper.TranslateByKey, key)", ALCHEMY_HELPERS)
         self.assertIn('string.match(selection, "^#(%d+)")', ALCHEMY_HELPERS)
-        self.assertIn('if reason ~= "rebirth" then', ALCHEMY_HELPERS)
-        self.assertIn("craftable and prioritizedIds or fallbackIds", ALCHEMY_HELPERS)
-        self.assertIn('local recoveryKey = "priority-v2|"', ALCHEMY_HELPERS)
+        self.assertNotIn('if reason ~= "rebirth" then', ALCHEMY_HELPERS)
+        self.assertIn("table.insert(prioritizedIds, recipe.id)", ALCHEMY_HELPERS)
+        self.assertIn("table.insert(fallbackIds, 1, recipe.id)", ALCHEMY_HELPERS)
+        self.assertIn('local recoveryKey = "priority-v4|"', ALCHEMY_HELPERS)
         self.assertNotIn('GetCfgByName, "potionConf"', ALCHEMY_HELPERS)
         recipe_ui = core_slice(
             '        local recipeValues = alchemyDropdownValues()',

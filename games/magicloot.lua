@@ -1020,7 +1020,7 @@ return function(locomotionFactory, Library, Common)
 
     local function selectAlchemyRecipe(alchemy, selection)
         selection = tostring(selection or "Best craftable")
-        local recoveryPrefix = "priority-v2|" .. selection .. "|"
+        local recoveryPrefix = "priority-v4|" .. selection .. "|"
         if type(alchemyRecovery.key) == "string"
             and string.sub(alchemyRecovery.key, 1, #recoveryPrefix) == recoveryPrefix
             and os.clock() < alchemyRecovery.nextAttemptAt
@@ -1048,8 +1048,11 @@ return function(locomotionFactory, Library, Common)
             -- The game's predicates are cheap local checks. Prefer every
             -- positive material result immediately, highest recipe first, so
             -- Best does not spend one remote confirmation window per recipe.
-            -- False/error material hints remain a server-validated fallback:
-            -- they have proved stale away from the Alchemy UI.
+            -- False/error eligibility hints remain a server-validated fallback:
+            -- they have proved stale away from the Alchemy UI. Keep that
+            -- fallback lowest-first. If every hint is false and the player
+            -- only owns the basic recipe materials, Best must send that same
+            -- id immediately instead of timing out on every higher recipe.
             for index = #catalog, 1, -1 do
                 local recipe = catalog[index]
                 local craftable, _, reason = isAlchemyRecipeCraftable(
@@ -1057,13 +1060,19 @@ return function(locomotionFactory, Library, Common)
                     recipe
                 )
                 noteAlchemyRecipeCheck(reason)
-                if reason ~= "rebirth" then
-                    candidateById[recipe.id] = recipe
-                    table.insert(membershipIds, recipe.id)
-                    table.insert(
-                        craftable and prioritizedIds or fallbackIds,
-                        recipe.id
-                    )
+                -- Manual selection proves that both local predicates can be
+                -- stale while the server still accepts the exact recipe id.
+                -- Never let a false CanMeetRecipeRebirth/CanCraftRecipe remove
+                -- an id from Best; use positive checks only for prioritization.
+                candidateById[recipe.id] = recipe
+                table.insert(membershipIds, recipe.id)
+                if craftable then
+                    table.insert(prioritizedIds, recipe.id)
+                else
+                    -- The catalog is traversed high-to-low for preferred
+                    -- recipes, so prepend fallback ids to make them
+                    -- low-to-high without a second predicate pass.
+                    table.insert(fallbackIds, 1, recipe.id)
                 end
             end
         else
@@ -1085,14 +1094,14 @@ return function(locomotionFactory, Library, Common)
 
         if #membershipIds == 0 then
             return nil, selection == "Best craftable"
-                and "no rebirth-eligible recipe"
+                and "no Alchemy recipe candidate"
                 or "selected recipe is unavailable"
         end
 
         -- membershipIds is canonical and independent of material-hint flips.
         -- The priority order is frozen for one recovery round so a changing
         -- hint cannot reset the cursor/cooldown and repeat the same request.
-        local recoveryKey = "priority-v2|" .. selection .. "|"
+        local recoveryKey = "priority-v4|" .. selection .. "|"
             .. table.concat(membershipIds, ",")
         if alchemyRecovery.key ~= recoveryKey then
             alchemyRecovery.key = recoveryKey
@@ -3497,7 +3506,8 @@ return function(locomotionFactory, Library, Common)
             Text = "Alchemy runs remotely only while the player is at base. "
                 .. "Best craftable checks every recipe locally in one pass and "
                 .. "sends the highest recipe reported as available immediately; "
-                .. "stale hints remain a safe fallback. It never moves the "
+                .. "when every local eligibility hint is stale, it starts with the "
+                .. "lowest recipe as the fastest safe fallback. It never moves the "
                 .. "character or pauses Broom.",
         })
     end
