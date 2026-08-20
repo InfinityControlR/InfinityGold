@@ -68,14 +68,13 @@ the InfinityGold dashboard.
   runs only at base. When Auto Brew is enabled, the base-economy worker runs
   Alchemy first and sells only after a craft was confirmed or while a potion is
   already brewing; a pickup confirmation alone never unlocks selling. Best
-  Craftable ranks the game's positive local material checks first, so it sends
-  the best reported recipe immediately instead of remotely probing every higher
-  recipe before reaching an available lower one. If every local eligibility
-  check is stale/false, its initial fallback starts at the lowest recipe so a
-  basic craft is attempted immediately. After returning from a dungeon it waits
-  0.35 seconds for the collected Bag data to settle, then starts stale fallbacks
-  at the highest recipe; this removes the multi-minute low-to-high probe walk.
-  A confirmed pickup chains the next brew in the same base cycle. The game has
+  Craftable passively watches `tp=2` material changes while farming and remembers
+  the highest recipe that the game's own predicates prove craftable. On return,
+  it sends only that recipe instead of walking guessed recipe IDs through the
+  server. If no recipe was proven during the stage, it waits briefly for Bag
+  replication and repeats Magic's local Best check; all-false snapshots send no
+  speculative craft request. A confirmed pickup chains the next brew in the
+  same base cycle without invalidating the unchanged material snapshot. The game has
   one brewing slot, so a live `brewing (one potion at a time)` state is an
   intentional wait for the current potion rather than a recipe-search delay.
 - **Broom**: sends only the selected-stage request (`关卡跳关请求`) and never
@@ -144,11 +143,12 @@ These surfaces need confirmation inside Roblox (fail-open until then):
 - `PLAYER_REBIRTH`, `INDEX_CLAIM_REWARD` and `DRINK_POTION` payload shapes
   (currently sent without arguments).
 - `GetData.GetCfgByName("weaponConf"|"armorConf")` shape for shop automation.
-- Alchemy resolves `GetData.Alchemy`, prioritizes positive local checks from
-  highest to lowest ID, and keeps every false/error result as a server-validated
-  fallback because neither the rebirth nor material hint can veto a recipe when
-  those hints are stale away from the Alchemy UI. Fallbacks start low on initial
-  load and high after a dungeon inventory change. Craft and pickup use the verified
-  InvokeServer actions remotely only when `InDungeonChallenge <= 0`, without
-  moving the character or suspending Walking, Running or Broom. Success is
-  confirmed from the replicated brewing state.
+- Alchemy resolves `GetData.Alchemy` and mirrors Magic's local Best selector:
+  it sends only the highest recipe for which both game predicates are true,
+  never walks guessed recipe IDs through the server. While farming a stage it
+  passively watches Bag changes and remembers that same locally proven recipe
+  for the current inventory epoch; the first base cycle can therefore use it
+  even if the base-side predicate cache is momentarily stale. Craft and pickup
+  use the verified InvokeServer actions only when `InDungeonChallenge <= 0`,
+  without moving the character or suspending Walking, Running or Broom.
+  Automatic selling still waits for a confirmed brew.

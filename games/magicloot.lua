@@ -857,6 +857,7 @@ return function(locomotionFactory, Library, Common)
         travel = "idle",
         confirmed = false,
         confirmedAction = nil,
+        stageCandidateId = nil,
     }
     local alchemyRecovery = {
         key = nil,
@@ -867,12 +868,69 @@ return function(locomotionFactory, Library, Common)
     local alchemyPickupNextAttemptAt = 0
     local alchemyBaseSyncUntil = 0
     local ALCHEMY_BASE_SYNC_SECONDS = 0.35
+    local ALCHEMY_STAGE_RESCAN_SECONDS = 0.8
+    local ALCHEMY_STAGE_RESCAN_INTERVAL = 0.1
+    local ALCHEMY_STAGE_IDLE_SCAN_INTERVAL = 0.5
+    local inheritedStageCandidate = type(alchemyInvokeLease.stageCandidate) == "table"
+        and alchemyInvokeLease.stageCandidate
+        or nil
+    local inheritedStageEpoch = inheritedStageCandidate ~= nil
+        and math.floor(tonumber(inheritedStageCandidate.epoch) or -1)
+        or -1
+    local inheritedStageRecipeId = inheritedStageCandidate ~= nil
+        and math.floor(tonumber(inheritedStageCandidate.recipeId) or 0)
+        or 0
+    local inheritedStageFingerprint = inheritedStageCandidate ~= nil
+        and inheritedStageCandidate.bagFingerprint
+        or nil
+    local inheritedStageFresh = inheritedStageEpoch == alchemyInvokeLease.inventoryEpoch
+        and inheritedStageRecipeId > 0
+        and type(inheritedStageFingerprint) == "string"
+    local alchemyStageCandidate = {
+        epoch = inheritedStageFresh and inheritedStageEpoch or -1,
+        recipeId = inheritedStageFresh and inheritedStageRecipeId or nil,
+        bagFingerprint = inheritedStageFresh and inheritedStageFingerprint or nil,
+        candidateFresh = inheritedStageFresh,
+        nextScanAt = 0,
+        rescanUntil = 0,
+    }
+    if inheritedStageFresh then
+        alchemyTelemetry.stageCandidateId = inheritedStageRecipeId
+    else
+        alchemyInvokeLease.stageCandidate = nil
+    end
 
     local function resetAlchemyRecovery()
         alchemyRecovery.key = nil
         alchemyRecovery.candidateIds = {}
         alchemyRecovery.cursor = 1
         alchemyRecovery.nextAttemptAt = 0
+    end
+
+    local function clearAlchemyStageCandidate(epoch)
+        alchemyStageCandidate.epoch = tonumber(epoch) or -1
+        alchemyStageCandidate.recipeId = nil
+        alchemyStageCandidate.bagFingerprint = nil
+        alchemyStageCandidate.candidateFresh = false
+        alchemyStageCandidate.nextScanAt = 0
+        alchemyStageCandidate.rescanUntil = 0
+        alchemyTelemetry.stageCandidateId = nil
+        alchemyInvokeLease.stageCandidate = nil
+    end
+
+    local function publishAlchemyStageCandidate()
+        if not alchemyStageCandidate.candidateFresh
+            or alchemyStageCandidate.recipeId == nil
+            or type(alchemyStageCandidate.bagFingerprint) ~= "string"
+        then
+            alchemyInvokeLease.stageCandidate = nil
+            return
+        end
+        alchemyInvokeLease.stageCandidate = {
+            epoch = alchemyStageCandidate.epoch,
+            recipeId = alchemyStageCandidate.recipeId,
+            bagFingerprint = alchemyStageCandidate.bagFingerprint,
+        }
     end
 
     local function observeAlchemyLocation(challenge)
@@ -1019,6 +1077,148 @@ return function(locomotionFactory, Library, Common)
         return true, nil, "craftable"
     end
 
+    local function alchemyBagFingerprint()
+        local bag, bagError = playerBag()
+        if bag == nil then return nil, bagError end
+        local rows = {}
+        for key, item in pairs(bag) do
+            -- Alchemy ingredients are the Bag's tp=2 material entries. A
+            -- finished-potion pickup can add a potion/equipment row while the
+            -- ingredients are unchanged; including those rows would discard
+            -- the recipe proven during the stage immediately before brewing.
+            if type(item) == "table" and tonumber(item.tp) == 2 then
+                local id = math.floor(tonumber(item.id) or 0)
+                local onlyId = tostring(item.onlyID or key)
+                local amount = tonumber(
+                    item.count
+                    or item.Count
+                    or item.amount
+                    or item.Amount
+                    or item.num
+                    or item.Num
+                    or item.stack
+                    or item.Stack
+                ) or 1
+                table.insert(rows, table.concat({
+                    tostring(id),
+                    onlyId,
+                    tostring(amount),
+                    tostring(item.tp or ""),
+                    tostring(item.lock or ""),
+                }, ":"))
+            end
+        end
+        table.sort(rows)
+        return table.concat(rows, "|")
+    end
+
+    local function bestAlchemyRecipeIdFromLocalState(alchemy)
+        local rawRecipes, recipeError = rawAlchemyRecipes(alchemy)
+        if rawRecipes == nil then return nil, recipeError end
+        local bestId = nil
+        for _, raw in ipairs(rawRecipes) do
+            if type(raw) == "table" then
+                local id = math.floor(tonumber(raw.recipeId) or 0)
+                if id > 0 then
+                    local craftable = isAlchemyRecipeCraftable(alchemy, {
+                        id = id,
+                        recipe = raw,
+                    })
+                    if craftable and (bestId == nil or id > bestId) then
+                        bestId = id
+                    end
+                end
+            end
+        end
+        return bestId
+    end
+
+    local function updateStageAlchemyCandidate(alchemy)
+        local epoch = alchemyInvokeLease.inventoryEpoch
+        if alchemyStageCandidate.epoch ~= epoch then
+            clearAlchemyStageCandidate(epoch)
+        end
+
+        local now = os.clock()
+        local fingerprint = alchemyBagFingerprint()
+        if fingerprint ~= nil
+            and fingerprint ~= alchemyStageCandidate.bagFingerprint
+        then
+            -- A pickup changes Bag before every dependent local cache is
+            -- guaranteed to update. Invalidate the old answer, then rescan for
+            -- a short window even if Bag itself stops changing.
+            alchemyStageCandidate.bagFingerprint = fingerprint
+            alchemyStageCandidate.candidateFresh = false
+            alchemyTelemetry.stageCandidateId = nil
+            publishAlchemyStageCandidate()
+            alchemyStageCandidate.nextScanAt = now + ALCHEMY_STAGE_RESCAN_INTERVAL
+            alchemyStageCandidate.rescanUntil = now + ALCHEMY_STAGE_RESCAN_SECONDS
+            return nil
+        end
+        if now < alchemyStageCandidate.nextScanAt then
+            return alchemyStageCandidate.candidateFresh
+                and alchemyStageCandidate.recipeId
+                or nil
+        end
+
+        local bestId = bestAlchemyRecipeIdFromLocalState(alchemy)
+        if bestId ~= nil then
+            if not alchemyStageCandidate.candidateFresh
+                or alchemyStageCandidate.recipeId == nil
+                or bestId > alchemyStageCandidate.recipeId
+            then
+                alchemyStageCandidate.recipeId = bestId
+            end
+            -- A transient false from the same unchanged Bag must not erase a
+            -- recipe already proven true. Only an epoch/fingerprint/config
+            -- change invalidates that evidence.
+            alchemyStageCandidate.candidateFresh = true
+            alchemyTelemetry.stageCandidateId = alchemyStageCandidate.recipeId
+            publishAlchemyStageCandidate()
+        end
+        alchemyStageCandidate.nextScanAt = now + (
+            now < alchemyStageCandidate.rescanUntil
+                and ALCHEMY_STAGE_RESCAN_INTERVAL
+                or ALCHEMY_STAGE_IDLE_SCAN_INTERVAL
+        )
+        return alchemyStageCandidate.candidateFresh
+            and alchemyStageCandidate.recipeId
+            or nil
+    end
+
+    local function cachedStageAlchemyRecipeId(alchemy)
+        if cfg.BrewRecipe ~= "Best craftable" then return nil end
+        if alchemyStageCandidate.epoch ~= alchemyInvokeLease.inventoryEpoch
+            or not alchemyStageCandidate.candidateFresh
+        then
+            return nil
+        end
+        local currentFingerprint = alchemyBagFingerprint()
+        if currentFingerprint == nil
+            or currentFingerprint ~= alchemyStageCandidate.bagFingerprint
+        then
+            -- A last pickup can land between the final stage poll and the
+            -- challenge transition. Never apply an older recipe to a newer
+            -- Bag; let the normal base rescan handle that snapshot instead.
+            alchemyStageCandidate.candidateFresh = false
+            alchemyTelemetry.stageCandidateId = nil
+            publishAlchemyStageCandidate()
+            return nil
+        end
+        local currentBestId = bestAlchemyRecipeIdFromLocalState(alchemy)
+        if currentBestId ~= nil
+            and (alchemyStageCandidate.recipeId == nil
+                or currentBestId > alchemyStageCandidate.recipeId)
+        then
+            -- Upgrade from fresh evidence, but never let a stale false at base
+            -- erase the recipe already proven while collecting.
+            alchemyStageCandidate.recipeId = currentBestId
+            alchemyTelemetry.stageCandidateId = currentBestId
+            publishAlchemyStageCandidate()
+        end
+        return alchemyStageCandidate.recipeId
+    end
+
     local function noteAlchemyRecipeCheck(reason)
         if reason ~= "rebirth" and reason ~= "rebirth-error" and reason ~= "api" then
             alchemyTelemetry.rebirthPassed += 1
@@ -1030,21 +1230,9 @@ return function(locomotionFactory, Library, Common)
         end
     end
 
-    local function selectAlchemyRecipe(alchemy, selection)
+    local function selectAlchemyRecipe(alchemy, selection, stagedRecipeId)
         selection = tostring(selection or "Best craftable")
-        local postStageInventory = alchemyInvokeLease.inventoryEpoch > 0
-        local fallbackMode = postStageInventory and "post-stage" or "initial"
-        local recoveryPrefix = "priority-v5|" .. selection .. "|"
-            .. fallbackMode .. "|"
-        if type(alchemyRecovery.key) == "string"
-            and string.sub(alchemyRecovery.key, 1, #recoveryPrefix) == recoveryPrefix
-            and os.clock() < alchemyRecovery.nextAttemptAt
-        then
-            -- The recovery order is deliberately frozen until this deadline;
-            -- avoid rebuilding/translating the catalog and rerunning every
-            -- recipe predicate twice per second while no request can be sent.
-            return nil, "waiting before the next server-validated recipe", "cooldown"
-        end
+        local recoveryPrefix = "magic-best-v1|" .. selection .. "|"
 
         local catalog, err = alchemyRecipeCatalog(alchemy)
         if catalog == nil then return nil, err end
@@ -1058,43 +1246,36 @@ return function(locomotionFactory, Library, Common)
         local candidateById = {}
         local membershipIds = {}
         local prioritizedIds = {}
-        local fallbackIds = {}
         if selection == "Best craftable" then
-            -- Match the game's original ascending predicate pass, then reverse
-            -- only the candidate priority. Positive material results still use
-            -- the highest recipe first. False/error hints are server-validated:
-            -- the initial base starts at the basic recipe, while an inventory
-            -- collected in a dungeon starts at the strongest recipe instead of
-            -- spending several minutes walking upward from recipe one.
-            for _, recipe in ipairs(catalog) do
-                local craftable, _, reason = isAlchemyRecipeCraftable(
-                    alchemy,
-                    recipe
-                )
-                noteAlchemyRecipeCheck(reason)
-                -- Manual selection proves that both local predicates can be
-                -- stale while the server still accepts the exact recipe id.
-                -- Never let a false CanMeetRecipeRebirth/CanCraftRecipe remove
-                -- an id from Best; use positive checks only for prioritization.
-                candidateById[recipe.id] = recipe
-                table.insert(membershipIds, recipe.id)
-                if craftable then
-                    table.insert(prioritizedIds, recipe.id)
-                else
-                    table.insert(fallbackIds, recipe.id)
+            -- Match Magic's original selector exactly: scan the ascending
+            -- catalog, remember the last recipe whose two local predicates are
+            -- true, and send only that id. Do not freeze an early false snapshot
+            -- or walk server candidates; those retries were the source of the
+            -- multi-minute delay after returning from a dungeon.
+            local best = nil
+            stagedRecipeId = math.floor(tonumber(stagedRecipeId) or 0)
+            if stagedRecipeId > 0 then
+                for _, recipe in ipairs(catalog) do
+                    if recipe.id == stagedRecipeId then
+                        best = recipe
+                        break
+                    end
                 end
             end
-            for left = 1, math.floor(#prioritizedIds / 2) do
-                local right = #prioritizedIds - left + 1
-                prioritizedIds[left], prioritizedIds[right] =
-                    prioritizedIds[right], prioritizedIds[left]
-            end
-            if postStageInventory then
-                for left = 1, math.floor(#fallbackIds / 2) do
-                    local right = #fallbackIds - left + 1
-                    fallbackIds[left], fallbackIds[right] =
-                        fallbackIds[right], fallbackIds[left]
+            if best == nil then
+                for _, recipe in ipairs(catalog) do
+                    local craftable, _, reason = isAlchemyRecipeCraftable(
+                        alchemy,
+                        recipe
+                    )
+                    noteAlchemyRecipeCheck(reason)
+                    if craftable then best = recipe end
                 end
+            end
+            if best ~= nil then
+                candidateById[best.id] = best
+                table.insert(membershipIds, best.id)
+                table.insert(prioritizedIds, best.id)
             end
         else
             local selectedId = math.floor(tonumber(selection) or 0)
@@ -1114,22 +1295,20 @@ return function(locomotionFactory, Library, Common)
         end
 
         if #membershipIds == 0 then
+            if selection == "Best craftable" then resetAlchemyRecovery() end
             return nil, selection == "Best craftable"
-                and "no Alchemy recipe candidate"
+                and "waiting for the game to report a craftable recipe"
                 or "selected recipe is unavailable"
         end
 
-        -- membershipIds is canonical and independent of material-hint flips.
-        -- The priority order is frozen for one recovery round so a changing
-        -- hint cannot reset the cursor/cooldown and repeat the same request.
+        -- A changed local Best is new inventory evidence. Give it a fresh
+        -- request immediately instead of preserving the cooldown/order of a
+        -- different recipe selected from an older Bag snapshot.
         local recoveryKey = recoveryPrefix .. table.concat(membershipIds, ",")
         if alchemyRecovery.key ~= recoveryKey then
             alchemyRecovery.key = recoveryKey
             alchemyRecovery.candidateIds = {}
             for _, id in ipairs(prioritizedIds) do
-                table.insert(alchemyRecovery.candidateIds, id)
-            end
-            for _, id in ipairs(fallbackIds) do
                 table.insert(alchemyRecovery.candidateIds, id)
             end
             alchemyRecovery.cursor = 1
@@ -1160,7 +1339,7 @@ return function(locomotionFactory, Library, Common)
             return
         end
         local count = #alchemyRecovery.candidateIds
-        local delay = 8
+        local delay = cfg.BrewRecipe == "Best craftable" and 2 or 8
         if count > 1 then
             local nextCursor = (alchemyRecovery.cursor % count) + 1
             alchemyRecovery.cursor = nextCursor
@@ -1243,6 +1422,7 @@ return function(locomotionFactory, Library, Common)
             or err == "pickup cancelled before request"
             or err == "dungeon state unknown before Alchemy request"
             or err == "left base before Alchemy request"
+            or err == "Bag changed before Alchemy request"
     end
 
     local ALCHEMY_STALE_LEASE_SECONDS = 30
@@ -1286,6 +1466,22 @@ return function(locomotionFactory, Library, Common)
         }
         local spawned, spawnError = pcall(task.spawn, function()
             local function beforeInvoke()
+                if action == "ALCHEMY_CRAFT_RECIPE"
+                    and type(recoverySnapshot) == "table"
+                    and recoverySnapshot.staged == true
+                then
+                    -- PlayerData is the only opaque getter in this commit
+                    -- guard and may yield. Read it first; every gate below is
+                    -- a local flag or a non-yielding Value read, so neither the
+                    -- material snapshot nor the base decision can become stale
+                    -- inside our code before InvokeServer.
+                    local finalFingerprint = alchemyBagFingerprint()
+                    if finalFingerprint == nil
+                        or finalFingerprint ~= recoverySnapshot.stageBagFingerprint
+                    then
+                        return false, "Bag changed before Alchemy request"
+                    end
+                end
                 if not sessionAlive then
                     return false, "alchemy session closed before request"
                 end
@@ -1397,9 +1593,22 @@ return function(locomotionFactory, Library, Common)
         local completed = alchemyInvokeLease.completed
         if type(completed) ~= "table" then return false end
         alchemyInvokeLease.completed = nil
+        local recovery = completed.recovery
+        local snapshotEpoch = type(recovery) == "table"
+            and tonumber(recovery.inventoryEpoch)
+            or nil
+        local inventoryUnchanged = snapshotEpoch ~= nil
+            and snapshotEpoch == alchemyInvokeLease.inventoryEpoch
+            or snapshotEpoch == nil
+                and alchemyInvokeLease.inventoryEpoch == 0
         if alchemyRequestDidNotStart(completed.err, completed.didInvoke) then
             if completed.action == "ALCHEMY_CRAFT_RECIPE" then
                 resetAlchemyRecovery()
+                if completed.err == "Bag changed before Alchemy request"
+                    and inventoryUnchanged
+                then
+                    clearAlchemyStageCandidate(alchemyInvokeLease.inventoryEpoch)
+                end
             elseif completed.action == "ALCHEMY_PICKUP_FINISH_POTION" then
                 alchemyPickupNextAttemptAt = 0
             end
@@ -1416,14 +1625,13 @@ return function(locomotionFactory, Library, Common)
             or "late request was not confirmed"
 
         if completed.action == "ALCHEMY_CRAFT_RECIPE" then
-            local recovery = completed.recovery
-            local snapshotEpoch = type(recovery) == "table"
-                and tonumber(recovery.inventoryEpoch)
-                or nil
-            local inventoryUnchanged = snapshotEpoch ~= nil
-                and snapshotEpoch == alchemyInvokeLease.inventoryEpoch
-                or snapshotEpoch == nil
-                    and alchemyInvokeLease.inventoryEpoch == 0
+            if rejected
+                and inventoryUnchanged
+                and type(recovery) == "table"
+                and recovery.staged == true
+            then
+                clearAlchemyStageCandidate(alchemyInvokeLease.inventoryEpoch)
+            end
             if type(recovery) == "table" and inventoryUnchanged then
                 alchemyRecovery.key = recovery.key
                 alchemyRecovery.candidateIds = type(recovery.candidateIds) == "table"
@@ -1437,6 +1645,9 @@ return function(locomotionFactory, Library, Common)
             local confirmed = accepted and (brewing == true or ready == true)
             if confirmed then
                 finishAlchemyRecipeAttempt(true)
+                if inventoryUnchanged then
+                    clearAlchemyStageCandidate(alchemyInvokeLease.inventoryEpoch)
+                end
             elseif inventoryUnchanged then
                 finishAlchemyRecipeAttempt(false)
             else
@@ -1494,8 +1705,12 @@ return function(locomotionFactory, Library, Common)
         alchemyTelemetry.confirmedAction = nil
         if not cfg.AutoBrew and not cfg.AutoPickupPotion then
             resetAlchemyRecovery()
+            clearAlchemyStageCandidate(alchemyInvokeLease.inventoryEpoch)
             alchemyTelemetry.status = "disabled"
             return false
+        end
+        if not cfg.AutoBrew or cfg.BrewRecipe ~= "Best craftable" then
+            clearAlchemyStageCandidate(alchemyInvokeLease.inventoryEpoch)
         end
         local challenge = playerNumber("InDungeonChallenge")
         if challenge == nil then
@@ -1506,11 +1721,23 @@ return function(locomotionFactory, Library, Common)
         observeAlchemyLocation(challenge)
         if challenge > 0 then
             -- A dungeon trip can change the inventory. Discard any frozen
-            -- fallback order so returning to base immediately ranks the new
-            -- local craftability snapshot instead of resuming an old round.
+            -- request state. While collecting, passively run the same local
+            -- selector used by Magic and remember its highest true recipe for
+            -- this inventory epoch. No Alchemy remote is sent inside a stage.
             resetAlchemyRecovery()
-            alchemyTelemetry.status = "waiting for base"
-            alchemyTelemetry.lastError = nil
+            local stagedId = nil
+            local stageError = nil
+            if cfg.AutoBrew and cfg.BrewRecipe == "Best craftable" then
+                local stageAlchemy
+                stageAlchemy, stageError = resolveAlchemy()
+                if stageAlchemy ~= nil then
+                    stagedId = updateStageAlchemyCandidate(stageAlchemy)
+                end
+            end
+            alchemyTelemetry.status = stagedId ~= nil
+                and ("recipe #" .. tostring(stagedId) .. " ready for base")
+                or "watching stage materials"
+            alchemyTelemetry.lastError = stageError
             return false
         end
         local alchemy, resolveError = resolveAlchemy()
@@ -1681,7 +1908,8 @@ return function(locomotionFactory, Library, Common)
             return false
         end
 
-        if os.clock() < alchemyBaseSyncUntil then
+        local stagedRecipeId = cachedStageAlchemyRecipeId(alchemy)
+        if stagedRecipeId == nil and os.clock() < alchemyBaseSyncUntil then
             alchemyTelemetry.status = "syncing dungeon materials"
             alchemyTelemetry.lastError = nil
             return false
@@ -1689,7 +1917,8 @@ return function(locomotionFactory, Library, Common)
 
         local recipe, recipeError, selectionState = selectAlchemyRecipe(
             alchemy,
-            cfg.BrewRecipe
+            cfg.BrewRecipe,
+            stagedRecipeId
         )
         if recipe == nil then
             alchemyTelemetry.status = selectionState == "cooldown"
@@ -1739,6 +1968,11 @@ return function(locomotionFactory, Library, Common)
             candidateIds = table.clone(alchemyRecovery.candidateIds),
             cursor = alchemyRecovery.cursor,
             inventoryEpoch = alchemyInvokeLease.inventoryEpoch,
+            staged = stagedRecipeId ~= nil,
+            stageRecipeId = stagedRecipeId,
+            stageBagFingerprint = stagedRecipeId ~= nil
+                and alchemyStageCandidate.bagFingerprint
+                or nil,
         }
         local sent, response, err, requestPending, didInvoke = invokeAlchemyAction(
             "ALCHEMY_CRAFT_RECIPE",
@@ -1757,6 +1991,9 @@ return function(locomotionFactory, Library, Common)
                 alchemyTelemetry.craftAttempts - 1
             )
             resetAlchemyRecovery()
+            if err == "Bag changed before Alchemy request" then
+                clearAlchemyStageCandidate(alchemyInvokeLease.inventoryEpoch)
+            end
             alchemyTelemetry.status = err
             alchemyTelemetry.lastError = nil
             return false, err
@@ -1767,6 +2004,9 @@ return function(locomotionFactory, Library, Common)
             err = "server rejected recipe #" .. tostring(recipe.id)
                 .. ": " .. tostring(rejection)
             alchemyTelemetry.remoteResult = response
+            if stagedRecipeId ~= nil then
+                clearAlchemyStageCandidate(alchemyInvokeLease.inventoryEpoch)
+            end
         end
         alchemyTelemetry.remoteResult = response
         task.wait(0.4)
@@ -1782,6 +2022,7 @@ return function(locomotionFactory, Library, Common)
         alchemyTelemetry.confirmed = confirmed
         finishAlchemyRecipeAttempt(confirmed)
         if confirmed then
+            clearAlchemyStageCandidate(alchemyInvokeLease.inventoryEpoch)
             alchemyTelemetry.confirmedAction = "brew"
             alchemyTelemetry.lastError = nil
             alchemyTelemetry.status = "brew confirmed"
@@ -2917,6 +3158,9 @@ return function(locomotionFactory, Library, Common)
                     clearQueuedCraftSellAuthorization()
                 end
             end
+            if configReady and not cfg.AutoBrew then
+                clearAlchemyStageCandidate()
+            end
             if configReady then
                 if cfg.AutoBrew or cfg.AutoPickupPotion then
                     local ok, err = pcall(runAlchemyCycle)
@@ -3557,13 +3801,13 @@ return function(locomotionFactory, Library, Common)
         tab:CreateSection("Notes"):AddParagraph({
             Title = "Automatic brewing",
             Text = "Alchemy runs remotely only while the player is at base. "
-                .. "Best craftable checks every recipe locally in one pass and "
-                .. "sends the highest recipe reported as available immediately; "
-                .. "when every local hint is stale it starts with the basic recipe "
-                .. "on initial load, but with the strongest recipe after a dungeon "
-                .. "trip. It briefly lets the collected Bag data settle, chains the "
-                .. "next brew immediately after pickup, and never moves the character "
-                .. "or pauses Broom. Only one potion can brew at a time.",
+                .. "While farming, Best craftable watches Bag changes and caches "
+                .. "the highest recipe that the game reports as craftable. The first "
+                .. "base cycle sends that exact recipe; it never probes guessed recipe "
+                .. "IDs one by one. Without a stage cache it repeats Magic's local "
+                .. "Best check until a recipe is available. Pickup can chain the next "
+                .. "brew immediately, and neither action moves the character or pauses "
+                .. "Broom. Only one potion can brew at a time.",
         })
     end
 

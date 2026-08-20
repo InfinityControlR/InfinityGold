@@ -227,6 +227,7 @@ local os = {{ clock = function() return fakeClock end }}
 local inventoryEpoch = 0
 local stageActive = false
 local recoveryResets = 0
+local stageCandidateClears = 0
 local function playerNumber(_name)
     if fakeClock >= 0.5 and fakeClock < 1.5 then return 4 end
     return 0
@@ -242,6 +243,7 @@ local function observeAlchemyLocation(challenge)
     end
 end
 local function resetAlchemyRecovery() recoveryResets += 1 end
+local function clearAlchemyStageCandidate() stageCandidateClears += 1 end
 local function runAlchemyCycle()
     error("disabled Alchemy unexpectedly ran")
 end
@@ -256,7 +258,7 @@ end
 
 {ALCHEMY_WORKER}
 
-assert(inventoryEpoch == 1 and recoveryResets == 2,
+assert(inventoryEpoch == 1 and recoveryResets == 2 and stageCandidateClears == 4,
     "disabled Alchemy missed or duplicated the dungeon inventory epoch")
 print("disabled_alchemy_inventory_epoch_smoke=ok")
 """
