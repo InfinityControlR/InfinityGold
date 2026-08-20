@@ -85,8 +85,18 @@ local function playerNumber(_name)
     end
     return 0
 end
-{ALCHEMY_LOCATION_OBSERVER}
+alchemyBagFingerprint = function() return "fixture-bag" end
+local function clearAlchemyStageCandidate() end
 local function resetAlchemyRecovery() end
+local function publishAlchemyInventoryTransfer() end
+local function finishAlchemyInventoryTransfer(status)
+    alchemyInventoryTransfer.pending = false
+    alchemyTelemetry.transferStatus = status
+end
+{ALCHEMY_LOCATION_OBSERVER}
+local function alchemyInventoryTransferPending()
+    return alchemyInventoryTransfer.pending == true
+end
 local function runAlchemyCycle()
     local challenge = playerNumber("InDungeonChallenge")
     if challenge > 0 then
@@ -155,6 +165,7 @@ local function playerNumber(_name)
     return 0
 end
 local function observeAlchemyLocation(_challenge) end
+local function alchemyInventoryTransferPending() return false end
 local function resetAlchemyRecovery() end
 local function runAlchemyCycle()
     alchemyRuns += 1
@@ -242,6 +253,7 @@ local function observeAlchemyLocation(challenge)
         stageActive = false
     end
 end
+local function alchemyInventoryTransferPending() return false end
 local function resetAlchemyRecovery() recoveryResets += 1 end
 local function clearAlchemyStageCandidate() stageCandidateClears += 1 end
 local function runAlchemyCycle()
@@ -293,6 +305,7 @@ local function observeAlchemyLocation(challenge)
     assert(challenge == 0)
     locationObservations += 1
 end
+local function alchemyInventoryTransferPending() return false end
 local function resetAlchemyRecovery()
     error("base observation unexpectedly reset Alchemy recovery")
 end

@@ -67,16 +67,17 @@ the InfinityGold dashboard.
   locked items and materials reserved for Alchemy recipes. Automatic selling
   runs only at base. When Auto Brew is enabled, the base-economy worker runs
   Alchemy first and sells only after a craft was confirmed or while a potion is
-  already brewing; a pickup confirmation alone never unlocks selling. Best
-  Craftable passively watches `tp=2` material changes while farming and remembers
-  the highest recipe that the game's own predicates prove craftable. On return,
-  it sends only that recipe instead of walking guessed recipe IDs through the
-  server. If no recipe was proven during the stage, it waits briefly for Bag
-  replication and repeats Magic's local Best check; all-false snapshots send no
-  speculative craft request. A confirmed pickup chains the next brew in the
-  same base cycle without invalidating the unchanged material snapshot. The game has
-  one brewing slot, so a live `brewing (one potion at a time)` state is an
-  intentional wait for the current potion rather than a recipe-search delay.
+  already brewing; a pickup confirmation alone never unlocks selling. Dungeon
+  drops live in the small temporary `LimitBag` while farming and move into the
+  visible 999-slot `PlayerData.Bag` only at base. Best Craftable watches that
+  handoff, refreshes the local Alchemy facade and sends the highest recipe whose
+  material predicate is positive in the first base cycle. A stale rebirth hint
+  is diagnostic rather than a veto because the server still validates the one
+  selected ID. It never walks guessed recipe IDs. A confirmed pickup chains the
+  next brew in the same base cycle without invalidating the unchanged material
+  snapshot. The game has one brewing slot, so a live
+  `brewing (one potion at a time)` state is an intentional wait for the current
+  potion rather than a recipe-search delay.
 - **Broom**: sends only the selected-stage request (`关卡跳关请求`) and never
   toggles/equips the broom. It keeps single-flight epoch tokens, invalidation
   on toggle/stage/return changes, and base detection through the numeric
@@ -143,12 +144,13 @@ These surfaces need confirmation inside Roblox (fail-open until then):
 - `PLAYER_REBIRTH`, `INDEX_CLAIM_REWARD` and `DRINK_POTION` payload shapes
   (currently sent without arguments).
 - `GetData.GetCfgByName("weaponConf"|"armorConf")` shape for shop automation.
-- Alchemy resolves `GetData.Alchemy` and mirrors Magic's local Best selector:
-  it sends only the highest recipe for which both game predicates are true,
-  never walks guessed recipe IDs through the server. While farming a stage it
-  passively watches Bag changes and remembers that same locally proven recipe
-  for the current inventory epoch; the first base cycle can therefore use it
-  even if the base-side predicate cache is momentarily stale. Craft and pickup
+- Alchemy resolves `GetData.Alchemy` and sends only one locally selected Best
+  recipe, never a server-side ID walk. It distinguishes the temporary LimitBag
+  from the permanent 999-slot Bag, reserves the short return window until a
+  material delta is visible, then evaluates `CanCraftRecipe` immediately. A
+  positive `CanMeetRecipeRebirth` is preferred, but its false/error result no
+  longer hides a material-positive recipe that manual selection can submit.
+  Craft and pickup
   use the verified InvokeServer actions only when `InDungeonChallenge <= 0`,
   without moving the character or suspending Walking, Running or Broom.
   Automatic selling still waits for a confirmed brew.

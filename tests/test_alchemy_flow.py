@@ -118,8 +118,14 @@ local os = {{ clock = function() return fakeClock end }}
 local challenge = nil
 local returnEpisode = {{ active = false }}
 local returnTravelHoldUntil = 10
-local alchemyInvokeLease = {{ returnHoldUntil = 10 }}
-local cfg = {{ AutoReturnFull = true }}
+local alchemyInvokeLease = {{
+    returnHoldUntil = 10,
+    inventoryStageActive = false,
+}}
+local cfg = {{ AutoReturnFull = true, AutoBrew = true, AutoSell = false }}
+local configReady = true
+local transferPending = false
+local function alchemyInventoryTransferPending() return transferPending end
 local function playerNumber(name)
     assert(name == "InDungeonChallenge", "wrong return state key")
     return challenge
@@ -158,6 +164,18 @@ returnEpisode.blocked = false
 returnEpisode.active = true
 assert(alchemyReturnPending() == true,
     "active return episode was not authoritative")
+returnEpisode.active = false
+challenge = 0
+transferPending = true
+assert(alchemyReturnPending() == true,
+    "Broom was released before the temporary bag reached permanent Bag")
+transferPending = false
+assert(alchemyReturnPending() == false,
+    "completed bag transfer did not release Broom")
+alchemyInvokeLease.inventoryStageActive = true
+assert(alchemyReturnPending() == true,
+    "stage-to-base handoff raced Broom before transfer tracking started")
+alchemyInvokeLease.inventoryStageActive = false
 print("alchemy_return_hold_smoke=ok")
 """
         completed = run_luau(fixture)
@@ -316,11 +334,15 @@ print("alchemy_invoke_lease_smoke=ok")
         fixture = f"""
 local player = {{ marker = "local-player" }}
 local challenge = 0
+local temporaryBagUsed = 0
 local challengeReadHook = function() end
 local function playerNumber(name)
-    assert(name == "InDungeonChallenge", "wrong Alchemy location state")
-    challengeReadHook()
-    return challenge
+    if name == "InDungeonChallenge" then
+        challengeReadHook()
+        return challenge
+    end
+    if name == "LimitBagUsed" then return temporaryBagUsed end
+    error("wrong Alchemy location state " .. tostring(name))
 end
 local cfg = {{
     AutoBrew = true,
@@ -575,27 +597,25 @@ assert(blocked == false and blockedError == nil
     and #calls == callsBeforeStageGate,
     "Alchemy guessed base while dungeon state was unknown")
 challenge = 4
+temporaryBagUsed = 10
 alchemyRecovery.key = "stale-before-stage"
 alchemyRecovery.candidateIds = {{ 4, 1 }}
 alchemyRecovery.cursor = 2
 alchemyRecovery.nextAttemptAt = 999
 blocked, blockedError = runAlchemyCycle()
 assert(blocked == false and blockedError == nil
-    and alchemyTelemetry.status == "watching stage materials"
+    and alchemyTelemetry.status == "collecting in temporary bag"
+    and alchemyTelemetry.temporaryBagUsed == 10
     and #calls == callsBeforeStageGate,
     "Alchemy invoked instead of observing passively inside a stage")
 assert(alchemyRecovery.key == nil and #alchemyRecovery.candidateIds == 0,
     "a dungeon trip preserved a stale recipe priority for the next base return")
 challenge = 0
+temporaryBagUsed = 0
+table.insert(bag, {{ id = 501, onlyID = 1501, tp = 2, count = 1 }})
 
 local writesBeforeCraft = cframeWrites
 local sent, craftError = runAlchemyCycle()
-assert(sent == false and craftError == nil
-    and alchemyTelemetry.status == "syncing dungeon materials"
-    and #calls == callsBeforeStageGate,
-    "Alchemy ranked recipes before the dungeon inventory settled")
-fakeClock = ALCHEMY_BASE_SYNC_SECONDS
-sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil,
     "craft cycle failed: " .. tostring(craftError) .. " / " .. tostring(alchemyTelemetry.status))
 assert(alchemyTelemetry.confirmedAction == "brew",
@@ -616,7 +636,8 @@ assert(cframeWrites == writesBeforeCraft,
 assert(waits[1] == 0.4 and waits[2] == 0.25, "remote craft cadence changed")
 assert(pauseCalls == 0 and resumeCalls == 0,
     "remote craft paused or resumed character movement")
-assert(refreshCalls == 1, "craft did not refresh PotionBrewingGame")
+assert(refreshCalls == 2,
+    "bag transfer and craft did not refresh PotionBrewingGame")
 assert(alchemyTelemetry.canUse == true
     and alchemyTelemetry.ready == false
     and alchemyTelemetry.inProgress == true
@@ -624,7 +645,7 @@ assert(alchemyTelemetry.canUse == true
     "Alchemy gate diagnostics lost true/false states")
 assert(alchemyTelemetry.checkTotal == 3
     and alchemyTelemetry.rebirthPassed == 2
-    and alchemyTelemetry.materialChecks == 2
+    and alchemyTelemetry.materialChecks == 3
     and alchemyTelemetry.craftable == 1
     and alchemyTelemetry.predicateErrors == 0
     and alchemyTelemetry.chosenId == 1,
@@ -669,7 +690,7 @@ assert(cframeWrites == writesBeforePickup,
 assert(waits[1] == 0.5 and waits[2] == 0.25, "remote pickup cadence changed")
 assert(pauseCalls == 0 and resumeCalls == 0,
     "remote pickup paused or resumed character movement")
-assert(refreshCalls == 2, "pickup did not refresh PotionBrewingGame")
+assert(refreshCalls == 3, "pickup did not refresh PotionBrewingGame")
 
 -- A ready potion and the next craft share one base window. Pickup alone is not
 -- the typed outcome: when Auto Brew remains enabled the same cycle must finish
@@ -864,6 +885,36 @@ assert(sent == false
     and alchemyRecovery.key == nil,
     "Best emitted a fallback remote while every local recipe was false")
 
+-- A return with no permanent material delta must never strand Broom/farming
+-- at base. The handoff waits only for its bounded deadline, sends no guessed
+-- recipe id, then releases even though Best still has no local candidate.
+challenge = 12
+temporaryBagUsed = 10
+runAlchemyCycle()
+challenge = 0
+temporaryBagUsed = 0
+local callsBeforeEmptyTransfer = #calls
+local emptyTransferStartedAt = fakeClock
+sent, craftError = runAlchemyCycle()
+assert(sent == false
+    and string.find(craftError, "waiting for the game", 1, true) ~= nil
+    and alchemyInventoryTransferPending()
+    and alchemyTelemetry.status == "no recipe candidate"
+    and #calls == callsBeforeEmptyTransfer,
+    "empty transfer did not enter its bounded base reservation")
+fakeClock = emptyTransferStartedAt + ALCHEMY_TRANSFER_SETTLE_SECONDS
+sent, craftError = runAlchemyCycle()
+assert(sent == false and alchemyInventoryTransferPending()
+    and #calls == callsBeforeEmptyTransfer,
+    "temporary-bag clear was mistaken for a settled permanent-Bag delta")
+fakeClock = emptyTransferStartedAt + ALCHEMY_TRANSFER_TIMEOUT_SECONDS
+sent, craftError = runAlchemyCycle()
+assert(sent == false
+    and string.find(craftError, "waiting for the game", 1, true) ~= nil
+    and not alchemyInventoryTransferPending()
+    and #calls == callsBeforeEmptyTransfer,
+    "empty transfer remained trapped at base or guessed a recipe id")
+
 -- Stage-13 regression: recipe #17 becomes locally craftable while loot is
 -- arriving in the Bag, then the same predicate is stale/false at base. The
 -- stage scan may only cache evidence; it must not move or invoke. The first
@@ -1023,25 +1074,17 @@ pickupConfirmationHook = function()
 end
 sent, craftError = runAlchemyCycle()
 pickupConfirmationHook = function() end
-assert(sent == false and craftError == nil
+assert(sent == true and craftError == nil
     and #bag == bagRowsBeforeMaterialPickup + 1
     and bag[#bag].tp == 2
-    and #calls == callsBeforeMaterialPickup + 1
-    and calls[#calls].action == "ALCHEMY_PICKUP_FINISH_POTION"
-    and alchemyTelemetry.confirmedAction == "pickup"
-    and alchemyTelemetry.status == "syncing dungeon materials"
-    and alchemyTelemetry.stageCandidateId == nil,
-    "a tp=2 pickup reused the staged recipe from the older material Bag")
-
-fakeClock = materialPickupReturnAt + ALCHEMY_BASE_SYNC_SECONDS
-remoteMode = "accept-id"
-remoteAcceptedRecipeId = 19
-sent, craftError = runAlchemyCycle()
-assert(sent == true and craftError == nil
     and #calls == callsBeforeMaterialPickup + 2
+    and calls[callsBeforeMaterialPickup + 1].action
+        == "ALCHEMY_PICKUP_FINISH_POTION"
     and calls[#calls].action == "ALCHEMY_CRAFT_RECIPE"
-    and calls[#calls].payload.recipeId == 19,
-    "tp=2 invalidation did not freshly rank recipe #19 after base sync")
+    and calls[#calls].payload.recipeId == 19
+    and alchemyTelemetry.confirmedAction == "brew"
+    and alchemyTelemetry.stageCandidateId == nil,
+    "a tp=2 pickup did not immediately rank and craft fresh recipe #19")
 
 -- A final pickup can replicate after the last stage scan but before challenge
 -- flips to zero. That newer Bag fingerprint invalidates the cached #17: the
@@ -1068,18 +1111,11 @@ local finalFingerprintReturnAt = fakeClock
 remoteMode = "accept-id"
 remoteAcceptedRecipeId = 19
 sent, craftError = runAlchemyCycle()
-assert(sent == false and craftError == nil
-    and #calls == callsBeforeFinalFingerprintRace
-    and alchemyTelemetry.status == "syncing dungeon materials"
-    and alchemyTelemetry.stageCandidateId == nil,
-    "a last-minute Bag change reused the older staged recipe")
-
-fakeClock = finalFingerprintReturnAt + ALCHEMY_BASE_SYNC_SECONDS
-sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil
     and #calls == callsBeforeFinalFingerprintRace + 1
-    and calls[#calls].payload.recipeId == 19,
-    "normal base sync did not rank the recipe from the final Bag snapshot")
+    and calls[#calls].payload.recipeId == 19
+    and alchemyTelemetry.stageCandidateId == nil,
+    "the first base cycle did not rank the final permanent-Bag snapshot")
 
 -- A late explicit rejection may invalidate the staged recipe it actually
 -- attempted, but only while that request still belongs to the current Bag
@@ -1231,6 +1267,7 @@ assert(#calls == callsBeforeYieldGuards
     "yield-guard stage did not establish recipe #17")
 
 challenge = 0
+table.insert(bag, {{ id = 920, onlyID = 5020, tp = 2, lock = false }})
 local challengeInterleaveReads = 0
 bagReadHook = function()
     challengeInterleaveReads += 1
@@ -1239,7 +1276,7 @@ end
 sent, craftError = runAlchemyCycle()
 bagReadHook = function() end
 assert(sent == false and craftError == "left base before Alchemy request"
-    and challengeInterleaveReads == 2
+    and challengeInterleaveReads >= 2
     and challenge == 19
     and #calls == callsBeforeYieldGuards,
     "beforeInvoke used the base state captured before the yielding Bag getter")
@@ -1320,24 +1357,33 @@ assert(#calls == callsBeforeExplicitRejection + 1
 assert(root.CFrame == home and alchemyTelemetry.confirmed == false,
     "rejected craft did not cleanly restore its transaction")
 
--- Explicit selection remains fail-open, but Best mirrors Magic and only caches
--- recipes whose rebirth and material predicates both pass locally.
+-- The live rebirth facade can be stale even though CanCraftRecipe sees the
+-- transferred materials and the server accepts the same manually selected id.
+-- Best must still ask CanCraftRecipe and send that single material-positive id.
 fakeClock = 35
 cfg.BrewRecipe = "Best craftable"
 recipes[1].Rebirth = 9
 recipes[2].Rebirth = 9
+recipes[1].craftable = true
+recipes[2].craftable = false
 resetAlchemyRecovery()
 local epochBeforeStaleRebirth = alchemyInvokeLease.inventoryEpoch
 alchemyInvokeLease.inventoryEpoch = 0
 remoteMode = "accept-one"
 local callsBeforeStaleRebirth = #calls
 sent, craftError = runAlchemyCycle()
-assert(sent == false
-    and string.find(craftError, "waiting for the game", 1, true) ~= nil
-    and #calls == callsBeforeStaleRebirth,
-    "Best invoked a recipe whose rebirth predicate was false")
+assert(sent == true and craftError == nil
+    and #calls == callsBeforeStaleRebirth + 1
+    and calls[#calls].payload.recipeId == 1,
+    "Best let a stale rebirth facade veto the material-positive recipe")
 alchemyInvokeLease.inventoryEpoch = epochBeforeStaleRebirth
 recipes[1].Rebirth = 0
+recipes[2].Rebirth = 9
+recipes[2].craftable = true
+resetAlchemyRecovery()
+local exactBeforeAdvisory = selectAlchemyRecipe(alchemy, "Best craftable")
+assert(exactBeforeAdvisory ~= nil and exactBeforeAdvisory.id == 1,
+    "a higher rebirth-advisory recipe displaced a fully verified recipe")
 recipes[2].Rebirth = 1
 
 fakeClock = 40
@@ -1345,6 +1391,7 @@ remoteMode = "accept"
 inProgress = false
 readyForPickup = false
 recipes[1].craftable = true
+recipes[2].craftable = true
 cfg.BrewRecipe = "Best craftable"
 resetAlchemyRecovery()
 alchemyInvokeLease.completed = {{
@@ -1397,6 +1444,7 @@ challenge = 4
 local callsBeforeTripCompletion = #calls
 runAlchemyCycle()
 challenge = 0
+table.insert(bag, {{ id = 921, onlyID = 5021, tp = 2, lock = false }})
 sent, craftError = runAlchemyCycle()
 assert(sent == false
     and string.find(craftError, "stale pre-trip rejection", 1, true) ~= nil
@@ -1576,7 +1624,8 @@ print("alchemy_flow_smoke=ok")
         self.assertIn("pcall(helper.TranslateByKey, key)", ALCHEMY_HELPERS)
         self.assertIn('string.match(selection, "^#(%d+)")', ALCHEMY_HELPERS)
         self.assertNotIn('if reason ~= "rebirth" then', ALCHEMY_HELPERS)
-        self.assertIn("if craftable then best = recipe end", ALCHEMY_HELPERS)
+        self.assertIn('if reason == "craftable" then', ALCHEMY_HELPERS)
+        self.assertIn("best = best or advisoryBest", ALCHEMY_HELPERS)
         self.assertIn("table.insert(prioritizedIds, best.id)", ALCHEMY_HELPERS)
         self.assertNotIn("fallbackIds", ALCHEMY_HELPERS)
         self.assertIn('local recoveryPrefix = "magic-best-v1|"', ALCHEMY_HELPERS)
@@ -1596,7 +1645,7 @@ print("alchemy_flow_smoke=ok")
         self.assertIn('alchemyTelemetry.travel = "remote"', cycle)
         self.assertIn('playerNumber("InDungeonChallenge")', cycle)
         self.assertIn("updateStageAlchemyCandidate(stageAlchemy)", cycle)
-        self.assertIn('or "watching stage materials"', cycle)
+        self.assertIn('or "collecting in temporary bag"', cycle)
         self.assertNotIn("beginAlchemyTravel", cycle)
         self.assertNotIn("reaffirmAlchemyTravel", cycle)
         self.assertNotIn("finishAlchemyTravel", cycle)

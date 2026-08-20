@@ -858,6 +858,8 @@ return function(locomotionFactory, Library, Common)
         confirmed = false,
         confirmedAction = nil,
         stageCandidateId = nil,
+        temporaryBagUsed = nil,
+        transferStatus = "idle",
     }
     local alchemyRecovery = {
         key = nil,
@@ -871,6 +873,34 @@ return function(locomotionFactory, Library, Common)
     local ALCHEMY_STAGE_RESCAN_SECONDS = 0.8
     local ALCHEMY_STAGE_RESCAN_INTERVAL = 0.1
     local ALCHEMY_STAGE_IDLE_SCAN_INTERVAL = 0.5
+    local ALCHEMY_TRANSFER_SETTLE_SECONDS = 0.2
+    local ALCHEMY_TRANSFER_TIMEOUT_SECONDS = 3
+    local alchemyBagFingerprint = function()
+        return nil, "Bag fingerprint unavailable"
+    end
+    local inheritedTransfer = type(alchemyInvokeLease.inventoryTransfer) == "table"
+        and alchemyInvokeLease.inventoryTransfer
+        or nil
+    local alchemyInventoryTransfer = {
+        epoch = inheritedTransfer ~= nil
+            and math.floor(tonumber(inheritedTransfer.epoch) or -1)
+            or -1,
+        baselineFingerprint = inheritedTransfer ~= nil
+            and inheritedTransfer.baselineFingerprint
+            or nil,
+        lastFingerprint = inheritedTransfer ~= nil
+            and inheritedTransfer.lastFingerprint
+            or nil,
+        pending = inheritedTransfer ~= nil and inheritedTransfer.pending == true,
+        changed = inheritedTransfer ~= nil and inheritedTransfer.changed == true,
+        permanentChanged = inheritedTransfer ~= nil
+            and inheritedTransfer.permanentChanged == true,
+        refreshed = inheritedTransfer ~= nil and inheritedTransfer.refreshed == true,
+        stableSince = inheritedTransfer ~= nil
+            and tonumber(inheritedTransfer.stableSince) or 0,
+        deadline = inheritedTransfer ~= nil
+            and tonumber(inheritedTransfer.deadline) or 0,
+    }
     local inheritedStageCandidate = type(alchemyInvokeLease.stageCandidate) == "table"
         and alchemyInvokeLease.stageCandidate
         or nil
@@ -933,25 +963,129 @@ return function(locomotionFactory, Library, Common)
         }
     end
 
+    local function publishAlchemyInventoryTransfer()
+        if alchemyInventoryTransfer.epoch < 0 then
+            alchemyInvokeLease.inventoryTransfer = nil
+            return
+        end
+        alchemyInvokeLease.inventoryTransfer = {
+            epoch = alchemyInventoryTransfer.epoch,
+            baselineFingerprint = alchemyInventoryTransfer.baselineFingerprint,
+            lastFingerprint = alchemyInventoryTransfer.lastFingerprint,
+            pending = alchemyInventoryTransfer.pending,
+            changed = alchemyInventoryTransfer.changed,
+            permanentChanged = alchemyInventoryTransfer.permanentChanged,
+            refreshed = alchemyInventoryTransfer.refreshed,
+            stableSince = alchemyInventoryTransfer.stableSince,
+            deadline = alchemyInventoryTransfer.deadline,
+        }
+    end
+
+    local function finishAlchemyInventoryTransfer(status)
+        alchemyInventoryTransfer.pending = false
+        alchemyInventoryTransfer.deadline = 0
+        alchemyTelemetry.transferStatus = status
+        publishAlchemyInventoryTransfer()
+    end
+
+    local function alchemyInventoryTransferPending()
+        return alchemyInventoryTransfer.pending == true
+    end
+
     local function observeAlchemyLocation(challenge)
+        local now = os.clock()
         if challenge > 0 then
             if not alchemyInvokeLease.inventoryStageActive then
                 alchemyInvokeLease.inventoryEpoch += 1
                 alchemyInvokeLease.inventoryStageActive = true
+                clearAlchemyStageCandidate(alchemyInvokeLease.inventoryEpoch)
+                local fingerprint = alchemyBagFingerprint()
+                alchemyInventoryTransfer.epoch = alchemyInvokeLease.inventoryEpoch
+                alchemyInventoryTransfer.baselineFingerprint = fingerprint
+                alchemyInventoryTransfer.lastFingerprint = fingerprint
+                alchemyInventoryTransfer.pending = false
+                alchemyInventoryTransfer.changed = false
+                alchemyInventoryTransfer.permanentChanged = false
+                alchemyInventoryTransfer.refreshed = false
+                alchemyInventoryTransfer.stableSince = now
+                alchemyInventoryTransfer.deadline = 0
+                alchemyTelemetry.transferStatus = "temporary bag collecting"
+                publishAlchemyInventoryTransfer()
             end
+            alchemyTelemetry.temporaryBagUsed = playerNumber("LimitBagUsed")
             return
         end
         if alchemyInvokeLease.inventoryStageActive then
-            -- Challenge reaches zero slightly before Bag/Alchemy has always
-            -- replicated the loot collected during the trip. Give that local
-            -- snapshot one short settling window before Best ranks recipes;
-            -- otherwise it can freeze the pre-trip recipe as its first probe.
+            -- Dungeon drops live in the small temporary LimitBag. Only after
+            -- returning do they move into PlayerData.Bag (the visible 999-slot
+            -- inventory used by CanCraftRecipe). Reserve this base window until
+            -- the permanent material fingerprint changes and settles.
+            local fingerprint = alchemyBagFingerprint()
+            local temporaryUsed = playerNumber("LimitBagUsed")
+            alchemyTelemetry.temporaryBagUsed = temporaryUsed
+            alchemyInventoryTransfer.epoch = alchemyInvokeLease.inventoryEpoch
+            alchemyInventoryTransfer.lastFingerprint = fingerprint
+            alchemyInventoryTransfer.permanentChanged = fingerprint ~= nil
+                and alchemyInventoryTransfer.baselineFingerprint ~= nil
+                and fingerprint ~= alchemyInventoryTransfer.baselineFingerprint
+            alchemyInventoryTransfer.changed = alchemyInventoryTransfer.permanentChanged
+            if temporaryUsed ~= nil and temporaryUsed <= 0 then
+                -- The temporary bag clearing is the game's direct handoff
+                -- signal. Start the local Best scan in this same base tick;
+                -- if PlayerData lags, subsequent 0.1 s polls re-evaluate it.
+                alchemyInventoryTransfer.changed = true
+            end
+            alchemyInventoryTransfer.stableSince = now
+            alchemyInventoryTransfer.deadline = now
+                + ALCHEMY_TRANSFER_TIMEOUT_SECONDS
+            alchemyInventoryTransfer.pending = configReady
+                and (cfg.AutoBrew or cfg.AutoSell)
+            alchemyInventoryTransfer.refreshed = false
+            alchemyTelemetry.transferStatus = alchemyInventoryTransfer.pending
+                and "waiting for temporary bag transfer"
+                or "transfer wait not required"
             alchemyBaseSyncUntil = math.max(
                 alchemyBaseSyncUntil,
-                os.clock() + ALCHEMY_BASE_SYNC_SECONDS
+                now + ALCHEMY_BASE_SYNC_SECONDS
             )
+            publishAlchemyInventoryTransfer()
         end
         alchemyInvokeLease.inventoryStageActive = false
+
+        if not alchemyInventoryTransfer.pending then return end
+        if not configReady or (not cfg.AutoBrew and not cfg.AutoSell) then
+            finishAlchemyInventoryTransfer("transfer wait cancelled")
+            return
+        end
+        local fingerprint, fingerprintError = alchemyBagFingerprint()
+        if fingerprint ~= nil then
+            if fingerprint ~= alchemyInventoryTransfer.lastFingerprint then
+                alchemyInventoryTransfer.lastFingerprint = fingerprint
+                alchemyInventoryTransfer.stableSince = now
+                alchemyInventoryTransfer.changed = true
+                alchemyInventoryTransfer.permanentChanged = true
+                resetAlchemyRecovery()
+                clearAlchemyStageCandidate(alchemyInvokeLease.inventoryEpoch)
+            end
+            local stable = alchemyInventoryTransfer.permanentChanged
+                and now - alchemyInventoryTransfer.stableSince
+                    >= ALCHEMY_TRANSFER_SETTLE_SECONDS
+            if stable then
+                alchemyBaseSyncUntil = 0
+                finishAlchemyInventoryTransfer("permanent bag synchronized")
+                return
+            end
+        else
+            alchemyTelemetry.lastError = fingerprintError
+        end
+        if now >= alchemyInventoryTransfer.deadline then
+            -- Never strand Broom/farming at base if the transfer exposes no
+            -- tp=2 delta (for example a trip that collected no ingredients).
+            finishAlchemyInventoryTransfer("transfer wait timed out")
+            return
+        end
+        alchemyTelemetry.transferStatus = "waiting for temporary bag transfer"
+        publishAlchemyInventoryTransfer()
     end
 
     local function resolveAlchemy()
@@ -1058,26 +1192,38 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function isAlchemyRecipeCraftable(alchemy, recipe)
-        if type(alchemy.CanMeetRecipeRebirth) ~= "function"
-            or type(alchemy.CanCraftRecipe) ~= "function"
-        then
+        if type(alchemy.CanCraftRecipe) ~= "function" then
             return false, "alchemy recipe checks unavailable", "api"
         end
-        local rebirthOk, meetsRebirth = pcall(
-            alchemy.CanMeetRecipeRebirth,
-            player,
-            recipe.recipe
-        )
-        if not rebirthOk then return false, tostring(meetsRebirth), "rebirth-error" end
-        if not meetsRebirth then return false, nil, "rebirth" end
-
+        local rebirthOk, meetsRebirth = false, nil
+        if type(alchemy.CanMeetRecipeRebirth) == "function" then
+            rebirthOk, meetsRebirth = pcall(
+                alchemy.CanMeetRecipeRebirth,
+                player,
+                recipe.recipe
+            )
+        end
+        -- Always ask the material predicate. In live builds the rebirth facade
+        -- can be stale even though the manually selected recipe is accepted by
+        -- the server; short-circuiting here made Best silently do nothing.
         local craftOk, canCraft = pcall(alchemy.CanCraftRecipe, player, recipe.recipe)
         if not craftOk then return false, tostring(canCraft), "materials-error" end
-        if not canCraft then return false, nil, "materials" end
+        if not canCraft then
+            if not rebirthOk then
+                return false, tostring(meetsRebirth), "materials-rebirth-error"
+            end
+            return false, nil, meetsRebirth and "materials" or "materials-rebirth"
+        end
+        if not rebirthOk then
+            return true, tostring(meetsRebirth), "craftable-rebirth-error"
+        end
+        if not meetsRebirth then
+            return true, nil, "craftable-rebirth-advisory"
+        end
         return true, nil, "craftable"
     end
 
-    local function alchemyBagFingerprint()
+    alchemyBagFingerprint = function()
         local bag, bagError = playerBag()
         if bag == nil then return nil, bagError end
         local rows = {}
@@ -1116,21 +1262,26 @@ return function(locomotionFactory, Library, Common)
         local rawRecipes, recipeError = rawAlchemyRecipes(alchemy)
         if rawRecipes == nil then return nil, recipeError end
         local bestId = nil
+        local advisoryId = nil
         for _, raw in ipairs(rawRecipes) do
             if type(raw) == "table" then
                 local id = math.floor(tonumber(raw.recipeId) or 0)
                 if id > 0 then
-                    local craftable = isAlchemyRecipeCraftable(alchemy, {
+                    local craftable, _, reason = isAlchemyRecipeCraftable(alchemy, {
                         id = id,
                         recipe = raw,
                     })
-                    if craftable and (bestId == nil or id > bestId) then
-                        bestId = id
+                    if craftable then
+                        if reason == "craftable" then
+                            if bestId == nil or id > bestId then bestId = id end
+                        elseif advisoryId == nil or id > advisoryId then
+                            advisoryId = id
+                        end
                     end
                 end
             end
         end
-        return bestId
+        return bestId or advisoryId
     end
 
     local function updateStageAlchemyCandidate(alchemy)
@@ -1220,12 +1371,21 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function noteAlchemyRecipeCheck(reason)
-        if reason ~= "rebirth" and reason ~= "rebirth-error" and reason ~= "api" then
+        if reason == "craftable" or reason == "materials" then
             alchemyTelemetry.rebirthPassed += 1
-            alchemyTelemetry.materialChecks += 1
         end
-        if reason == "craftable" then alchemyTelemetry.craftable += 1 end
-        if reason == "rebirth-error" or reason == "materials-error" or reason == "api" then
+        if reason ~= "api" then alchemyTelemetry.materialChecks += 1 end
+        if reason == "craftable"
+            or reason == "craftable-rebirth-advisory"
+            or reason == "craftable-rebirth-error"
+        then
+            alchemyTelemetry.craftable += 1
+        end
+        if reason == "craftable-rebirth-error"
+            or reason == "materials-rebirth-error"
+            or reason == "materials-error"
+            or reason == "api"
+        then
             alchemyTelemetry.predicateErrors += 1
         end
     end
@@ -1253,6 +1413,7 @@ return function(locomotionFactory, Library, Common)
             -- or walk server candidates; those retries were the source of the
             -- multi-minute delay after returning from a dungeon.
             local best = nil
+            local advisoryBest = nil
             stagedRecipeId = math.floor(tonumber(stagedRecipeId) or 0)
             if stagedRecipeId > 0 then
                 for _, recipe in ipairs(catalog) do
@@ -1269,9 +1430,16 @@ return function(locomotionFactory, Library, Common)
                         recipe
                     )
                     noteAlchemyRecipeCheck(reason)
-                    if craftable then best = recipe end
+                    if craftable then
+                        if reason == "craftable" then
+                            best = recipe
+                        else
+                            advisoryBest = recipe
+                        end
+                    end
                 end
             end
+            best = best or advisoryBest
             if best ~= nil then
                 candidateById[best.id] = best
                 table.insert(membershipIds, best.id)
@@ -1336,6 +1504,9 @@ return function(locomotionFactory, Library, Common)
             -- Materials changed after a successful craft. Rebuild local
             -- priorities before choosing the next potion.
             resetAlchemyRecovery()
+            if alchemyInventoryTransferPending() then
+                finishAlchemyInventoryTransfer("brew started after bag transfer")
+            end
             return
         end
         local count = #alchemyRecovery.candidateIds
@@ -1468,7 +1639,8 @@ return function(locomotionFactory, Library, Common)
             local function beforeInvoke()
                 if action == "ALCHEMY_CRAFT_RECIPE"
                     and type(recoverySnapshot) == "table"
-                    and recoverySnapshot.staged == true
+                    and (recoverySnapshot.staged == true
+                        or type(recoverySnapshot.transferBagFingerprint) == "string")
                 then
                     -- PlayerData is the only opaque getter in this commit
                     -- guard and may yield. Read it first; every gate below is
@@ -1476,8 +1648,11 @@ return function(locomotionFactory, Library, Common)
                     -- material snapshot nor the base decision can become stale
                     -- inside our code before InvokeServer.
                     local finalFingerprint = alchemyBagFingerprint()
+                    local expectedFingerprint = recoverySnapshot.staged == true
+                        and recoverySnapshot.stageBagFingerprint
+                        or recoverySnapshot.transferBagFingerprint
                     if finalFingerprint == nil
-                        or finalFingerprint ~= recoverySnapshot.stageBagFingerprint
+                        or finalFingerprint ~= expectedFingerprint
                     then
                         return false, "Bag changed before Alchemy request"
                     end
@@ -1720,10 +1895,10 @@ return function(locomotionFactory, Library, Common)
         end
         observeAlchemyLocation(challenge)
         if challenge > 0 then
-            -- A dungeon trip can change the inventory. Discard any frozen
-            -- request state. While collecting, passively run the same local
-            -- selector used by Magic and remember its highest true recipe for
-            -- this inventory epoch. No Alchemy remote is sent inside a stage.
+            -- PlayerData.Bag is the permanent inventory, not the stage's
+            -- temporary LimitBag. This passive scan can reuse older permanent
+            -- materials but never treats it as proof that new drops transferred;
+            -- the two-bag fingerprint handoff below revalidates it at base.
             resetAlchemyRecovery()
             local stagedId = nil
             local stageError = nil
@@ -1735,8 +1910,9 @@ return function(locomotionFactory, Library, Common)
                 end
             end
             alchemyTelemetry.status = stagedId ~= nil
-                and ("recipe #" .. tostring(stagedId) .. " ready for base")
-                or "watching stage materials"
+                and ("temporary bag collecting; existing recipe #"
+                    .. tostring(stagedId))
+                or "collecting in temporary bag"
             alchemyTelemetry.lastError = stageError
             return false
         end
@@ -1873,6 +2049,7 @@ return function(locomotionFactory, Library, Common)
                 -- the next requested brew in this same base window instead of
                 -- sleeping for another worker cycle (which can lose to Broom's
                 -- one-second return delay).
+                observeAlchemyLocation(challenge)
                 readyBefore = false
                 if not cfg.AutoBrew then return true end
             end
@@ -1908,11 +2085,33 @@ return function(locomotionFactory, Library, Common)
             return false
         end
 
+        if alchemyInventoryTransferPending()
+            and not alchemyInventoryTransfer.changed
+        then
+            alchemyTelemetry.status = "waiting for temporary bag transfer"
+            alchemyTelemetry.lastError = nil
+            return false
+        end
+
         local stagedRecipeId = cachedStageAlchemyRecipeId(alchemy)
-        if stagedRecipeId == nil and os.clock() < alchemyBaseSyncUntil then
+        if stagedRecipeId == nil
+            and not alchemyInventoryTransfer.changed
+            and os.clock() < alchemyBaseSyncUntil
+        then
             alchemyTelemetry.status = "syncing dungeon materials"
             alchemyTelemetry.lastError = nil
             return false
+        end
+
+        if alchemyInventoryTransfer.changed
+            and not alchemyInventoryTransfer.refreshed
+        then
+            -- Ask the same local PotionBrewingGame facade used by Magic to
+            -- refresh after the permanent Bag receives the temporary drops.
+            -- This never moves the character and sends no server action.
+            refreshAlchemyUi()
+            alchemyInventoryTransfer.refreshed = true
+            publishAlchemyInventoryTransfer()
         end
 
         local recipe, recipeError, selectionState = selectAlchemyRecipe(
@@ -1972,6 +2171,10 @@ return function(locomotionFactory, Library, Common)
             stageRecipeId = stagedRecipeId,
             stageBagFingerprint = stagedRecipeId ~= nil
                 and alchemyStageCandidate.bagFingerprint
+                or nil,
+            transferBagFingerprint = alchemyInventoryTransfer.pending
+                and alchemyInventoryTransfer.changed
+                and alchemyInventoryTransfer.lastFingerprint
                 or nil,
         }
         local sent, response, err, requestPending, didInvoke = invokeAlchemyAction(
@@ -2500,6 +2703,18 @@ return function(locomotionFactory, Library, Common)
         if returnEpisode.active then return true end
         local challenge = playerNumber("InDungeonChallenge")
         local now = os.clock()
+        if challenge ~= nil and challenge <= 0
+            and (alchemyInventoryTransferPending()
+                or (alchemyInvokeLease.inventoryStageActive
+                    and configReady
+                    and (cfg.AutoBrew or cfg.AutoSell)))
+        then
+            -- Auto Return has reached base, but the temporary LimitBag has not
+            -- yet been observed in the permanent Bag. This is a short base
+            -- reservation, not a movement suspension: Broom is released as
+            -- soon as the transfer is visible or its bounded timeout expires.
+            return true
+        end
         if now < returnTravelHoldUntil then
             -- During a server teleport nil is an unknown/loading state, not a
             -- confirmation that base has been reached.
@@ -3219,14 +3434,15 @@ return function(locomotionFactory, Library, Common)
                     queuedCraftSellGeneration
                 )
             end
-            -- While Auto Brew is farming, watch the stage transition quickly.
-            -- This leaves the 0.35-second Bag replication window enough room
-            -- to finish before Broom's minimum one-second return delay, without
-            -- pausing or otherwise coupling either feature.
+            -- While Auto Brew is farming, watch both sides of the two-bag
+            -- handoff quickly. The stage owns the small LimitBag; base owns the
+            -- permanent Bag used by CanCraftRecipe. Broom waits through this
+            -- bounded handoff, but character movement is never suspended.
             if configReady
                 and cfg.AutoBrew
                 and observedChallenge ~= nil
                 and (observedChallenge > 0
+                    or alchemyInventoryTransferPending()
                     or alchemyTelemetry.status == "syncing dungeon materials")
             then
                 task.wait(0.1)
@@ -3770,8 +3986,12 @@ return function(locomotionFactory, Library, Common)
                     then
                         remoteResult = type(remoteResult)
                     end
+                    local temporaryUsed = alchemyTelemetry.temporaryBagUsed ~= nil
+                        and tostring(math.floor(alchemyTelemetry.temporaryBagUsed))
+                        or "?"
                     alchemyStatus:Set(string.format(
                         "Alchemy: %s • recipes: %d • craft: %d • pickup: %d%s%s\n"
+                            .. "Inventory: temporary %s • transfer %s\n"
                             .. "Checks: use %s • brewing %s • ready %s • "
                             .. "rebirth %d/%d • materials %d • craftable %d • "
                             .. "errors %d • chosen %s • remote %s • travel %s • confirmed %s",
@@ -3781,6 +4001,8 @@ return function(locomotionFactory, Library, Common)
                         alchemyTelemetry.pickupAttempts,
                         selected,
                         lastError,
+                        temporaryUsed,
+                        tostring(alchemyTelemetry.transferStatus),
                         flag(alchemyTelemetry.canUse),
                         flag(alchemyTelemetry.inProgress),
                         flag(alchemyTelemetry.ready),
@@ -3801,13 +4023,13 @@ return function(locomotionFactory, Library, Common)
         tab:CreateSection("Notes"):AddParagraph({
             Title = "Automatic brewing",
             Text = "Alchemy runs remotely only while the player is at base. "
-                .. "While farming, Best craftable watches Bag changes and caches "
-                .. "the highest recipe that the game reports as craftable. The first "
-                .. "base cycle sends that exact recipe; it never probes guessed recipe "
-                .. "IDs one by one. Without a stage cache it repeats Magic's local "
-                .. "Best check until a recipe is available. Pickup can chain the next "
-                .. "brew immediately, and neither action moves the character or pauses "
-                .. "Broom. Only one potion can brew at a time.",
+                .. "Dungeon drops first live in the small temporary bag. On return, "
+                .. "Best waits only until those materials appear in the permanent "
+                .. "999-slot Bag, then sends the highest material-positive recipe in "
+                .. "that first base cycle. It never probes guessed recipe IDs one by "
+                .. "one. The bounded transfer gate releases Broom even when no material "
+                .. "change appears. Pickup can chain the next brew immediately; neither "
+                .. "action moves the character. Only one potion can brew at a time.",
         })
     end
 
