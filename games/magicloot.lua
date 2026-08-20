@@ -865,6 +865,8 @@ return function(locomotionFactory, Library, Common)
         nextAttemptAt = 0,
     }
     local alchemyPickupNextAttemptAt = 0
+    local alchemyBaseSyncUntil = 0
+    local ALCHEMY_BASE_SYNC_SECONDS = 0.35
 
     local function resetAlchemyRecovery()
         alchemyRecovery.key = nil
@@ -880,6 +882,16 @@ return function(locomotionFactory, Library, Common)
                 alchemyInvokeLease.inventoryStageActive = true
             end
             return
+        end
+        if alchemyInvokeLease.inventoryStageActive then
+            -- Challenge reaches zero slightly before Bag/Alchemy has always
+            -- replicated the loot collected during the trip. Give that local
+            -- snapshot one short settling window before Best ranks recipes;
+            -- otherwise it can freeze the pre-trip recipe as its first probe.
+            alchemyBaseSyncUntil = math.max(
+                alchemyBaseSyncUntil,
+                os.clock() + ALCHEMY_BASE_SYNC_SECONDS
+            )
         end
         alchemyInvokeLease.inventoryStageActive = false
     end
@@ -1020,7 +1032,10 @@ return function(locomotionFactory, Library, Common)
 
     local function selectAlchemyRecipe(alchemy, selection)
         selection = tostring(selection or "Best craftable")
-        local recoveryPrefix = "priority-v4|" .. selection .. "|"
+        local postStageInventory = alchemyInvokeLease.inventoryEpoch > 0
+        local fallbackMode = postStageInventory and "post-stage" or "initial"
+        local recoveryPrefix = "priority-v5|" .. selection .. "|"
+            .. fallbackMode .. "|"
         if type(alchemyRecovery.key) == "string"
             and string.sub(alchemyRecovery.key, 1, #recoveryPrefix) == recoveryPrefix
             and os.clock() < alchemyRecovery.nextAttemptAt
@@ -1045,16 +1060,13 @@ return function(locomotionFactory, Library, Common)
         local prioritizedIds = {}
         local fallbackIds = {}
         if selection == "Best craftable" then
-            -- The game's predicates are cheap local checks. Prefer every
-            -- positive material result immediately, highest recipe first, so
-            -- Best does not spend one remote confirmation window per recipe.
-            -- False/error eligibility hints remain a server-validated fallback:
-            -- they have proved stale away from the Alchemy UI. Keep that
-            -- fallback lowest-first. If every hint is false and the player
-            -- only owns the basic recipe materials, Best must send that same
-            -- id immediately instead of timing out on every higher recipe.
-            for index = #catalog, 1, -1 do
-                local recipe = catalog[index]
+            -- Match the game's original ascending predicate pass, then reverse
+            -- only the candidate priority. Positive material results still use
+            -- the highest recipe first. False/error hints are server-validated:
+            -- the initial base starts at the basic recipe, while an inventory
+            -- collected in a dungeon starts at the strongest recipe instead of
+            -- spending several minutes walking upward from recipe one.
+            for _, recipe in ipairs(catalog) do
                 local craftable, _, reason = isAlchemyRecipeCraftable(
                     alchemy,
                     recipe
@@ -1069,10 +1081,19 @@ return function(locomotionFactory, Library, Common)
                 if craftable then
                     table.insert(prioritizedIds, recipe.id)
                 else
-                    -- The catalog is traversed high-to-low for preferred
-                    -- recipes, so prepend fallback ids to make them
-                    -- low-to-high without a second predicate pass.
-                    table.insert(fallbackIds, 1, recipe.id)
+                    table.insert(fallbackIds, recipe.id)
+                end
+            end
+            for left = 1, math.floor(#prioritizedIds / 2) do
+                local right = #prioritizedIds - left + 1
+                prioritizedIds[left], prioritizedIds[right] =
+                    prioritizedIds[right], prioritizedIds[left]
+            end
+            if postStageInventory then
+                for left = 1, math.floor(#fallbackIds / 2) do
+                    local right = #fallbackIds - left + 1
+                    fallbackIds[left], fallbackIds[right] =
+                        fallbackIds[right], fallbackIds[left]
                 end
             end
         else
@@ -1101,8 +1122,7 @@ return function(locomotionFactory, Library, Common)
         -- membershipIds is canonical and independent of material-hint flips.
         -- The priority order is frozen for one recovery round so a changing
         -- hint cannot reset the cursor/cooldown and repeat the same request.
-        local recoveryKey = "priority-v4|" .. selection .. "|"
-            .. table.concat(membershipIds, ",")
+        local recoveryKey = recoveryPrefix .. table.concat(membershipIds, ",")
         if alchemyRecovery.key ~= recoveryKey then
             alchemyRecovery.key = recoveryKey
             alchemyRecovery.candidateIds = {}
@@ -1146,9 +1166,9 @@ return function(locomotionFactory, Library, Common)
             alchemyRecovery.cursor = nextCursor
             delay = nextCursor == 1 and 15 or 4
         end
-        -- One request per worker cycle and at least four seconds between
-        -- server-validated candidates. Explicit recipes simply retry the same
-        -- id after the cooldown.
+        -- Keep a conservative delay after every rejected or ambiguous request.
+        -- Explicit recipes retry the same id; Best advances one candidate and
+        -- applies a longer delay when a full round wraps.
         alchemyRecovery.nextAttemptAt = os.clock() + delay
     end
 
@@ -1621,8 +1641,13 @@ return function(locomotionFactory, Library, Common)
                     alchemyTelemetry.lastError = confirmation
                     alchemyTelemetry.status = "pickup unconfirmed"
                 end
-                if confirmed then return true end
-                return false, confirmation
+                if not confirmed then return false, confirmation end
+                -- The station has one brewing slot. Once pickup frees it, start
+                -- the next requested brew in this same base window instead of
+                -- sleeping for another worker cycle (which can lose to Broom's
+                -- one-second return delay).
+                readyBefore = false
+                if not cfg.AutoBrew then return true end
             end
             alchemyPickupNextAttemptAt = 0
         elseif readyBefore == true then
@@ -1651,7 +1676,13 @@ return function(locomotionFactory, Library, Common)
         end
         if inProgress then
             finishAlchemyRecipeAttempt(true)
-            alchemyTelemetry.status = "brewing"
+            alchemyTelemetry.status = "brewing (one potion at a time)"
+            alchemyTelemetry.lastError = nil
+            return false
+        end
+
+        if os.clock() < alchemyBaseSyncUntil then
+            alchemyTelemetry.status = "syncing dungeon materials"
             alchemyTelemetry.lastError = nil
             return false
         end
@@ -1735,6 +1766,7 @@ return function(locomotionFactory, Library, Common)
             sent = false
             err = "server rejected recipe #" .. tostring(recipe.id)
                 .. ": " .. tostring(rejection)
+            alchemyTelemetry.remoteResult = response
         end
         alchemyTelemetry.remoteResult = response
         task.wait(0.4)
@@ -2926,16 +2958,37 @@ return function(locomotionFactory, Library, Common)
             local shouldCheckSell = queuedCraftSellAuthorization
                 and queuedAuthorizationReady
                 or not queuedCraftSellAuthorization
-                    and (not configReady
-                        or not cfg.AutoSell
-                        or now >= nextAutoSellAt)
-            if shouldCheckSell then
+                    and now >= nextAutoSellAt
+            if not configReady then
+                sellTelemetry.status = "waiting for config"
+                sellTelemetry.lastError = nil
+                nextAutoSellAt = 0
+            elseif not cfg.AutoSell then
+                -- Do not spawn a detached no-op sell task on every fast
+                -- Alchemy stage poll merely to publish the disabled status.
+                sellTelemetry.status = "disabled"
+                sellTelemetry.lastError = nil
+                nextAutoSellAt = 0
+            elseif shouldCheckSell then
                 startAutoSellCycle(
                     sellAuthorization,
                     queuedCraftSellGeneration
                 )
             end
-            task.wait(0.5)
+            -- While Auto Brew is farming, watch the stage transition quickly.
+            -- This leaves the 0.35-second Bag replication window enough room
+            -- to finish before Broom's minimum one-second return delay, without
+            -- pausing or otherwise coupling either feature.
+            if configReady
+                and cfg.AutoBrew
+                and observedChallenge ~= nil
+                and (observedChallenge > 0
+                    or alchemyTelemetry.status == "syncing dungeon materials")
+            then
+                task.wait(0.1)
+            else
+                task.wait(0.5)
+            end
         end
     end)
 
@@ -3506,9 +3559,11 @@ return function(locomotionFactory, Library, Common)
             Text = "Alchemy runs remotely only while the player is at base. "
                 .. "Best craftable checks every recipe locally in one pass and "
                 .. "sends the highest recipe reported as available immediately; "
-                .. "when every local eligibility hint is stale, it starts with the "
-                .. "lowest recipe as the fastest safe fallback. It never moves the "
-                .. "character or pauses Broom.",
+                .. "when every local hint is stale it starts with the basic recipe "
+                .. "on initial load, but with the strongest recipe after a dungeon "
+                .. "trip. It briefly lets the collected Bag data settle, chains the "
+                .. "next brew immediately after pickup, and never moves the character "
+                .. "or pauses Broom. Only one potion can brew at a time.",
         })
     end
 

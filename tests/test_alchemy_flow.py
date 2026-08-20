@@ -273,7 +273,7 @@ closeOnWait = true
 local closed, _, closedError, closedPending = invokeAlchemyAction(
     "ALCHEMY_CRAFT_RECIPE",
     {{ recipeId = 4 }},
-    {{ key = "priority-v4|Best craftable|4,1", candidateIds = {{ 4, 1 }}, cursor = 1 }}
+    {{ key = "priority-v5|Best craftable|initial|4,1", candidateIds = {{ 4, 1 }}, cursor = 1 }}
 )
 assert(closed == false and closedPending == true
     and string.find(closedError, "session closed", 1, true) ~= nil,
@@ -294,7 +294,7 @@ completeDuringClosedWait = true
 local raced, racedResponse = invokeAlchemyAction(
     "ALCHEMY_CRAFT_RECIPE",
     {{ recipeId = 4 }},
-    {{ key = "priority-v4|Best craftable|4,1", candidateIds = {{ 4, 1 }}, cursor = 1 }}
+    {{ key = "priority-v5|Best craftable|initial|4,1", candidateIds = {{ 4, 1 }}, cursor = 1 }}
 )
 assert(raced == false and racedResponse == nil,
     "a callback that had not started before unload still sent its request")
@@ -403,6 +403,7 @@ local translationCalls = 0
 local recipesReady = false
 local translationsReady = false
 local remoteMode = "accept"
+local remoteAcceptedRecipeId = 1
 local pendingAction = nil
 local confirmationTicks = 0
 local recipes = {{
@@ -490,6 +491,9 @@ local function invokeAction(action, payload, beforeInvoke)
     table.insert(calls, {{ action = action, payload = payload, root = root.CFrame }})
     if remoteMode == "accept"
         or (remoteMode == "accept-one" and payload ~= nil and payload.recipeId == 1)
+        or (remoteMode == "accept-id"
+            and payload ~= nil
+            and payload.recipeId == remoteAcceptedRecipeId)
     then
         pendingAction = action
         confirmationTicks = 0
@@ -569,6 +573,12 @@ challenge = 0
 
 local writesBeforeCraft = cframeWrites
 local sent, craftError = runAlchemyCycle()
+assert(sent == false and craftError == nil
+    and alchemyTelemetry.status == "syncing dungeon materials"
+    and #calls == callsBeforeStageGate,
+    "Alchemy ranked recipes before the dungeon inventory settled")
+fakeClock = ALCHEMY_BASE_SYNC_SECONDS
+sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil,
     "craft cycle failed: " .. tostring(craftError) .. " / " .. tostring(alchemyTelemetry.status))
 assert(alchemyTelemetry.confirmedAction == "brew",
@@ -643,6 +653,27 @@ assert(waits[1] == 0.5 and waits[2] == 0.25, "remote pickup cadence changed")
 assert(pauseCalls == 0 and resumeCalls == 0,
     "remote pickup paused or resumed character movement")
 assert(refreshCalls == 2, "pickup did not refresh PotionBrewingGame")
+
+-- A ready potion and the next craft share one base window. Pickup alone is not
+-- the typed outcome: when Auto Brew remains enabled the same cycle must finish
+-- by confirming the replacement brew.
+cfg.AutoBrew = true
+cfg.AutoPickupPotion = true
+inProgress = false
+readyForPickup = true
+remoteMode = "accept"
+resetAlchemyRecovery()
+local callsBeforePickupChain = #calls
+local refreshBeforePickupChain = refreshCalls
+sent, craftError = runAlchemyCycle()
+assert(sent == true and craftError == nil
+    and #calls == callsBeforePickupChain + 2
+    and calls[callsBeforePickupChain + 1].action
+        == "ALCHEMY_PICKUP_FINISH_POTION"
+    and calls[callsBeforePickupChain + 2].action == "ALCHEMY_CRAFT_RECIPE"
+    and alchemyTelemetry.confirmedAction == "brew"
+    and refreshCalls == refreshBeforePickupChain + 2,
+    "pickup did not chain the next brew in the same base cycle")
 
 cfg.AutoBrew = true
 cfg.AutoPickupPotion = false
@@ -792,19 +823,18 @@ root.CFrame = home
 sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil,
     "Best craftable did not advance after an unconfirmed server candidate")
-assert(calls[#calls].payload.recipeId == 4,
+assert(calls[#calls].payload.recipeId == 7,
     "Best craftable did not rotate to the next server-validated candidate")
 
--- This is the live regression: away from the UI every material predicate can
--- say false. The player only owns the materials for the first/lowest recipe,
--- and selecting it explicitly works immediately. Best must try that safe
--- fallback first instead of spending one confirmation window per higher id.
+-- At initial load every local hint can be false. Preserve the proven fast path
+-- for a player who only owns the basic recipe materials.
 fakeClock = 15
 inProgress = false
 recipes[1].craftable = false
 recipes[2].craftable = false
 cfg.BrewRecipe = "Best craftable"
 resetAlchemyRecovery()
+alchemyInvokeLease.inventoryEpoch = 0
 remoteMode = "accept-one"
 local callsBeforeStaleMaterials = #calls
 sent, craftError = runAlchemyCycle()
@@ -814,11 +844,51 @@ assert(#calls == callsBeforeStaleMaterials + 1
     and calls[#calls].payload.recipeId == 1
     and alchemyTelemetry.craftable == 0,
     "Best did not immediately try the lowest safe fallback recipe")
+
+-- This is the stage-13 regression. The same stale predicates previously froze
+-- a low-to-high remote walk; with 28 recipes that took about three minutes.
+-- After a dungeon inventory change, Best must probe the strongest fallback in
+-- the first cycle instead of revisiting every lower id.
+inProgress = false
+resetAlchemyRecovery()
+local originalRecipes = recipes
+recipes = {{}}
+for id = 1, 28 do
+    table.insert(recipes, {{
+        recipeId = id,
+        PID = 200 + id,
+        Rebirth = 0,
+        craftable = false,
+        ZhName = "stage potion " .. tostring(id),
+    }})
+end
+challenge = 13
+local callsBeforeStageThirteen = #calls
+runAlchemyCycle()
+assert(#calls == callsBeforeStageThirteen,
+    "Alchemy sent a recipe while collecting stage-13 materials")
+challenge = 0
+runAlchemyCycle()
+assert(alchemyTelemetry.status == "syncing dungeon materials"
+    and #calls == callsBeforeStageThirteen,
+    "Alchemy did not wait for the stage-13 Bag snapshot")
+fakeClock += ALCHEMY_BASE_SYNC_SECONDS
+local postStageInventoryEpoch = alchemyInvokeLease.inventoryEpoch
+remoteMode = "accept-id"
+remoteAcceptedRecipeId = 28
+local callsBeforePostStageFallback = #calls
+sent, craftError = runAlchemyCycle()
+assert(sent == true and craftError == nil
+    and #calls == callsBeforePostStageFallback + 1
+    and calls[#calls].payload.recipeId == 28,
+    "post-stage Best still walked stale fallback recipes from low to high")
+recipes = originalRecipes
 recipes[1].craftable = true
 recipes[2].craftable = true
 
 fakeClock = 16
 resetAlchemyRecovery()
+alchemyInvokeLease.inventoryEpoch = 0
 recipes[2].craftable = false
 local firstStableCandidate = selectAlchemyRecipe(alchemy, "Best craftable")
 assert(firstStableCandidate.id == 1,
@@ -837,6 +907,7 @@ local secondStableCandidate = selectAlchemyRecipe(alchemy, "Best craftable")
 assert(secondStableCandidate.id == 4,
     "changing material hints reset Best instead of preserving its frozen order")
 resetAlchemyRecovery()
+alchemyInvokeLease.inventoryEpoch = postStageInventoryEpoch
 
 fakeClock = 20
 remoteMode = "accept"
@@ -872,6 +943,8 @@ cfg.BrewRecipe = "Best craftable"
 recipes[1].Rebirth = 9
 recipes[2].Rebirth = 9
 resetAlchemyRecovery()
+local epochBeforeStaleRebirth = alchemyInvokeLease.inventoryEpoch
+alchemyInvokeLease.inventoryEpoch = 0
 remoteMode = "accept-one"
 local callsBeforeStaleRebirth = #calls
 sent, craftError = runAlchemyCycle()
@@ -879,6 +952,7 @@ assert(sent == true and craftError == nil
     and #calls == callsBeforeStaleRebirth + 1
     and calls[#calls].payload.recipeId == 1,
     "Best dropped a server-valid recipe after a stale rebirth predicate")
+alchemyInvokeLease.inventoryEpoch = epochBeforeStaleRebirth
 recipes[1].Rebirth = 0
 recipes[2].Rebirth = 1
 
@@ -895,7 +969,7 @@ alchemyInvokeLease.completed = {{
     sent = true,
     response = {{ success = false, error = "late fixture rejection" }},
     recovery = {{
-        key = "priority-v4|Best craftable|7,4,1",
+        key = "priority-v5|Best craftable|post-stage|1,4,7",
         candidateIds = {{ 4, 1, 7 }},
         cursor = 1,
         inventoryEpoch = alchemyInvokeLease.inventoryEpoch,
@@ -928,7 +1002,7 @@ alchemyInvokeLease.completed = {{
     sent = true,
     response = {{ success = false, error = "stale pre-trip rejection" }},
     recovery = {{
-        key = "priority-v4|Best craftable|7,4,1",
+        key = "priority-v5|Best craftable|post-stage|1,4,7",
         candidateIds = {{ 4, 1, 7 }},
         cursor = 1,
         inventoryEpoch = oldInventoryEpoch,
@@ -945,6 +1019,7 @@ assert(sent == false
     "late rejection restored a recipe order from before the dungeon trip")
 assert(#calls == callsBeforeTripCompletion,
     "late rejection emitted a request while reconciling changed inventory")
+fakeClock += ALCHEMY_BASE_SYNC_SECONDS
 sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil and calls[#calls].payload.recipeId == 4,
     "returning to base did not freshly rank the newly available best recipe")
@@ -958,7 +1033,7 @@ alchemyInvokeLease.completed = {{
     sent = true,
     response = {{ success = false, error = "legacy rejection without epoch" }},
     recovery = {{
-        key = "priority-v4|Best craftable|7,4,1",
+        key = "priority-v5|Best craftable|post-stage|1,4,7",
         candidateIds = {{ 4, 1, 7 }},
         cursor = 1,
     }},
@@ -982,7 +1057,7 @@ alchemyInvokeLease.completed = {{
     sent = false,
     err = "alchemy session closed before request",
     recovery = {{
-        key = "priority-v4|Best craftable|7,4,1",
+        key = "priority-v5|Best craftable|post-stage|1,4,7",
         candidateIds = {{ 4, 1, 7 }},
         cursor = 1,
         inventoryEpoch = alchemyInvokeLease.inventoryEpoch,
@@ -1093,8 +1168,9 @@ print("alchemy_flow_smoke=ok")
         self.assertIn('string.match(selection, "^#(%d+)")', ALCHEMY_HELPERS)
         self.assertNotIn('if reason ~= "rebirth" then', ALCHEMY_HELPERS)
         self.assertIn("table.insert(prioritizedIds, recipe.id)", ALCHEMY_HELPERS)
-        self.assertIn("table.insert(fallbackIds, 1, recipe.id)", ALCHEMY_HELPERS)
-        self.assertIn('local recoveryKey = "priority-v4|"', ALCHEMY_HELPERS)
+        self.assertIn("table.insert(fallbackIds, recipe.id)", ALCHEMY_HELPERS)
+        self.assertIn('local recoveryPrefix = "priority-v5|"', ALCHEMY_HELPERS)
+        self.assertIn('local fallbackMode = postStageInventory', ALCHEMY_HELPERS)
         self.assertNotIn('GetCfgByName, "potionConf"', ALCHEMY_HELPERS)
         recipe_ui = core_slice(
             '        local recipeValues = alchemyDropdownValues()',

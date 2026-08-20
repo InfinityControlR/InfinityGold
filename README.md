@@ -71,8 +71,13 @@ the InfinityGold dashboard.
   Craftable ranks the game's positive local material checks first, so it sends
   the best reported recipe immediately instead of remotely probing every higher
   recipe before reaching an available lower one. If every local eligibility
-  check is stale/false, its server-validated fallback starts at the lowest
-  recipe so a basic craft is attempted immediately.
+  check is stale/false, its initial fallback starts at the lowest recipe so a
+  basic craft is attempted immediately. After returning from a dungeon it waits
+  0.35 seconds for the collected Bag data to settle, then starts stale fallbacks
+  at the highest recipe; this removes the multi-minute low-to-high probe walk.
+  A confirmed pickup chains the next brew in the same base cycle. The game has
+  one brewing slot, so a live `brewing (one potion at a time)` state is an
+  intentional wait for the current potion rather than a recipe-search delay.
 - **Broom**: sends only the selected-stage request (`关卡跳关请求`) and never
   toggles/equips the broom. It keeps single-flight epoch tokens, invalidation
   on toggle/stage/return changes, and base detection through the numeric
@@ -141,9 +146,9 @@ These surfaces need confirmation inside Roblox (fail-open until then):
 - `GetData.GetCfgByName("weaponConf"|"armorConf")` shape for shop automation.
 - Alchemy resolves `GetData.Alchemy`, prioritizes positive local checks from
   highest to lowest ID, and keeps every false/error result as a server-validated
-  fallback from the lowest ID upward. Neither the rebirth nor material hint can
-  veto a recipe because both can be stale away from the Alchemy UI. Craft and
-  pickup use the verified
+  fallback because neither the rebirth nor material hint can veto a recipe when
+  those hints are stale away from the Alchemy UI. Fallbacks start low on initial
+  load and high after a dungeon inventory change. Craft and pickup use the verified
   InvokeServer actions remotely only when `InDungeonChallenge <= 0`, without
   moving the character or suspending Walking, Running or Broom. Success is
   confirmed from the replicated brewing state.

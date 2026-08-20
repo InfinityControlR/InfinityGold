@@ -44,9 +44,94 @@ ALCHEMY_WORKER = core_slice(
     "    task.spawn(function() -- alchemy",
     "    task.spawn(function() -- gear",
 )
+ALCHEMY_SYNC_DECLARATION = core_slice(
+    "    local alchemyPickupNextAttemptAt = 0",
+    "    local function resetAlchemyRecovery()",
+)
+ALCHEMY_LOCATION_OBSERVER = core_slice(
+    "    local function observeAlchemyLocation(challenge)",
+    "    local function resolveAlchemy()",
+)
 
 
 class SellBrewFlowTests(unittest.TestCase):
+    def test_stage_poll_finishes_inventory_sync_before_broom_return(self):
+        fixture = f"""
+local sessionAlive = true
+local configReady = true
+local cfg = {{
+    AutoBrew = true,
+    AutoPickupPotion = true,
+    AutoSell = false,
+}}
+local alchemyTelemetry = {{ confirmedAction = nil, status = "waiting" }}
+local sellTelemetry = {{ status = "waiting", lastError = nil }}
+local fakeClock = 0
+local os = {{ clock = function() return fakeClock end }}
+local alchemyInvokeLease = {{
+    inventoryEpoch = 0,
+    inventoryStageActive = false,
+}}
+{ALCHEMY_SYNC_DECLARATION}
+local baseReturnAt = 0.01
+local baseObservedAt = nil
+local craftAt = nil
+local waits = {{}}
+local sellRuns = 0
+local function playerNumber(_name)
+    if fakeClock < baseReturnAt then return 13 end
+    if baseObservedAt == nil then
+        baseObservedAt = fakeClock
+    end
+    return 0
+end
+{ALCHEMY_LOCATION_OBSERVER}
+local function resetAlchemyRecovery() end
+local function runAlchemyCycle()
+    local challenge = playerNumber("InDungeonChallenge")
+    if challenge > 0 then
+        alchemyTelemetry.status = "waiting for base"
+        return false
+    end
+    if fakeClock < alchemyBaseSyncUntil then
+        alchemyTelemetry.status = "syncing dungeon materials"
+        return false
+    end
+    craftAt = fakeClock
+    alchemyTelemetry.status = "brew confirmed"
+    alchemyTelemetry.confirmedAction = "brew"
+    sessionAlive = false
+    return true
+end
+local function runAutoSellCycle(_confirmedAction)
+    sellRuns += 1
+end
+local task = {{}}
+task.spawn = function(callback) callback() end
+task.wait = function(seconds)
+    table.insert(waits, seconds)
+    fakeClock += seconds
+end
+
+{ALCHEMY_WORKER}
+
+assert(baseObservedAt == 0.1, "stage return was not observed at fast cadence")
+assert(craftAt ~= nil and craftAt - baseReturnAt < 1,
+    "inventory sync lost the minimum one-second Broom window")
+assert(waits[1] == 0.1 and waits[2] == 0.1,
+    "Alchemy did not use its urgent stage/base polling path")
+assert(sellRuns == 0 and alchemyTelemetry.status == "brew confirmed",
+    "fast Alchemy polling spawned disabled AutoSell tasks")
+print("stage_sync_before_broom_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"stage/Broom timing smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("stage_sync_before_broom_smoke=ok", completed.stdout)
+
     def test_pending_auto_sell_does_not_freeze_fast_alchemy_polling(self):
         fixture = f"""
 local sessionAlive = true
@@ -136,6 +221,7 @@ local cfg = {{
     AutoSell = false,
 }}
 local alchemyTelemetry = {{ confirmedAction = nil }}
+local sellTelemetry = {{ status = "waiting", lastError = nil }}
 local fakeClock = 0
 local os = {{ clock = function() return fakeClock end }}
 local inventoryEpoch = 0
