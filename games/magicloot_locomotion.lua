@@ -96,18 +96,23 @@ function Module.create(context)
     local broomStageSet = { [4] = true, [8] = true, [13] = true, [18] = true, [23] = true }
     local BROOM_INITIAL_DELAY = 1
     local BROOM_CONFIRM_TIMEOUT = 5
+    local BROOM_ARM_TIMEOUT = 30
     local MAX_BROOM_REQUEST_ATTEMPTS = 3
     local broom = {
         alive = true,
         installed = false,
         workerStarted = false,
         configReady = false,
+        suspended = false,
         enabled = false,
         stage = nil,
         armed = false,
         readyAt = 0,
+        giveUpAt = 0,
+        finalConfirmationPending = false,
         reason = nil,
         waitingForBase = false,
+        externalReturnPending = false,
         sawDungeon = false,
         returnEpisode = false,
         returnToken = 0,
@@ -203,6 +208,8 @@ function Module.create(context)
     local function disarmBroom()
         broom.armed = false
         broom.readyAt = 0
+        broom.giveUpAt = 0
+        broom.finalConfirmationPending = false
         broom.reason = nil
         broom.requestAttempts = 0
     end
@@ -220,6 +227,7 @@ function Module.create(context)
             delay = BROOM_INITIAL_DELAY
         end
         broom.readyAt = math.max(now + delay, broom.lastAttemptAt + 2)
+        broom.giveUpAt = broom.readyAt + BROOM_ARM_TIMEOUT
     end
 
     local function updateBroom()
@@ -227,15 +235,36 @@ function Module.create(context)
             broom.status = "broom waiting for config"
             return
         end
+        if broom.suspended then
+            broom.status = "broom paused for Alchemy"
+            return
+        end
         local enabled = broomToggle()
         local selected = broomStage(broomOption("BroomStage", "4"))
         local now = os.clock()
         local challenge = inDungeonChallenge()
+        local arrivalToken = nil
+        if type(context.returnArrivalToken) == "function"
+            and type(context.acknowledgeReturnArrival) == "function"
+        then
+            local tokenOk, token = pcall(context.returnArrivalToken)
+            token = tokenOk and math.floor(tonumber(token) or 0) or 0
+            if token > 0 then arrivalToken = token end
+        end
+        local function acknowledgeArrival()
+            if arrivalToken ~= nil
+                and type(context.acknowledgeReturnArrival) == "function"
+            then
+                pcall(context.acknowledgeReturnArrival, arrivalToken)
+            end
+        end
         if not enabled then
+            acknowledgeArrival()
             if broom.enabled or broom.transactionActive then invalidateBroomTransaction() end
             broom.enabled = false
             broom.stage = selected
             broom.waitingForBase = false
+            broom.externalReturnPending = false
             broom.sawDungeon = false
             broom.returnEpisode = false
             broom.lastChallenge = nil
@@ -244,16 +273,29 @@ function Module.create(context)
             return
         end
         if selected == nil then
+            acknowledgeArrival()
             if broom.enabled or broom.transactionActive then invalidateBroomTransaction() end
             broom.enabled = true
             broom.stage = nil
             broom.waitingForBase = false
+            broom.externalReturnPending = false
             broom.returnEpisode = false
             broom.lastChallenge = nil
             disarmBroom()
             broom.status = "unsupported broom stage"
             return
         end
+        if type(context.returnTravelPending) == "function" then
+            local blockedOk, blocked = pcall(context.returnTravelPending)
+            if blockedOk and blocked == true then
+                broom.externalReturnPending = true
+                broom.status = "broom waiting for inventory return travel"
+                return
+            end
+        end
+        local externalReturnReleased = broom.externalReturnPending
+            or arrivalToken ~= nil
+        broom.externalReturnPending = false
         local wasEnabled = broom.enabled
         local changed = broom.stage ~= selected
         local previousChallenge = broom.lastChallenge
@@ -265,12 +307,16 @@ function Module.create(context)
         broom.enabled = true
         broom.stage = selected
         if not wasEnabled then
-            broom.returnEpisode = false
-            armBroom("initial", now)
+            broom.returnEpisode = externalReturnReleased
+            armBroom(externalReturnReleased and "inventory return" or "initial", now)
         elseif changed then
             invalidateBroomTransaction()
-            if broom.waitingForBase then
+            if externalReturnReleased then
+                broom.returnEpisode = true
+                armBroom("inventory return", now)
+            elseif broom.waitingForBase then
                 disarmBroom()
+                broom.giveUpAt = now + BROOM_ARM_TIMEOUT
             elseif broom.returnEpisode then
                 armBroom("inventory return", now)
             else
@@ -282,8 +328,32 @@ function Module.create(context)
             invalidateBroomTransaction()
             broom.returnEpisode = true
             armBroom("inventory return", now)
+        elseif externalReturnReleased and wasEnabled and not changed then
+            invalidateBroomTransaction()
+            broom.returnEpisode = true
+            armBroom("inventory return", now)
         elseif broom.waitingForBase then
+            if broom.giveUpAt > 0 and now >= broom.giveUpAt then
+                broom.waitingForBase = false
+                broom.returnEpisode = false
+                disarmBroom()
+                broom.status = "broom return transition timed out"
+                broomNotify(broom.status)
+                return
+            end
             broom.status = "broom waiting for InDungeonChallenge >0 -> 0"
+            return
+        end
+        acknowledgeArrival()
+        if broom.armed and broom.giveUpAt > 0 and now >= broom.giveUpAt then
+            local reason = broom.reason
+            if reason == "inventory return" then broom.returnEpisode = false end
+            disarmBroom()
+            broom.status = string.format(
+                "broom stage %d paused: game state or remote stayed unavailable",
+                selected
+            )
+            broomNotify(broom.status)
             return
         end
         if challenge == nil then
@@ -307,6 +377,27 @@ function Module.create(context)
                     selected
                 )
             end
+            return
+        end
+        if broom.finalConfirmationPending then
+            if now < broom.readyAt then
+                broom.status = string.format(
+                    "broom stage %d final request sent; waiting %.1fs for room entry",
+                    selected,
+                    broom.readyAt - now
+                )
+                return
+            end
+            local attempts = broom.requestAttempts
+            local reason = broom.reason
+            if reason == "inventory return" then broom.returnEpisode = false end
+            disarmBroom()
+            broom.status = string.format(
+                "broom stage %d sent %d time(s); no dungeon confirmation",
+                selected,
+                attempts
+            )
+            broomNotify(broom.status)
             return
         end
         if broom.transactionActive then return end
@@ -354,15 +445,14 @@ function Module.create(context)
         broom.activations = broom.activations + 1
         broom.lastActivatedAt = os.clock()
         if broom.requestAttempts >= MAX_BROOM_REQUEST_ATTEMPTS then
-            local attempts = broom.requestAttempts
-            if reason == "inventory return" then broom.returnEpisode = false end
-            disarmBroom()
+            broom.finalConfirmationPending = true
+            broom.readyAt = now + BROOM_CONFIRM_TIMEOUT
             broom.status = string.format(
-                "broom stage %d sent %d time(s); no dungeon confirmation",
+                "broom stage %d final request %d/%d sent; waiting for room entry",
                 selected,
-                attempts
+                broom.requestAttempts,
+                MAX_BROOM_REQUEST_ATTEMPTS
             )
-            broomNotify(broom.status)
             return
         end
         broom.readyAt = now + BROOM_CONFIRM_TIMEOUT
@@ -612,6 +702,7 @@ function Module.create(context)
         broom.enabled = false
         broom.stage = nil
         broom.waitingForBase = false
+        broom.externalReturnPending = false
         broom.sawDungeon = false
         broom.returnEpisode = false
         broom.lastChallenge = nil
@@ -636,9 +727,22 @@ function Module.create(context)
         broom.returnEpisode = true
         broom.returnToken = broom.returnToken + 1
         broom.waitingForBase = true
+        broom.externalReturnPending = false
         broom.sawDungeon = current ~= nil and current > 0
         disarmBroom()
+        broom.giveUpAt = os.clock() + BROOM_ARM_TIMEOUT
         broom.status = "broom return token armed before DUNGEON_RETURN_TOWN"
+        return true
+    end
+
+    function api:SetBroomSuspended(suspended)
+        if not broom.alive then return false end
+        broom.suspended = suspended == true
+        if broom.suspended then
+            broom.status = "broom paused for Alchemy"
+        else
+            broom.status = "broom resumed after Alchemy"
+        end
         return true
     end
 
@@ -653,6 +757,7 @@ function Module.create(context)
             transactionActive = broom.transactionActive,
             lastChallenge = broom.lastChallenge,
             configReady = broom.configReady,
+            suspended = broom.suspended,
             requestAttempts = broom.requestAttempts,
             activationCount = broom.activations,
             message = broom.status,
@@ -901,9 +1006,11 @@ function Module.create(context)
         invalidateBroomTransaction()
         broom.alive = false
         broom.configReady = false
+        broom.suspended = false
         broom.enabled = false
         broom.returnEpisode = false
         broom.waitingForBase = false
+        broom.externalReturnPending = false
         broom.lastChallenge = nil
         disarmBroom()
         resetAll()

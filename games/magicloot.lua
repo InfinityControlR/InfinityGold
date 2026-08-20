@@ -102,7 +102,7 @@ return function(locomotionFactory, Library, Common)
         if type(getgenv) == "function" then
             sessionEnvironment = getgenv()
             local previousUnload = sessionEnvironment.__INFINITYGOLD_UNLOAD
-            if type(previousUnload) == "function" then pcall(previousUnload) end
+            if type(previousUnload) == "function" then pcall(previousUnload, "reload") end
         end
     end)
     pcall(function()
@@ -128,6 +128,24 @@ return function(locomotionFactory, Library, Common)
     local executorName = type(identifyexecutor) == "function"
         and tostring(identifyexecutor())
         or "unknown"
+    local alchemyInvokeLease = { pending = false, generation = 0, startedAt = nil }
+    if sessionEnvironment ~= nil then
+        local existingLease = sessionEnvironment.__INFINITYGOLD_ALCHEMY_INVOKE
+        if type(existingLease) == "table" then
+            alchemyInvokeLease = existingLease
+            alchemyInvokeLease.pending = existingLease.pending == true
+            alchemyInvokeLease.generation = tonumber(existingLease.generation) or 0
+            alchemyInvokeLease.startedAt = tonumber(existingLease.startedAt)
+            if alchemyInvokeLease.pending and alchemyInvokeLease.startedAt == nil then
+                alchemyInvokeLease.startedAt = os.clock()
+            end
+        else
+            sessionEnvironment.__INFINITYGOLD_ALCHEMY_INVOKE = alchemyInvokeLease
+        end
+    end
+    if type(alchemyInvokeLease.travel) ~= "table" then
+        alchemyInvokeLease.holdUntil = nil
+    end
 
     -- Common helpers: loader-supplied module with a minimal local fallback so
     -- a missing download only degrades sorting, never the whole script.
@@ -223,6 +241,7 @@ return function(locomotionFactory, Library, Common)
         AutoBuyBest = false,
         AutoEquipBest = false,
     }
+    local configReady = false
 
     local registry = {}
 
@@ -755,9 +774,18 @@ return function(locomotionFactory, Library, Common)
 
     -- Alchemy ---------------------------------------------------------------
 
-    local alchemyBusy = false
-    local alchemyTravelEpoch = 0
+    local carriedAlchemyTravel = type(alchemyInvokeLease.travel) == "table"
+        and alchemyInvokeLease.travel
+        or nil
+    local alchemyBusy = carriedAlchemyTravel ~= nil
+    local alchemyTravelEpoch = carriedAlchemyTravel ~= nil
+        and (tonumber(carriedAlchemyTravel.epoch) or 0)
+        or 0
+    local activeAlchemyTravel = carriedAlchemyTravel
     local pauseAlchemyMovement = function() end
+    local resumeAlchemyMovement = function() end
+    local alchemyBroomPending = function() return false end
+    local alchemyReturnPending = function() return false end
     local alchemyTelemetry = {
         status = "waiting",
         recipes = 0,
@@ -775,7 +803,23 @@ return function(locomotionFactory, Library, Common)
         predicateErrors = 0,
         chosenId = nil,
         remoteResult = nil,
+        travel = "idle",
+        confirmed = false,
     }
+    local alchemyRecovery = {
+        key = nil,
+        candidateIds = {},
+        cursor = 1,
+        nextAttemptAt = 0,
+    }
+    local alchemyPickupNextAttemptAt = 0
+
+    local function resetAlchemyRecovery()
+        alchemyRecovery.key = nil
+        alchemyRecovery.candidateIds = {}
+        alchemyRecovery.cursor = 1
+        alchemyRecovery.nextAttemptAt = 0
+    end
 
     local function resolveAlchemy()
         local data = resolveGetData()
@@ -900,6 +944,17 @@ return function(locomotionFactory, Library, Common)
         return true, nil, "craftable"
     end
 
+    local function noteAlchemyRecipeCheck(reason)
+        if reason ~= "rebirth" and reason ~= "rebirth-error" and reason ~= "api" then
+            alchemyTelemetry.rebirthPassed += 1
+            alchemyTelemetry.materialChecks += 1
+        end
+        if reason == "craftable" then alchemyTelemetry.craftable += 1 end
+        if reason == "rebirth-error" or reason == "materials-error" or reason == "api" then
+            alchemyTelemetry.predicateErrors += 1
+        end
+    end
+
     local function selectAlchemyRecipe(alchemy, selection)
         local catalog, err = alchemyRecipeCatalog(alchemy)
         if catalog == nil then return nil, err end
@@ -911,62 +966,92 @@ return function(locomotionFactory, Library, Common)
         alchemyTelemetry.craftable = 0
         alchemyTelemetry.predicateErrors = 0
         alchemyTelemetry.chosenId = nil
+        local candidates = {}
         if selection == "Best craftable" then
-            local best = nil
-            local lastError = nil
-            local rebirthRejected = 0
-            local materialsRejected = 0
+            local preferred = {}
+            local fallback = {}
             for _, recipe in ipairs(catalog) do
-                local craftable, checkError, reason = isAlchemyRecipeCraftable(alchemy, recipe)
-                if craftable then best = recipe end
-                if checkError ~= nil then lastError = checkError end
-                if reason ~= "rebirth" and reason ~= "rebirth-error" and reason ~= "api" then
-                    alchemyTelemetry.rebirthPassed += 1
-                    alchemyTelemetry.materialChecks += 1
-                end
-                if reason == "craftable" then alchemyTelemetry.craftable += 1 end
-                if reason == "rebirth-error" or reason == "materials-error" or reason == "api" then
-                    alchemyTelemetry.predicateErrors += 1
-                end
-                if reason == "rebirth" then rebirthRejected += 1 end
-                if reason == "materials" then materialsRejected += 1 end
-            end
-            if best ~= nil then
-                alchemyTelemetry.chosenId = best.id
-                return best
-            end
-            if lastError ~= nil then return nil, lastError end
-            return nil, string.format(
-                "none eligible (materials %d, rebirth %d)",
-                materialsRejected,
-                rebirthRejected
-            )
-        end
-
-        local selectedId = math.floor(tonumber(selection) or 0)
-        if selectedId <= 0 then
-            selectedId = math.floor(tonumber(string.match(selection, "^#(%d+)")) or 0)
-        end
-
-        for _, recipe in ipairs(catalog) do
-            if selection == recipe.label or selectedId == recipe.id then
-                local craftable, checkError, reason = isAlchemyRecipeCraftable(alchemy, recipe)
-                if reason ~= "rebirth" and reason ~= "rebirth-error" and reason ~= "api" then
-                    alchemyTelemetry.rebirthPassed = 1
-                    alchemyTelemetry.materialChecks = 1
-                end
-                if reason == "craftable" then alchemyTelemetry.craftable = 1 end
-                if reason == "rebirth-error" or reason == "materials-error" or reason == "api" then
-                    alchemyTelemetry.predicateErrors = 1
-                end
+                local craftable, _, reason = isAlchemyRecipeCraftable(alchemy, recipe)
+                noteAlchemyRecipeCheck(reason)
                 if craftable then
-                    alchemyTelemetry.chosenId = recipe.id
-                    return recipe
+                    table.insert(preferred, recipe)
+                elseif reason == "rebirth-error"
+                    or reason == "materials-error"
+                    or reason == "api"
+                then
+                    -- Only an actual predicate failure is ambiguous. A normal
+                    -- false (missing materials/rebirth) remains authoritative
+                    -- for Best craftable and is never brute-forced.
+                    table.insert(fallback, recipe)
                 end
-                return nil, checkError or "selected recipe is not craftable"
+            end
+            -- Preserve the old "best" preference (highest locally eligible
+            -- id), then let the server validate the remaining rows one at a
+            -- time if the local predicates are stale.
+            for index = #preferred, 1, -1 do
+                table.insert(candidates, preferred[index])
+            end
+            for index = #fallback, 1, -1 do
+                table.insert(candidates, fallback[index])
+            end
+        else
+            local selectedId = math.floor(tonumber(selection) or 0)
+            if selectedId <= 0 then
+                selectedId = math.floor(tonumber(string.match(selection, "^#(%d+)")) or 0)
+            end
+            for _, recipe in ipairs(catalog) do
+                if selection == recipe.label or selectedId == recipe.id then
+                    local _, _, reason = isAlchemyRecipeCraftable(alchemy, recipe)
+                    noteAlchemyRecipeCheck(reason)
+                    table.insert(candidates, recipe)
+                    break
+                end
             end
         end
-        return nil, "selected recipe is unavailable"
+
+        if #candidates == 0 then
+            return nil, selection == "Best craftable"
+                and "no locally craftable recipe"
+                or "selected recipe is unavailable"
+        end
+        local candidateIds = {}
+        for _, recipe in ipairs(candidates) do
+            table.insert(candidateIds, recipe.id)
+        end
+        local recoveryKey = selection .. "|" .. table.concat(candidateIds, ",")
+        if alchemyRecovery.key ~= recoveryKey then
+            alchemyRecovery.key = recoveryKey
+            alchemyRecovery.candidateIds = candidateIds
+            alchemyRecovery.cursor = 1
+            alchemyRecovery.nextAttemptAt = 0
+        end
+        if os.clock() < alchemyRecovery.nextAttemptAt then
+            return nil, "waiting before the next server-validated recipe", "cooldown"
+        end
+
+        if alchemyRecovery.cursor > #candidates then alchemyRecovery.cursor = 1 end
+        local candidate = candidates[alchemyRecovery.cursor]
+        alchemyTelemetry.chosenId = candidate.id
+        return candidate
+    end
+
+    local function finishAlchemyRecipeAttempt(confirmed)
+        if confirmed then
+            alchemyRecovery.cursor = 1
+            alchemyRecovery.nextAttemptAt = 0
+            return
+        end
+        local count = #alchemyRecovery.candidateIds
+        local delay = 8
+        if count > 1 then
+            local nextCursor = (alchemyRecovery.cursor % count) + 1
+            alchemyRecovery.cursor = nextCursor
+            delay = nextCursor == 1 and 15 or 4
+        end
+        -- One request per worker cycle and at least four seconds between
+        -- server-validated candidates. Explicit recipes simply retry the same
+        -- id after the cooldown.
+        alchemyRecovery.nextAttemptAt = os.clock() + delay
     end
 
     local function alchemyDropdownValues()
@@ -996,49 +1081,347 @@ return function(locomotionFactory, Library, Common)
         end
     end
 
+    local function scheduleAlchemyTravelWatchdog(travel, delay)
+        task.delay(math.max(0, tonumber(delay) or 0), function()
+            if alchemyBusy
+                and alchemyTravelEpoch == travel.epoch
+                and activeAlchemyTravel == travel
+            then
+                -- The network lease continues blocking duplicate requests, but
+                -- the physical character is released after the bounded actor
+                -- proximity window.
+                restoreAlchemyRoot(travel)
+                alchemyTravelEpoch += 1
+                activeAlchemyTravel = nil
+                alchemyBusy = false
+                if alchemyInvokeLease.travel == travel then
+                    alchemyInvokeLease.travel = nil
+                    alchemyInvokeLease.holdUntil = nil
+                end
+                resumeAlchemyMovement()
+                alchemyTelemetry.travel = "watchdog restored"
+            end
+        end)
+    end
+
+    if carriedAlchemyTravel ~= nil then
+        local holdUntil = tonumber(alchemyInvokeLease.holdUntil) or os.clock()
+        scheduleAlchemyTravelWatchdog(
+            carriedAlchemyTravel,
+            holdUntil - os.clock()
+        )
+    end
+
     local function beginAlchemyTravel(alchemy, resolverName)
+        if alchemyReturnPending() then
+            return nil, "inventory return is still pending"
+        end
+        if alchemyBroomPending() then
+            return nil, "Broom travel is still pending"
+        end
+        -- Reserve the physical character before any resolver/API can yield.
+        -- This also suspends an armed Broom worker before it can race the
+        -- Alchemy teleport.
+        alchemyTravelEpoch += 1
+        local reservedEpoch = alchemyTravelEpoch
+        alchemyBusy = true
+        pauseAlchemyMovement()
+        -- The two probes above can call game-owned code and yield. Recheck after
+        -- Broom has been suspended and the movement worker has been reserved;
+        -- from this point neither travel producer can start underneath Alchemy.
+        if alchemyReturnPending() or alchemyBroomPending() then
+            alchemyBusy = false
+            resumeAlchemyMovement()
+            return nil, "character travel started before Alchemy could reserve it"
+        end
         local parts = characterParts()
-        if parts == nil then return nil end
+        if parts == nil then
+            alchemyBusy = false
+            resumeAlchemyMovement()
+            return nil, "character unavailable"
+        end
         local resolver = alchemy[resolverName]
-        if type(resolver) ~= "function" then return nil end
+        if type(resolver) ~= "function" then
+            alchemyBusy = false
+            resumeAlchemyMovement()
+            return nil, resolverName .. " unavailable"
+        end
 
         local ok, target = pcall(resolver)
-        if not ok or typeof(target) ~= "CFrame" then return nil end
+        if not ok then
+            alchemyBusy = false
+            resumeAlchemyMovement()
+            return nil, resolverName .. " failed: " .. tostring(target)
+        end
+        if typeof(target) ~= "CFrame" then
+            alchemyBusy = false
+            resumeAlchemyMovement()
+            return nil, resolverName .. " returned " .. typeof(target)
+        end
 
         local root = parts.root
         local destination = target + Vector3.new(0, 3, 0)
-        alchemyTravelEpoch += 1
         local travel = {
             root = root,
             home = root.CFrame,
             destination = destination,
-            epoch = alchemyTravelEpoch,
+            epoch = reservedEpoch,
+            holdUntil = os.clock() + 10,
         }
-        alchemyBusy = true
-        pauseAlchemyMovement()
+        activeAlchemyTravel = travel
         local moved = pcall(function()
             root.CFrame = destination
         end)
         if not moved then
+            activeAlchemyTravel = nil
             alchemyBusy = false
-            return nil
+            resumeAlchemyMovement()
+            return nil, "could not reach Alchemy actor"
         end
-        -- InvokeServer is not cancellable. If an executor/game build leaves it
-        -- yielding forever, release the physical farm after a bounded window.
-        task.delay(3, function()
-            if alchemyBusy and alchemyTravelEpoch == travel.epoch then
-                restoreAlchemyRoot(travel)
-                alchemyBusy = false
-            end
-        end)
+        alchemyTelemetry.travel = resolverName == "ResolveBrewActorCFrame"
+            and "brew actor"
+            or "pickup actor"
+        -- InvokeServer is not cancellable. Keep the player at the actor long
+        -- enough to observe the replicated Alchemy state, but never freeze the
+        -- physical farm forever if a game build leaves the request yielding.
+        scheduleAlchemyTravelWatchdog(travel, 10)
         task.wait(0.2)
         return travel
     end
 
-    local function finishAlchemyTravel(travel)
-        if travel == nil or travel.epoch ~= alchemyTravelEpoch then return end
-        restoreAlchemyRoot(travel)
+    local function reaffirmAlchemyTravel(travel)
+        if travel == nil
+            or travel.epoch ~= alchemyTravelEpoch
+            or activeAlchemyTravel ~= travel
+            or travel.root == nil
+            or travel.root.Parent == nil
+        then
+            return false, "Alchemy travel expired"
+        end
+        local ok, err = pcall(function()
+            travel.root.CFrame = travel.destination
+        end)
+        if not ok then return false, tostring(err) end
+        return true
+    end
+
+    local function finishAlchemyTravel(travel, shouldRestore)
+        if travel == nil
+            or travel.epoch ~= alchemyTravelEpoch
+            or activeAlchemyTravel ~= travel
+        then
+            return
+        end
+        if shouldRestore then restoreAlchemyRoot(travel) end
+        if alchemyInvokeLease.travel == travel then
+            alchemyInvokeLease.travel = nil
+            alchemyInvokeLease.holdUntil = nil
+        end
+        activeAlchemyTravel = nil
         alchemyBusy = false
+        resumeAlchemyMovement()
+        alchemyTelemetry.travel = shouldRestore and "restored" or "at actor"
+    end
+
+    local function alchemyState(alchemy, methodName)
+        local method = alchemy[methodName]
+        if type(method) ~= "function" then
+            return nil, methodName .. " unavailable"
+        end
+        local ok, value = pcall(method, player)
+        if not ok then return nil, tostring(value) end
+        if value == nil then return nil, methodName .. " returned nil" end
+        return not not value
+    end
+
+    local function waitForAlchemyConfirmation(alchemy, kind, initialReady)
+        -- The original script remains beside the actor after InvokeServer.
+        -- InfinityGold may restore the old position, but only after the game
+        -- itself confirms the state transition. A successful pcall alone is
+        -- merely transport, not proof that the server accepted the action.
+        for attempt = 1, 10 do
+            if not sessionAlive then return false, "alchemy session closed" end
+            if kind == "brew" and not cfg.AutoBrew then
+                return false, "brew cancelled"
+            end
+            if kind == "pickup" and not cfg.AutoPickupPotion then
+                return false, "pickup cancelled"
+            end
+            if kind == "brew" then
+                local brewing = alchemyState(alchemy, "IsBrewInProgress")
+                if brewing ~= nil then alchemyTelemetry.inProgress = brewing end
+                if brewing == true then return true, "brewing" end
+                local ready = alchemyState(alchemy, "IsBrewReadyForPickup")
+                if ready ~= nil then alchemyTelemetry.ready = ready end
+                if initialReady == false and ready == true then return true, "ready" end
+            else
+                local ready = alchemyState(alchemy, "IsBrewReadyForPickup")
+                if ready ~= nil then alchemyTelemetry.ready = ready end
+                if initialReady == true and ready == false then return true, "picked up" end
+            end
+            if attempt < 10 then task.wait(0.25) end
+        end
+        return false, kind .. " was not confirmed by game state"
+    end
+
+    local function alchemyResponseRejected(response)
+        if response == false then return true, "server returned false" end
+        if type(response) ~= "table" then return false end
+        for _, key in ipairs({ "success", "Success", "ok", "accepted", "result" }) do
+            if response[key] == false then
+                local detail = response.error or response.Error or response.message
+                return true, detail ~= nil and tostring(detail) or (key .. " was false")
+            end
+        end
+        return false
+    end
+
+    local ALCHEMY_STALE_LEASE_SECONDS = 30
+
+    local function alchemyLeaseBlocksCycle(alchemy)
+        if not alchemyInvokeLease.pending then return false end
+        local startedAt = tonumber(alchemyInvokeLease.startedAt)
+        if startedAt == nil
+            or os.clock() - startedAt < ALCHEMY_STALE_LEASE_SECONDS
+        then
+            return true
+        end
+
+        -- A dead executor coroutine must not disable Alchemy forever across
+        -- reloads. Only retire a stale lease after both authoritative game
+        -- states are readable; the normal gates below still prevent a second
+        -- request if the old one actually started/finished a potion.
+        local brewing = alchemyState(alchemy, "IsBrewInProgress")
+        local ready = alchemyState(alchemy, "IsBrewReadyForPickup")
+        if brewing == nil or ready == nil then return true end
+        alchemyInvokeLease.generation += 1
+        alchemyInvokeLease.pending = false
+        alchemyInvokeLease.startedAt = nil
+        return false
+    end
+
+    local function invokeAlchemyAction(action, payload, recoverySnapshot)
+        if alchemyInvokeLease.pending then
+            return false, nil, "a previous Alchemy request is still pending"
+        end
+        alchemyInvokeLease.generation += 1
+        local token = alchemyInvokeLease.generation
+        alchemyInvokeLease.pending = true
+        alchemyInvokeLease.startedAt = os.clock()
+        local outcome = {
+            done = false,
+            timedOut = false,
+            action = action,
+            payload = payload,
+            recovery = recoverySnapshot,
+        }
+        local spawned, spawnError = pcall(task.spawn, function()
+            local callOk, sent, response, err = pcall(invokeAction, action, payload)
+            if not callOk then
+                err = tostring(sent)
+                sent = false
+                response = nil
+            end
+            outcome.sent = sent == true
+            outcome.response = response
+            outcome.err = err
+            outcome.done = true
+            if alchemyInvokeLease.generation == token then
+                alchemyInvokeLease.pending = false
+                alchemyInvokeLease.startedAt = nil
+                if outcome.timedOut or not sessionAlive then
+                    alchemyInvokeLease.completed = {
+                        action = action,
+                        payload = payload,
+                        sent = outcome.sent,
+                        response = response,
+                        err = err,
+                        recovery = outcome.recovery,
+                        completedAt = os.clock(),
+                    }
+                end
+            end
+        end)
+        if not spawned then
+            if alchemyInvokeLease.generation == token then
+                alchemyInvokeLease.pending = false
+                alchemyInvokeLease.startedAt = nil
+            end
+            return false, nil, "could not start Alchemy request: " .. tostring(spawnError)
+        end
+
+        for _ = 1, 16 do
+            if outcome.done then
+                return outcome.sent, outcome.response, outcome.err
+            end
+            if not sessionAlive then
+                -- Detach this caller but keep the shared lease. The old request
+                -- may still finish after a reload, and its result must be
+                -- reconciled by the next session instead of being discarded.
+                outcome.timedOut = true
+                return false, nil, "alchemy session closed while request was pending", true
+            end
+            task.wait(0.25)
+        end
+        if outcome.done then
+            return outcome.sent, outcome.response, outcome.err
+        end
+        -- The lease deliberately remains pending. A late completion clears it;
+        -- until then neither this session nor a reload can duplicate the call.
+        outcome.timedOut = true
+        return false, nil, "Alchemy request timed out; waiting for late completion", true
+    end
+
+    local function reconcileLateAlchemyCompletion(alchemy)
+        local completed = alchemyInvokeLease.completed
+        if type(completed) ~= "table" then return false end
+        alchemyInvokeLease.completed = nil
+        local rejected, rejection = alchemyResponseRejected(completed.response)
+        local accepted = completed.sent == true and not rejected
+        local errorText = completed.err
+            or (rejected and tostring(rejection))
+            or "late request was not confirmed"
+
+        if completed.action == "ALCHEMY_CRAFT_RECIPE" then
+            local recovery = completed.recovery
+            if type(recovery) == "table" then
+                alchemyRecovery.key = recovery.key
+                alchemyRecovery.candidateIds = type(recovery.candidateIds) == "table"
+                    and recovery.candidateIds
+                    or {}
+                alchemyRecovery.cursor = math.max(1, tonumber(recovery.cursor) or 1)
+                alchemyRecovery.nextAttemptAt = 0
+            end
+            local brewing = alchemyState(alchemy, "IsBrewInProgress")
+            local ready = alchemyState(alchemy, "IsBrewReadyForPickup")
+            local confirmed = accepted and (brewing == true or ready == true)
+            finishAlchemyRecipeAttempt(confirmed)
+            alchemyTelemetry.confirmed = confirmed
+            alchemyTelemetry.inProgress = brewing
+            alchemyTelemetry.ready = ready
+            alchemyTelemetry.remoteResult = completed.response
+            alchemyTelemetry.status = confirmed
+                and "late brew confirmed"
+                or "late brew unconfirmed"
+            alchemyTelemetry.lastError = confirmed and nil or errorText
+            return true, confirmed, alchemyTelemetry.lastError
+        end
+
+        if completed.action == "ALCHEMY_PICKUP_FINISH_POTION" then
+            local ready = alchemyState(alchemy, "IsBrewReadyForPickup")
+            local confirmed = accepted and ready == false
+            alchemyTelemetry.confirmed = confirmed
+            alchemyTelemetry.ready = ready
+            alchemyTelemetry.remoteResult = completed.response
+            alchemyTelemetry.status = confirmed
+                and "late pickup confirmed"
+                or "late pickup unconfirmed"
+            alchemyTelemetry.lastError = confirmed and nil or errorText
+            alchemyPickupNextAttemptAt = confirmed and 0 or (os.clock() + 8)
+            if confirmed then resetAlchemyRecovery() end
+            return true, confirmed, alchemyTelemetry.lastError
+        end
+        return false
     end
 
     local function refreshAlchemyUi()
@@ -1054,83 +1437,193 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function runAlchemyCycle()
+        alchemyTelemetry.confirmed = false
         if not cfg.AutoBrew and not cfg.AutoPickupPotion then
+            resetAlchemyRecovery()
             alchemyTelemetry.status = "disabled"
             return false
         end
-
+        if alchemyBusy then
+            alchemyTelemetry.status = "Alchemy request still pending"
+            return false, "Alchemy request still pending"
+        end
         local alchemy, resolveError = resolveAlchemy()
         if alchemy == nil then
             alchemyTelemetry.status = "waiting for game data"
             alchemyTelemetry.lastError = resolveError
             return false, resolveError
         end
-        if type(alchemy.CanUseAlchemy) ~= "function" then
-            alchemyTelemetry.status = "waiting for Alchemy API"
-            alchemyTelemetry.lastError = "CanUseAlchemy unavailable"
+        if alchemyLeaseBlocksCycle(alchemy) then
+            alchemyTelemetry.status = "waiting for previous Alchemy request"
+            alchemyTelemetry.lastError = "a prior request is still pending"
             return false, alchemyTelemetry.lastError
         end
-
-        local canUseOk, canUse = pcall(alchemy.CanUseAlchemy, player)
-        if canUseOk then
-            alchemyTelemetry.canUse = not not canUse
+        local reconciled, reconciledOk, reconciledError = reconcileLateAlchemyCompletion(
+            alchemy
+        )
+        if reconciled then return reconciledOk, reconciledError end
+        -- Logical network recovery must run before physical-travel gates. Once
+        -- the bounded actor hold has ended, an armed Broom must not prevent a
+        -- stale lease from being retired forever.
+        if alchemyReturnPending() then
+            alchemyTelemetry.status = "waiting for inventory return"
+            alchemyTelemetry.lastError = nil
+            return false
+        end
+        if alchemyBroomPending() then
+            alchemyTelemetry.status = "waiting for Broom travel"
+            alchemyTelemetry.lastError = nil
+            return false
+        end
+        if type(alchemy.CanUseAlchemy) == "function" then
+            local canUseOk, canUse = pcall(alchemy.CanUseAlchemy, player)
+            if canUseOk then
+                alchemyTelemetry.canUse = not not canUse
+            else
+                alchemyTelemetry.canUse = nil
+            end
         else
             alchemyTelemetry.canUse = nil
         end
-        if not canUseOk or not canUse then
-            alchemyTelemetry.status = "alchemy unavailable"
-            alchemyTelemetry.lastError = canUseOk and nil or tostring(canUse)
-            return false, alchemyTelemetry.lastError
+
+        local readyBefore = nil
+        local readyError = nil
+        if type(alchemy.IsBrewReadyForPickup) == "function" then
+            local readyOk, ready = pcall(alchemy.IsBrewReadyForPickup, player)
+            if readyOk and ready ~= nil then
+                readyBefore = not not ready
+                alchemyTelemetry.ready = readyBefore
+            elseif readyOk then
+                readyError = "IsBrewReadyForPickup returned nil"
+                alchemyTelemetry.ready = nil
+            else
+                readyError = tostring(ready)
+                alchemyTelemetry.ready = nil
+            end
+        elseif cfg.AutoPickupPotion then
+            readyError = "IsBrewReadyForPickup unavailable"
         end
 
         if cfg.AutoPickupPotion then
-            if type(alchemy.IsBrewReadyForPickup) ~= "function" then
+            if readyError ~= nil then
                 alchemyTelemetry.status = "waiting for pickup API"
-                alchemyTelemetry.lastError = "IsBrewReadyForPickup unavailable"
+                alchemyTelemetry.lastError = readyError
                 return false, alchemyTelemetry.lastError
             end
-            local readyOk, ready = pcall(alchemy.IsBrewReadyForPickup, player)
-            if readyOk then
-                alchemyTelemetry.ready = not not ready
-            else
-                alchemyTelemetry.ready = nil
-            end
-            if not readyOk then
-                alchemyTelemetry.status = "pickup check failed"
-                alchemyTelemetry.lastError = tostring(ready)
-                return false, alchemyTelemetry.lastError
-            end
-            if ready then
-                local travel = beginAlchemyTravel(alchemy, "ResolveFinishSpawnCFrame")
+            if readyBefore == true then
+                if os.clock() < alchemyPickupNextAttemptAt then
+                    alchemyTelemetry.status = "pickup retry cooldown"
+                    alchemyTelemetry.lastError = "waiting before retrying pickup"
+                    return false, alchemyTelemetry.lastError
+                end
+                if alchemyReturnPending() then
+                    alchemyTelemetry.status = "waiting for inventory return"
+                    return false
+                end
+                if alchemyBroomPending() then
+                    alchemyTelemetry.status = "waiting for Broom travel"
+                    return false
+                end
+                local travel, travelError = beginAlchemyTravel(
+                    alchemy,
+                    "ResolveFinishSpawnCFrame"
+                )
+                if travel == nil then
+                    alchemyTelemetry.status = "pickup actor unavailable"
+                    alchemyTelemetry.lastError = travelError
+                    alchemyTelemetry.travel = "failed"
+                    alchemyPickupNextAttemptAt = os.clock() + 4
+                    return false, travelError
+                end
+                local stillAtActor, actorError = reaffirmAlchemyTravel(travel)
+                if not stillAtActor then
+                    finishAlchemyTravel(travel, true)
+                    alchemyTelemetry.status = "pickup travel interrupted"
+                    alchemyTelemetry.lastError = actorError
+                    return false, actorError
+                end
+                local canUseAtActor = alchemyState(alchemy, "CanUseAlchemy")
+                if canUseAtActor ~= nil then alchemyTelemetry.canUse = canUseAtActor end
+                local readyAtActor, readyAtActorError = alchemyState(
+                    alchemy,
+                    "IsBrewReadyForPickup"
+                )
+                if readyAtActor ~= nil then alchemyTelemetry.ready = readyAtActor end
+                if readyAtActor ~= true then
+                    finishAlchemyTravel(travel, true)
+                    alchemyTelemetry.status = "pickup state changed"
+                    alchemyTelemetry.lastError = readyAtActorError
+                        or "potion is no longer ready"
+                    return false, alchemyTelemetry.lastError
+                end
+                readyBefore = readyAtActor
                 if not sessionAlive or not cfg.AutoPickupPotion then
-                    finishAlchemyTravel(travel)
+                    finishAlchemyTravel(travel, true)
                     alchemyTelemetry.status = "pickup cancelled"
                     return false, "pickup cancelled"
                 end
                 alchemyTelemetry.pickupAttempts += 1
-                local callOk, sent, response, err = pcall(
-                    invokeAction,
+                local finalActorCheck, finalActorError = reaffirmAlchemyTravel(travel)
+                if not finalActorCheck then
+                    finishAlchemyTravel(travel, true)
+                    alchemyTelemetry.status = "pickup travel interrupted"
+                    alchemyTelemetry.lastError = finalActorError
+                    return false, finalActorError
+                end
+                alchemyInvokeLease.travel = travel
+                alchemyInvokeLease.holdUntil = travel.holdUntil
+                local sent, response, err, requestPending = invokeAlchemyAction(
                     "ALCHEMY_PICKUP_FINISH_POTION"
                 )
-                if not callOk then
-                    err = tostring(sent)
-                    sent = false
+                if requestPending then
+                    alchemyTelemetry.remoteResult = nil
+                    alchemyTelemetry.status = "pickup request still pending"
+                    alchemyTelemetry.lastError = err
+                    return false, err
                 end
-                if sent and response == false then
+                local rejected, rejection = alchemyResponseRejected(response)
+                if sent and rejected then
                     sent = false
-                    err = "server rejected pickup"
+                    err = "server rejected pickup: " .. tostring(rejection)
                 end
                 alchemyTelemetry.remoteResult = response
-                alchemyTelemetry.lastError = sent and nil or err
-                alchemyTelemetry.status = sent and "pickup requested" or "pickup failed"
                 refreshAlchemyUi()
                 task.wait(0.5)
-                finishAlchemyTravel(travel)
-                return sent, err
+                local confirmed, confirmation = false, err
+                if sent then
+                    confirmed, confirmation = waitForAlchemyConfirmation(
+                        alchemy,
+                        "pickup",
+                        readyBefore
+                    )
+                end
+                alchemyTelemetry.confirmed = confirmed
+                if confirmed then
+                    alchemyPickupNextAttemptAt = 0
+                    resetAlchemyRecovery()
+                else
+                    alchemyPickupNextAttemptAt = os.clock() + 8
+                end
+                if confirmed then
+                    alchemyTelemetry.lastError = nil
+                    alchemyTelemetry.status = "pickup confirmed"
+                else
+                    alchemyTelemetry.lastError = confirmation
+                    alchemyTelemetry.status = "pickup unconfirmed"
+                end
+                finishAlchemyTravel(travel, true)
+                if confirmed then return true end
+                return false, confirmation
             end
+            alchemyPickupNextAttemptAt = 0
+        elseif readyBefore == true then
+            alchemyTelemetry.status = "potion ready for pickup"
+            alchemyTelemetry.lastError = "enable Auto Pickup Brewed Potion"
+            return false, alchemyTelemetry.lastError
         end
 
         if not cfg.AutoBrew then
+            resetAlchemyRecovery()
             alchemyTelemetry.status = "waiting for brewed potion"
             return false
         end
@@ -1140,58 +1633,148 @@ return function(locomotionFactory, Library, Common)
             return false, alchemyTelemetry.lastError
         end
 
-        local progressOk, inProgress = pcall(alchemy.IsBrewInProgress, player)
-        if progressOk then
-            alchemyTelemetry.inProgress = not not inProgress
-        else
-            alchemyTelemetry.inProgress = nil
-        end
-        if not progressOk then
+        local inProgress, progressError = alchemyState(alchemy, "IsBrewInProgress")
+        alchemyTelemetry.inProgress = inProgress
+        if inProgress == nil then
             alchemyTelemetry.status = "brew check failed"
-            alchemyTelemetry.lastError = tostring(inProgress)
+            alchemyTelemetry.lastError = progressError
             return false, alchemyTelemetry.lastError
         end
         if inProgress then
+            finishAlchemyRecipeAttempt(true)
             alchemyTelemetry.status = "brewing"
             alchemyTelemetry.lastError = nil
             return false
         end
 
-        local recipe, recipeError = selectAlchemyRecipe(alchemy, cfg.BrewRecipe)
+        local recipe, recipeError, selectionState = selectAlchemyRecipe(
+            alchemy,
+            cfg.BrewRecipe
+        )
         if recipe == nil then
-            alchemyTelemetry.status = "no craftable recipe"
+            alchemyTelemetry.status = selectionState == "cooldown"
+                and "brew retry cooldown"
+                or "no recipe candidate"
             alchemyTelemetry.lastError = recipeError
             return false, recipeError
         end
 
         alchemyTelemetry.selected = recipe.label
-        local travel = beginAlchemyTravel(alchemy, "ResolveBrewActorCFrame")
+        if alchemyReturnPending() then
+            alchemyTelemetry.status = "waiting for inventory return"
+            return false
+        end
+        if alchemyBroomPending() then
+            alchemyTelemetry.status = "waiting for Broom travel"
+            return false
+        end
+        local travel, travelError = beginAlchemyTravel(alchemy, "ResolveBrewActorCFrame")
+        if travel == nil then
+            alchemyTelemetry.status = "brew actor unavailable"
+            alchemyTelemetry.lastError = travelError
+            alchemyTelemetry.travel = "failed"
+            alchemyRecovery.nextAttemptAt = os.clock() + 2
+            return false, travelError
+        end
+        local stillAtActor, actorError = reaffirmAlchemyTravel(travel)
+        if not stillAtActor then
+            finishAlchemyTravel(travel, true)
+            alchemyTelemetry.status = "brew travel interrupted"
+            alchemyTelemetry.lastError = actorError
+            return false, actorError
+        end
+        local canUseAtActor = alchemyState(alchemy, "CanUseAlchemy")
+        if canUseAtActor ~= nil then alchemyTelemetry.canUse = canUseAtActor end
+        local progressAtActor, progressAtActorError = alchemyState(
+            alchemy,
+            "IsBrewInProgress"
+        )
+        if progressAtActor ~= nil then
+            alchemyTelemetry.inProgress = progressAtActor
+        end
+        if progressAtActor ~= false then
+            finishAlchemyTravel(travel, true)
+            alchemyTelemetry.status = progressAtActor == true
+                and "brewing"
+                or "brew state changed"
+            alchemyTelemetry.lastError = progressAtActorError
+            return false, progressAtActorError
+        end
+        local readyAtActor, readyAtActorError = alchemyState(
+            alchemy,
+            "IsBrewReadyForPickup"
+        )
+        if readyAtActor ~= nil then alchemyTelemetry.ready = readyAtActor end
+        if readyAtActor ~= false then
+            finishAlchemyTravel(travel, true)
+            alchemyTelemetry.status = readyAtActor == true
+                and "potion ready for pickup"
+                or "brew readiness changed"
+            alchemyTelemetry.lastError = readyAtActorError
+                or "a brewed potion must be picked up first"
+            return false, alchemyTelemetry.lastError
+        end
+        readyBefore = readyAtActor
         if not sessionAlive or not cfg.AutoBrew then
-            finishAlchemyTravel(travel)
+            finishAlchemyTravel(travel, true)
             alchemyTelemetry.status = "brew cancelled"
             return false, "brew cancelled"
         end
         alchemyTelemetry.craftAttempts += 1
-        local callOk, sent, response, err = pcall(
-            invokeAction,
-            "ALCHEMY_CRAFT_RECIPE",
-            { recipeId = recipe.id }
-        )
-        if not callOk then
-            err = tostring(sent)
-            sent = false
+        local finalActorCheck, finalActorError = reaffirmAlchemyTravel(travel)
+        if not finalActorCheck then
+            finishAlchemyTravel(travel, true)
+            alchemyTelemetry.status = "brew travel interrupted"
+            alchemyTelemetry.lastError = finalActorError
+            return false, finalActorError
         end
-        if sent and response == false then
+        alchemyInvokeLease.travel = travel
+        alchemyInvokeLease.holdUntil = travel.holdUntil
+        local recoverySnapshot = {
+            key = alchemyRecovery.key,
+            candidateIds = table.clone(alchemyRecovery.candidateIds),
+            cursor = alchemyRecovery.cursor,
+        }
+        local sent, response, err, requestPending = invokeAlchemyAction(
+            "ALCHEMY_CRAFT_RECIPE",
+            { recipeId = recipe.id },
+            recoverySnapshot
+        )
+        if requestPending then
+            alchemyTelemetry.remoteResult = nil
+            alchemyTelemetry.status = "brew request still pending"
+            alchemyTelemetry.lastError = err
+            return false, err
+        end
+        local rejected, rejection = alchemyResponseRejected(response)
+        if sent and rejected then
             sent = false
             err = "server rejected recipe #" .. tostring(recipe.id)
+                .. ": " .. tostring(rejection)
         end
         alchemyTelemetry.remoteResult = response
-        alchemyTelemetry.lastError = sent and nil or err
-        alchemyTelemetry.status = sent and "brew requested" or "brew failed"
         task.wait(0.4)
         refreshAlchemyUi()
-        finishAlchemyTravel(travel)
-        return sent, err
+        local confirmed, confirmation = false, err
+        if sent then
+            confirmed, confirmation = waitForAlchemyConfirmation(
+                alchemy,
+                "brew",
+                readyBefore
+            )
+        end
+        alchemyTelemetry.confirmed = confirmed
+        finishAlchemyRecipeAttempt(confirmed)
+        if confirmed then
+            alchemyTelemetry.lastError = nil
+            alchemyTelemetry.status = "brew confirmed"
+        else
+            alchemyTelemetry.lastError = confirmation
+            alchemyTelemetry.status = "brew unconfirmed"
+        end
+        finishAlchemyTravel(travel, true)
+        if confirmed then return true end
+        return false, confirmation
     end
 
     -- Attack -----------------------------------------------------------------
@@ -1429,10 +2012,56 @@ return function(locomotionFactory, Library, Common)
             alive = function()
                 return sessionAlive
             end,
+            returnTravelPending = function()
+                return alchemyReturnPending()
+            end,
+            returnArrivalToken = function()
+                local challenge = playerNumber("InDungeonChallenge")
+                if challenge == nil or challenge > 0 then return nil end
+                local token = math.floor(
+                    tonumber(alchemyInvokeLease.returnEpisodeToken) or 0
+                )
+                local consumed = math.floor(
+                    tonumber(alchemyInvokeLease.returnConsumedToken) or 0
+                )
+                if token > consumed then return token end
+                return nil
+            end,
+            acknowledgeReturnArrival = function(token)
+                token = math.floor(tonumber(token) or 0)
+                if token <= 0 then return false end
+                local consumed = math.floor(
+                    tonumber(alchemyInvokeLease.returnConsumedToken) or 0
+                )
+                if token > consumed then
+                    alchemyInvokeLease.returnConsumedToken = token
+                end
+                return true
+            end,
         })
         if ok and type(module) == "table" then
             loco = module
         end
+    end
+
+    alchemyBroomPending = function()
+        if loco == nil or type(loco.GetBroomStatus) ~= "function" then
+            return false
+        end
+        local ok, status = pcall(function() return loco:GetBroomStatus() end)
+        if not ok or type(status) ~= "table" then return false end
+        if status.armed == true
+            or status.transactionActive == true
+            or status.waitingForBase == true
+        then
+            return true
+        end
+        -- During config bootstrap, give an enabled Broom worker its first tick
+        -- so Alchemy cannot win the race and teleport away before stage travel
+        -- has even armed.
+        return cfg.AutoBroom == true
+            and status.configReady == true
+            and status.enabled ~= true
     end
 
     local lastFarmMode = nil
@@ -1501,6 +2130,9 @@ return function(locomotionFactory, Library, Common)
     end
 
     pauseAlchemyMovement = function()
+        if loco ~= nil and type(loco.SetBroomSuspended) == "function" then
+            pcall(function() loco:SetBroomSuspended(true) end)
+        end
         if cfg.FarmMode == "Walking" and loco ~= nil then
             if type(loco.PauseWalking) == "function" then
                 pcall(function() loco:PauseWalking() end)
@@ -1511,6 +2143,12 @@ return function(locomotionFactory, Library, Common)
         end
         if cfg.FarmMode == "Running" then
             stopMovementModes()
+        end
+    end
+
+    resumeAlchemyMovement = function()
+        if loco ~= nil and type(loco.SetBroomSuspended) == "function" then
+            pcall(function() loco:SetBroomSuspended(false) end)
         end
     end
 
@@ -1528,6 +2166,34 @@ return function(locomotionFactory, Library, Common)
         blocked = false,
         broomArmed = false,
     }
+    local returnTravelHoldUntil = tonumber(alchemyInvokeLease.returnHoldUntil) or 0
+
+    alchemyReturnPending = function()
+        local sharedHold = tonumber(alchemyInvokeLease.returnHoldUntil) or 0
+        if sharedHold > returnTravelHoldUntil then
+            returnTravelHoldUntil = sharedHold
+        end
+        if returnEpisode.active then return true end
+        local challenge = playerNumber("InDungeonChallenge")
+        local now = os.clock()
+        if now < returnTravelHoldUntil then
+            -- During a server teleport nil is an unknown/loading state, not a
+            -- confirmation that base has been reached.
+            if challenge == nil or challenge > 0 then return true end
+        end
+        if returnTravelHoldUntil > 0 then
+            returnTravelHoldUntil = 0
+            alchemyInvokeLease.returnHoldUntil = nil
+        end
+        if challenge == nil or challenge <= 0 then return false end
+        -- Auto Return deliberately stops after its bounded request count. Once
+        -- the last travel hold has expired, that terminal state must release
+        -- Alchemy instead of acting like an invisible permanent return.
+        if returnEpisode.blocked then return false end
+        if not cfg.AutoReturnFull then return false end
+        local full = bagFull()
+        return full == true
+    end
 
     local function resetReturnEpisode()
         returnEpisode.active = false
@@ -1606,7 +2272,14 @@ return function(locomotionFactory, Library, Common)
             returnEpisode.attempts = returnEpisode.attempts + 1
             local ok, err = sendAction("DUNGEON_RETURN_TOWN")
             if ok then
+                if not returnEpisode.fired then
+                    alchemyInvokeLease.returnEpisodeToken = math.floor(
+                        tonumber(alchemyInvokeLease.returnEpisodeToken) or 0
+                    ) + 1
+                end
                 returnEpisode.fired = true
+                returnTravelHoldUntil = math.max(returnTravelHoldUntil, now + 10)
+                alchemyInvokeLease.returnHoldUntil = returnTravelHoldUntil
                 returnEpisode.lastError = nil
             else
                 returnEpisode.lastError = err or "return request failed"
@@ -1724,7 +2397,7 @@ return function(locomotionFactory, Library, Common)
             running.arrived = false
         end
 
-        if alchemyBusy then
+        if alchemyBusy or type(alchemyInvokeLease.travel) == "table" then
             pauseAlchemyMovement()
             setMovementStatus("alchemy action in progress")
             return
@@ -2114,10 +2787,16 @@ return function(locomotionFactory, Library, Common)
 
     task.spawn(function() -- alchemy
         while sessionAlive do
-            if cfg.AutoBrew or cfg.AutoPickupPotion then
+            if configReady and (cfg.AutoBrew or cfg.AutoPickupPotion) then
                 local ok, err = pcall(runAlchemyCycle)
                 if not ok then
-                    alchemyBusy = false
+                    local failedTravel = activeAlchemyTravel
+                    if failedTravel ~= nil then
+                        finishAlchemyTravel(failedTravel, true)
+                    else
+                        alchemyBusy = false
+                        resumeAlchemyMovement()
+                    end
                     alchemyTelemetry.status = "alchemy error"
                     alchemyTelemetry.lastError = tostring(err)
                 end
@@ -2180,10 +2859,28 @@ return function(locomotionFactory, Library, Common)
     })
     dashboard.window = window
 
-    unloadSession = function()
+    unloadSession = function(reason)
         if unloaded then return end
         unloaded = true
         sessionAlive = false
+        configReady = false
+        alchemyTravelEpoch += 1
+        local staleAlchemyTravel = activeAlchemyTravel
+        activeAlchemyTravel = nil
+        local handoffPendingTravel = reason == "reload"
+            and alchemyInvokeLease.pending
+            and staleAlchemyTravel ~= nil
+            and alchemyInvokeLease.travel == staleAlchemyTravel
+        if staleAlchemyTravel ~= nil and not handoffPendingTravel then
+            restoreAlchemyRoot(staleAlchemyTravel)
+            if alchemyInvokeLease.travel == staleAlchemyTravel then
+                alchemyInvokeLease.travel = nil
+                alchemyInvokeLease.holdUntil = nil
+            end
+        end
+        alchemyBusy = false
+        if not handoffPendingTravel then resumeAlchemyMovement() end
+        resetAlchemyRecovery()
         if loco ~= nil then
             pcall(function() loco:Stop() end)
         end
@@ -2652,7 +3349,7 @@ return function(locomotionFactory, Library, Common)
                         "Alchemy: %s • recipes: %d • craft: %d • pickup: %d%s%s\n"
                             .. "Checks: use %s • brewing %s • ready %s • "
                             .. "rebirth %d/%d • materials %d • craftable %d • "
-                            .. "errors %d • chosen %s • remote %s",
+                            .. "errors %d • chosen %s • remote %s • travel %s • confirmed %s",
                         alchemyTelemetry.status,
                         alchemyTelemetry.recipes,
                         alchemyTelemetry.craftAttempts,
@@ -2668,7 +3365,9 @@ return function(locomotionFactory, Library, Common)
                         alchemyTelemetry.craftable,
                         alchemyTelemetry.predicateErrors,
                         chosen,
-                        tostring(remoteResult)
+                        tostring(remoteResult),
+                        tostring(alchemyTelemetry.travel),
+                        flag(alchemyTelemetry.confirmed)
                     ))
                 end)
                 task.wait(1)
@@ -2676,9 +3375,10 @@ return function(locomotionFactory, Library, Common)
         end)
         tab:CreateSection("Notes"):AddParagraph({
             Title = "Automatic brewing",
-            Text = "Best craftable selects the highest recipe whose rebirth "
-                .. "and materials are available. Creation and pickup use the "
-                .. "game's Alchemy state and work while farming.",
+            Text = "Best craftable tries locally eligible recipes first, then "
+                .. "lets the server validate one fallback at a time if those "
+                .. "checks are stale. Success is reported only after the game "
+                .. "confirms brewing or pickup.",
         })
     end
 
@@ -2834,7 +3534,9 @@ return function(locomotionFactory, Library, Common)
         configGroup:AddButton({
             Text = "Load config",
             Callback = function()
+                configReady = false
                 local ok, detail = loadConfig()
+                configReady = true
                 if ok and loco ~= nil and type(loco.OnConfigLoaded) == "function" then
                     pcall(function() loco:OnConfigLoaded() end)
                 end
@@ -2850,6 +3552,7 @@ return function(locomotionFactory, Library, Common)
         -- Restore the saved values after every control has been registered.
         -- Missing filesystem support or a first run remains intentionally quiet.
         local loaded = loadConfig()
+        configReady = true
         if loco ~= nil and type(loco.OnConfigLoaded) == "function" then
             pcall(function() loco:OnConfigLoaded() end)
         end

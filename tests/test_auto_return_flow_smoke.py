@@ -139,6 +139,7 @@ local challenge = 7
 local attempts = 0
 local actions = {{}}
 local broomArms = 0
+local alchemyInvokeLease = {{}}
 local loco = {{}}
 function loco:OnAutoReturnFull()
     broomArms += 1
@@ -175,12 +176,18 @@ assert(#actions == 1, "failed request retried faster than the 2 second cooldown"
 now = 12
 updateReturnEpisode(true)
 assert(#actions == 2 and returnEpisode.fired == true, "return request did not retry")
+assert(alchemyInvokeLease.returnHoldUntil == 22,
+    "successful return did not publish its cross-reload travel hold")
+assert(alchemyInvokeLease.returnEpisodeToken == 1,
+    "successful return did not publish a consumable arrival episode")
 now = 13
 updateReturnEpisode(true)
 assert(#actions == 2, "successful request retried faster than the cooldown")
 now = 14
 updateReturnEpisode(true)
 assert(#actions == 3, "request was not repeated while still inside the dungeon")
+assert(alchemyInvokeLease.returnEpisodeToken == 1,
+    "return retry published duplicate arrival episodes")
 assert(broomArms == 1, "broom was armed more than once in one episode")
 
 challenge = 0

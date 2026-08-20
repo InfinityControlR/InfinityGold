@@ -24,6 +24,52 @@ def broom_state_source() -> str:
 
 
 class BroomStartupFlowTests(unittest.TestCase):
+    def test_alchemy_suspension_api_round_trips(self):
+        source = (REPO_ROOT / "games" / "magicloot_locomotion.lua").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("broom.giveUpAt = os.clock() + BROOM_ARM_TIMEOUT", source)
+        left = source.index("    function api:SetBroomSuspended(suspended)")
+        right = source.index("    function api:GetBroomStatus()", left)
+        method = source[left:right]
+        fixture = f'''\
+local broom = {{ alive = true, suspended = false, status = "idle" }}
+local api = {{}}
+{method}
+assert(api:SetBroomSuspended(true) == true
+    and broom.suspended == true
+    and broom.status == "broom paused for Alchemy",
+    "SetBroomSuspended(true) did not pause Broom")
+assert(api:SetBroomSuspended(false) == true
+    and broom.suspended == false
+    and broom.status == "broom resumed after Alchemy",
+    "SetBroomSuspended(false) did not resume Broom")
+broom.alive = false
+assert(api:SetBroomSuspended(true) == false and broom.suspended == false,
+    "dead Broom accepted a new suspension")
+print("broom_alchemy_suspension_api=ok")
+'''
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".luau", delete=False, encoding="utf-8", newline="\n"
+        ) as handle:
+            handle.write(fixture)
+            path = Path(handle.name)
+        try:
+            completed = subprocess.run(
+                [str(luau_runner()), str(path)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        finally:
+            path.unlink(missing_ok=True)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"Broom suspension API smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("broom_alchemy_suspension_api=ok", completed.stdout)
+
     def test_saved_config_retries_until_room_entry_then_stops(self):
         section = broom_state_source()
         fixture = f'''\
@@ -31,6 +77,10 @@ local now = 0
 local enabled = true
 local selected = "13"
 local challenge = 0
+local challengeAvailable = true
+local returnBlocked = false
+local returnArrival = 0
+local acknowledgedReturn = 0
 local remoteAvailable = true
 local failuresRemaining = 0
 local alwaysFail = false
@@ -50,11 +100,20 @@ function context.toggle(name)
     return name == "AutoBroom" and enabled
 end
 function context.notify() end
+function context.returnTravelPending() return returnBlocked end
+function context.returnArrivalToken()
+    if returnArrival > acknowledgedReturn then return returnArrival end
+    return nil
+end
+function context.acknowledgeReturnArrival(token)
+    acknowledgedReturn = math.max(acknowledgedReturn, token)
+end
 
 local challengeValue = {{ Value = challenge }}
 local player = {{}}
 function player:FindFirstChild(name)
     if name ~= "InDungeonChallenge" then return nil end
+    if not challengeAvailable then return nil end
     challengeValue.Value = challenge
     return challengeValue
 end
@@ -108,6 +167,11 @@ now = 0.99
 updateBroom()
 assert(#calls == 0, "initial grace period was ignored")
 now = 1
+broom.suspended = true
+updateBroom()
+assert(#calls == 0 and broom.armed == true,
+    "Alchemy suspension did not hold the armed Broom request")
+broom.suspended = false
 updateBroom()
 assert(#calls == 1 and calls[1].action == "关卡跳关请求" and calls[1].stage == 13,
     "initial stage request was not emitted")
@@ -162,7 +226,7 @@ enabled = false
 challenge = 0
 updateBroom()
 enabled = true
-alwaysFail = true
+alwaysFail = false
 now = 70
 updateBroom()
 now = 71
@@ -172,8 +236,16 @@ updateBroom()
 now = 81
 updateBroom()
 local afterMaximum = #calls
+assert(broom.armed == true and broom.finalConfirmationPending == true,
+    "Broom discarded its final confirmation window")
+now = 85.99
+updateBroom()
+assert(broom.armed == true and #calls == afterMaximum,
+    "Broom resent or discarded the final request too early")
+now = 86
+updateBroom()
 assert(broom.armed == false and broom.requestAttempts == 0,
-    "Broom did not stop after the maximum request count")
+    "Broom did not stop after the final confirmation timeout")
 now = 120
 updateBroom()
 assert(#calls == afterMaximum, "Broom kept retrying after its bounded maximum")
@@ -197,6 +269,87 @@ now = 132
 updateBroom()
 assert(#calls == beforeLateRemote and broom.armed == false,
     "pending startup request fired after dungeon entry")
+
+-- Missing replicated state/remotes must not leave every other feature blocked
+-- forever. The armed episode gets one bounded availability window.
+enabled = false
+challenge = 0
+remoteAvailable = false
+now = 150
+updateBroom()
+enabled = true
+updateBroom()
+now = 151
+updateBroom()
+assert(broom.armed == true, "missing remote did not remain briefly retryable")
+now = 181
+updateBroom()
+assert(broom.armed == false,
+    "unavailable Broom state did not release its bounded armed episode")
+
+-- A shared DUNGEON_RETURN_TOWN hold survives reload and must win over a fresh
+-- AutoBroom activation until the return state becomes safe.
+enabled = false
+challengeAvailable = true
+challenge = 0
+remoteAvailable = true
+now = 185
+updateBroom()
+enabled = true
+returnBlocked = true
+now = 186
+updateBroom()
+assert(broom.armed == false and broom.status == "broom waiting for inventory return travel",
+    "Broom ignored the shared return-travel exclusion")
+returnBlocked = false
+now = 187
+updateBroom()
+assert(broom.armed == true
+    and broom.reason == "inventory return"
+    and broom.readyAt == 192,
+    "Broom reload lost BroomReturnDelay after the shared return hold cleared")
+enabled = false
+updateBroom()
+
+-- If the return finishes during config bootstrap, Broom may never observe a
+-- blocked tick. The persisted arrival token still has to select the inventory
+-- delay on that very first base tick, then be consumed exactly once.
+returnArrival = 1
+enabled = true
+returnBlocked = false
+challenge = 0
+now = 200
+updateBroom()
+assert(broom.armed == true
+    and broom.reason == "inventory return"
+    and broom.readyAt == 205
+    and acknowledgedReturn == 1,
+    "first post-reload base tick ignored the persisted return episode")
+enabled = false
+updateBroom()
+
+-- Auto Return can arm Broom before the challenge value temporarily disappears.
+-- Waiting for the >0 -> 0 transition is bounded independently of `armed` so a
+-- lost return can never block Alchemy forever.
+remoteAvailable = true
+challengeAvailable = false
+enabled = true
+broom.enabled = true
+broom.stage = 13
+broom.waitingForBase = true
+broom.returnEpisode = true
+broom.armed = false
+broom.giveUpAt = 220
+now = 219.9
+updateBroom()
+assert(broom.waitingForBase == true,
+    "Broom abandoned the return transition before its deadline")
+now = 220
+updateBroom()
+assert(broom.waitingForBase == false
+    and broom.returnEpisode == false
+    and broom.giveUpAt == 0,
+    "unobservable return transition blocked Broom/Alchemy forever")
 
 print("broom_startup_retry_smoke=ok")
 '''
