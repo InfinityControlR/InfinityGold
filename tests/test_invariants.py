@@ -145,7 +145,7 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn("if utils ~= nil then net.clientUtils = utils end", self.source)
         self.assertIn('playerData.GetPlrDataByKey, player, "Bag"', self.source)
         self.assertIn("Common.sellOnlyIds", self.source)
-        self.assertIn('invokeAction("SELL_MATERIAL", { onlyIDList = onlyIds })', self.source)
+        self.assertIn('"SELL_MATERIAL",\n            { onlyIDList = onlyIds },', self.source)
         self.assertNotIn('sendAction("SELL_MATERIAL", { onlyIDList = {} })', self.source)
         self.assertIn("task.wait(2)", self.source)
 

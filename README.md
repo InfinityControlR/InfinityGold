@@ -67,7 +67,10 @@ the InfinityGold dashboard.
   locked items and materials reserved for Alchemy recipes. Automatic selling
   runs only at base. When Auto Brew is enabled, the base-economy worker runs
   Alchemy first and sells only after a craft was confirmed or while a potion is
-  already brewing; a pickup confirmation alone never unlocks selling.
+  already brewing; a pickup confirmation alone never unlocks selling. Best
+  Craftable ranks the game's positive local material checks first, so it sends
+  the best reported recipe immediately instead of remotely probing every higher
+  recipe before reaching an available lower one.
 - **Broom**: sends only the selected-stage request (`关卡跳关请求`) and never
   toggles/equips the broom. It keeps single-flight epoch tokens, invalidation
   on toggle/stage/return changes, and base detection through the numeric

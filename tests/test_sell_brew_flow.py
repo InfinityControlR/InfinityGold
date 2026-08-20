@@ -40,9 +40,207 @@ SELL_COORDINATION = core_slice(
     "    local function autoSellBaseGate()",
     "    -- Attack -----------------------------------------------------------------",
 )
+ALCHEMY_WORKER = core_slice(
+    "    task.spawn(function() -- alchemy",
+    "    task.spawn(function() -- gear",
+)
 
 
 class SellBrewFlowTests(unittest.TestCase):
+    def test_pending_auto_sell_does_not_freeze_fast_alchemy_polling(self):
+        fixture = f"""
+local sessionAlive = true
+local configReady = true
+local cfg = {{
+    AutoBrew = true,
+    AutoPickupPotion = false,
+    AutoSell = true,
+}}
+local alchemyTelemetry = {{ confirmedAction = nil }}
+local sellTelemetry = {{ status = "waiting", lastError = nil }}
+local fakeClock = 0
+local os = {{ clock = function() return fakeClock end }}
+local alchemyRuns = 0
+local sellActions = {{}}
+local firstQueuedSell = nil
+local secondQueuedSell = nil
+local spawnCalls = 0
+local function playerNumber(_name)
+    if fakeClock == 1.5 then return nil end
+    return 0
+end
+local function observeAlchemyLocation(_challenge) end
+local function resetAlchemyRecovery() end
+local function runAlchemyCycle()
+    alchemyRuns += 1
+    alchemyTelemetry.confirmedAction = alchemyRuns == 3 and "brew" or nil
+end
+local function runAutoSellCycle(confirmedAction)
+    table.insert(sellActions, confirmedAction or "ordinary")
+end
+local task = {{}}
+task.spawn = function(callback)
+    spawnCalls += 1
+    if spawnCalls == 1 then
+        callback()
+    elseif spawnCalls == 2 then
+        assert(firstQueuedSell == nil)
+        firstQueuedSell = callback
+    elseif spawnCalls == 3 then
+        assert(secondQueuedSell == nil)
+        secondQueuedSell = callback
+    else
+        error("duplicate AutoSell task escaped single flight")
+    end
+end
+task.wait = function(seconds)
+    assert(seconds == 0.5)
+    fakeClock += seconds
+    if fakeClock == 1.5 then
+        assert(type(firstQueuedSell) == "function")
+        firstQueuedSell()
+        firstQueuedSell = nil
+    end
+    if fakeClock >= 2.5 then sessionAlive = false end
+end
+
+{ALCHEMY_WORKER}
+
+assert(alchemyRuns == 5,
+    "a pending SELL_MATERIAL task froze subsequent Alchemy polling")
+assert(spawnCalls == 3
+    and #sellActions == 1
+    and sellActions[1] == "ordinary"
+    and type(secondQueuedSell) == "function",
+    "AutoSell did not remain a single detached request")
+secondQueuedSell()
+assert(#sellActions == 2 and sellActions[2] == "brew",
+    "a craft confirmation was lost while the previous sell was pending")
+print("pending_auto_sell_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"pending AutoSell smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("pending_auto_sell_smoke=ok", completed.stdout)
+
+    def test_worker_tracks_stage_inventory_while_alchemy_is_disabled(self):
+        fixture = f"""
+local sessionAlive = true
+local configReady = true
+local cfg = {{
+    AutoBrew = false,
+    AutoPickupPotion = false,
+    AutoSell = false,
+}}
+local alchemyTelemetry = {{ confirmedAction = nil }}
+local fakeClock = 0
+local os = {{ clock = function() return fakeClock end }}
+local inventoryEpoch = 0
+local stageActive = false
+local recoveryResets = 0
+local function playerNumber(_name)
+    if fakeClock >= 0.5 and fakeClock < 1.5 then return 4 end
+    return 0
+end
+local function observeAlchemyLocation(challenge)
+    if challenge > 0 then
+        if not stageActive then
+            inventoryEpoch += 1
+            stageActive = true
+        end
+    else
+        stageActive = false
+    end
+end
+local function resetAlchemyRecovery() recoveryResets += 1 end
+local function runAlchemyCycle()
+    error("disabled Alchemy unexpectedly ran")
+end
+local function runAutoSellCycle(_confirmedAction) end
+local task = {{}}
+task.spawn = function(callback) callback() end
+task.wait = function(seconds)
+    assert(seconds == 0.5)
+    fakeClock += seconds
+    if fakeClock >= 2 then sessionAlive = false end
+end
+
+{ALCHEMY_WORKER}
+
+assert(inventoryEpoch == 1 and recoveryResets == 2,
+    "disabled Alchemy missed or duplicated the dungeon inventory epoch")
+print("disabled_alchemy_inventory_epoch_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"disabled Alchemy epoch smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("disabled_alchemy_inventory_epoch_smoke=ok", completed.stdout)
+
+    def test_fast_alchemy_poll_preserves_two_second_auto_sell_cadence(self):
+        fixture = f"""
+local sessionAlive = true
+local configReady = true
+local cfg = {{
+    AutoBrew = true,
+    AutoPickupPotion = false,
+    AutoSell = true,
+}}
+local alchemyTelemetry = {{ confirmedAction = nil }}
+local fakeClock = 0
+local os = {{ clock = function() return fakeClock end }}
+local alchemyRuns = 0
+local sellTimes = {{}}
+local locationObservations = 0
+local function playerNumber(name)
+    assert(name == "InDungeonChallenge")
+    return 0
+end
+local function observeAlchemyLocation(challenge)
+    assert(challenge == 0)
+    locationObservations += 1
+end
+local function resetAlchemyRecovery()
+    error("base observation unexpectedly reset Alchemy recovery")
+end
+local function runAlchemyCycle()
+    alchemyRuns += 1
+    alchemyTelemetry.confirmedAction = nil
+end
+local function runAutoSellCycle(_confirmedAction)
+    table.insert(sellTimes, fakeClock)
+end
+local task = {{}}
+task.spawn = function(callback) callback() end
+task.wait = function(seconds)
+    assert(seconds == 0.5, "Alchemy worker lost its fast poll cadence")
+    fakeClock += seconds
+    if fakeClock >= 2.5 then sessionAlive = false end
+end
+
+{ALCHEMY_WORKER}
+
+assert(alchemyRuns == 5,
+    "Alchemy was not checked immediately and every half second")
+assert(locationObservations == 5,
+    "inventory epoch was not observed on every worker tick")
+assert(#sellTimes == 2 and sellTimes[1] == 0 and sellTimes[2] == 2,
+    "fast Alchemy polling accelerated AutoSell below two seconds")
+print("fast_alchemy_worker_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"fast Alchemy worker smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("fast_alchemy_worker_smoke=ok", completed.stdout)
+
     def test_auto_sell_is_base_only_and_waits_for_a_confirmed_brew(self):
         fixture = f"""
 local configReady = false
@@ -52,6 +250,7 @@ local challenge = 0
 local alchemyAvailable = true
 local inProgress = false
 local progressError = nil
+local progressReadHook = function() end
 local sellMode = "success"
 local scanHook = function() end
 local scans = 0
@@ -81,6 +280,7 @@ local function alchemyState(actualAlchemy, methodName)
     assert(actualAlchemy == alchemy, "AutoSell used the wrong Alchemy module")
     assert(methodName == "IsBrewInProgress", "AutoSell used the wrong brew gate")
     if progressError ~= nil then return nil, progressError end
+    progressReadHook()
     return inProgress
 end
 local function sellAllMaterials(beforeSend)
@@ -243,6 +443,41 @@ assert(sold == false and scans == 11 and sellTelemetry.status == "sell failed"
 
 assert(sellTelemetry.requests == 4 and sellTelemetry.requestedItems == 12,
     "sell telemetry counted scans instead of successful requests")
+
+-- A detached scan can overlap pickup. The initial in-progress sample must be
+-- revalidated immediately before SELL instead of becoming a stale grant.
+sellMode = "success"
+cfg.AutoBrew = true
+inProgress = true
+local scansBeforeStaleGrant = scans
+local salesBeforeStaleGrant = sales
+scanHook = function()
+    inProgress = false
+    scanHook = function() end
+end
+sold = runAutoSellCycle(nil)
+assert(sold == false
+    and scans == scansBeforeStaleGrant + 1
+    and sales == salesBeforeStaleGrant
+    and sellTelemetry.status == "waiting for confirmed brew",
+    "a stale in-progress sample sold after pickup and before the next brew")
+
+challenge = 0
+inProgress = true
+local progressReadsBeforeFinalGate = 0
+progressReadHook = function()
+    progressReadsBeforeFinalGate += 1
+    if progressReadsBeforeFinalGate == 2 then challenge = 3 end
+end
+local scansBeforeFinalYieldGate = scans
+local salesBeforeFinalYieldGate = sales
+sold = runAutoSellCycle(nil)
+assert(sold == false
+    and scans == scansBeforeFinalYieldGate + 1
+    and sales == salesBeforeFinalYieldGate
+    and sellTelemetry.status == "waiting for base",
+    "AutoSell left base while revalidating brew state and still sent SELL")
+progressReadHook = function() end
 print("sell_brew_flow_smoke=ok")
 """
         completed = run_luau(fixture)
@@ -261,10 +496,13 @@ print("sell_brew_flow_smoke=ok")
         )
         self.assertNotIn("task.spawn(function() -- sell", source)
         self.assertIn("if configReady then", worker)
-        self.assertLess(worker.index("runAlchemyCycle"), worker.index("runAutoSellCycle"))
+        loop = worker[worker.index("        while sessionAlive do") :]
+        self.assertLess(loop.index("runAlchemyCycle"), loop.index("startAutoSellCycle"))
+        self.assertIn("runAutoSellCycle,\n                    confirmedAction", worker)
         self.assertIn("confirmedActionThisCycle = alchemyTelemetry.confirmedAction", worker)
         self.assertNotIn('alchemyTelemetry.confirmedAction == "brew"', worker)
-        self.assertIn("task.wait(2)", worker)
+        self.assertIn("task.wait(0.5)", worker)
+        self.assertIn("os.clock() + 2", worker)
 
         helper = SELL_COORDINATION
         self.assertIn('playerNumber("InDungeonChallenge")', helper)
@@ -276,9 +514,9 @@ print("sell_brew_flow_smoke=ok")
             "    local function sellAllMaterials(beforeSend)",
             "    local function playerGold()",
         )
-        self.assertLess(
-            sell_builder.index("beforeSend()"),
-            sell_builder.index('invokeAction("SELL_MATERIAL"'),
+        self.assertIn(
+            '"SELL_MATERIAL",\n            { onlyIDList = onlyIds },\n            beforeSend',
+            sell_builder,
         )
 
 

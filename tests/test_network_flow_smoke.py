@@ -156,10 +156,38 @@ assert(sent, "dungeon return FireServer failed: " .. tostring(sendError))
 assert(#fireCalls == 3 and fireCalls[3] == "empty",
     "dungeon return did not send only its descriptor")
 
-local invoked, result, invokeError = invokeAction("INVOKE", {{ value = 23 }})
-assert(invoked, "invokeAction failed: " .. tostring(invokeError))
+local guardCalls = 0
+local invoked, result, invokeError, didInvoke = invokeAction(
+    "INVOKE",
+    {{ value = 99 }},
+    function()
+        guardCalls += 1
+        return false, "fixture request cancelled"
+    end
+)
+assert(invoked == false and didInvoke == false
+    and invokeError == "fixture request cancelled"
+    and #invokeCalls == 0 and guardCalls == 1,
+    "final InvokeServer guard did not cancel after network resolution")
+
+invoked, result, invokeError, didInvoke = invokeAction(
+    "INVOKE",
+    {{ value = 23 }},
+    function()
+        guardCalls += 1
+        return true
+    end
+)
+assert(invoked and didInvoke == true,
+    "invokeAction failed: " .. tostring(invokeError))
 assert(result.accepted == 23, "wrong InvokeServer result")
-assert(#invokeCalls == 1 and invokeCalls[1].value == 23, "wrong InvokeServer payload")
+assert(#invokeCalls == 1 and invokeCalls[1].value == 23 and guardCalls == 2,
+    "wrong InvokeServer payload or guard cadence")
+invoked, result, invokeError, didInvoke = invokeAction("MISSING_ACTION")
+assert(invoked == false and didInvoke == false
+    and string.find(invokeError, "remote unavailable", 1, true) ~= nil
+    and #invokeCalls == 1,
+    "unresolved remote was confused with an attempted InvokeServer")
 invoked, result, invokeError = invokeAction("INVOKE_EMPTY")
 assert(invoked, "payload-free invokeAction failed: " .. tostring(invokeError))
 assert(result.accepted == "empty", "wrong payload-free InvokeServer result")

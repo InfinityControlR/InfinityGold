@@ -136,13 +136,27 @@ return function(locomotionFactory, Library, Common)
             alchemyInvokeLease.pending = existingLease.pending == true
             alchemyInvokeLease.generation = tonumber(existingLease.generation) or 0
             alchemyInvokeLease.startedAt = tonumber(existingLease.startedAt)
+            alchemyInvokeLease.inventoryEpoch = math.max(
+                0,
+                math.floor(tonumber(existingLease.inventoryEpoch) or 0)
+            )
+            alchemyInvokeLease.inventoryStageActive =
+                existingLease.inventoryStageActive == true
             if alchemyInvokeLease.pending and alchemyInvokeLease.startedAt == nil then
                 alchemyInvokeLease.startedAt = os.clock()
             end
         else
+            alchemyInvokeLease.inventoryEpoch = 0
+            alchemyInvokeLease.inventoryStageActive = false
             sessionEnvironment.__INFINITYGOLD_ALCHEMY_INVOKE = alchemyInvokeLease
         end
     end
+    alchemyInvokeLease.inventoryEpoch = math.max(
+        0,
+        math.floor(tonumber(alchemyInvokeLease.inventoryEpoch) or 0)
+    )
+    alchemyInvokeLease.inventoryStageActive =
+        alchemyInvokeLease.inventoryStageActive == true
     -- Migrate a request handed off by the previous physical-Alchemy build.
     -- Restore only while the same root is still beside that old destination;
     -- never overwrite a newer Broom/respawn position. New Alchemy requests are
@@ -456,16 +470,25 @@ return function(locomotionFactory, Library, Common)
         return true
     end
 
-    local function invokeAction(action, payload)
+    local function invokeAction(action, payload, beforeInvoke)
         local network = resolveNet()
-        if network == nil then return false, nil, net.status end
+        if network == nil then return false, nil, net.status, false end
         local remote = remoteFor(action)
-        if remote == nil then return false, nil, action .. " remote unavailable" end
+        if remote == nil then
+            return false, nil, action .. " remote unavailable", false
+        end
         local methodOk, invokeServer = pcall(function()
             return network.InvokeServer
         end)
         if not methodOk or type(invokeServer) ~= "function" then
-            return false, nil, "NetWork.InvokeServer unavailable"
+            return false, nil, "NetWork.InvokeServer unavailable", false
+        end
+        if type(beforeInvoke) == "function" then
+            local guardOk, allowed, guardError = pcall(beforeInvoke)
+            if not guardOk then return false, nil, tostring(allowed), false end
+            if allowed ~= true then
+                return false, nil, guardError or "request cancelled", false
+            end
         end
         local ok, result
         if payload == nil then
@@ -473,8 +496,8 @@ return function(locomotionFactory, Library, Common)
         else
             ok, result = pcall(invokeServer, remote, payload)
         end
-        if not ok then return false, nil, tostring(result) end
-        return true, result
+        if not ok then return false, nil, tostring(result), true end
+        return true, result, nil, true
     end
 
     local function fireBindableAction(action, ...)
@@ -674,17 +697,14 @@ return function(locomotionFactory, Library, Common)
         end
         if #onlyIds == 0 then return false, 0, "nothing to sell" end
 
-        -- Automatic selling supplies a final base/config guard here, after the
-        -- inventory scan and immediately before the remote. Sell All Now omits
+        -- invokeAction runs this optional guard only after resolving NetWork
+        -- and NetMsg, immediately adjacent to InvokeServer. Sell All Now omits
         -- it intentionally and remains a manual override.
-        if type(beforeSend) == "function" then
-            local allowed, guardError = beforeSend()
-            if allowed ~= true then
-                return false, 0, guardError or "sell cancelled"
-            end
-        end
-
-        local sent, _, err = invokeAction("SELL_MATERIAL", { onlyIDList = onlyIds })
+        local sent, _, err = invokeAction(
+            "SELL_MATERIAL",
+            { onlyIDList = onlyIds },
+            beforeSend
+        )
         return sent, #onlyIds, err
     end
 
@@ -853,6 +873,17 @@ return function(locomotionFactory, Library, Common)
         alchemyRecovery.nextAttemptAt = 0
     end
 
+    local function observeAlchemyLocation(challenge)
+        if challenge > 0 then
+            if not alchemyInvokeLease.inventoryStageActive then
+                alchemyInvokeLease.inventoryEpoch += 1
+                alchemyInvokeLease.inventoryStageActive = true
+            end
+            return
+        end
+        alchemyInvokeLease.inventoryStageActive = false
+    end
+
     local function resolveAlchemy()
         local data = resolveGetData()
         local alchemy = data and data.Alchemy
@@ -988,32 +1019,52 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function selectAlchemyRecipe(alchemy, selection)
+        selection = tostring(selection or "Best craftable")
+        local recoveryPrefix = "priority-v2|" .. selection .. "|"
+        if type(alchemyRecovery.key) == "string"
+            and string.sub(alchemyRecovery.key, 1, #recoveryPrefix) == recoveryPrefix
+            and os.clock() < alchemyRecovery.nextAttemptAt
+        then
+            -- The recovery order is deliberately frozen until this deadline;
+            -- avoid rebuilding/translating the catalog and rerunning every
+            -- recipe predicate twice per second while no request can be sent.
+            return nil, "waiting before the next server-validated recipe", "cooldown"
+        end
+
         local catalog, err = alchemyRecipeCatalog(alchemy)
         if catalog == nil then return nil, err end
 
-        selection = tostring(selection or "Best craftable")
         alchemyTelemetry.checkTotal = #catalog
         alchemyTelemetry.rebirthPassed = 0
         alchemyTelemetry.materialChecks = 0
         alchemyTelemetry.craftable = 0
         alchemyTelemetry.predicateErrors = 0
         alchemyTelemetry.chosenId = nil
-        local candidates = {}
+        local candidateById = {}
+        local membershipIds = {}
+        local prioritizedIds = {}
+        local fallbackIds = {}
         if selection == "Best craftable" then
-            local rebirthEligible = {}
-            for _, recipe in ipairs(catalog) do
-                local _, _, reason = isAlchemyRecipeCraftable(alchemy, recipe)
+            -- The game's predicates are cheap local checks. Prefer every
+            -- positive material result immediately, highest recipe first, so
+            -- Best does not spend one remote confirmation window per recipe.
+            -- False/error material hints remain a server-validated fallback:
+            -- they have proved stale away from the Alchemy UI.
+            for index = #catalog, 1, -1 do
+                local recipe = catalog[index]
+                local craftable, _, reason = isAlchemyRecipeCraftable(
+                    alchemy,
+                    recipe
+                )
                 noteAlchemyRecipeCheck(reason)
                 if reason ~= "rebirth" then
-                    -- CanCraftRecipe is only a client hint: live use proved it
-                    -- can say false away from the Alchemy UI while the server
-                    -- accepts the same explicit recipe. Keep every recipe that
-                    -- is not explicitly rebirth-locked in stable ID order.
-                    table.insert(rebirthEligible, recipe)
+                    candidateById[recipe.id] = recipe
+                    table.insert(membershipIds, recipe.id)
+                    table.insert(
+                        craftable and prioritizedIds or fallbackIds,
+                        recipe.id
+                    )
                 end
-            end
-            for index = #rebirthEligible, 1, -1 do
-                table.insert(candidates, rebirthEligible[index])
             end
         else
             local selectedId = math.floor(tonumber(selection) or 0)
@@ -1024,25 +1075,34 @@ return function(locomotionFactory, Library, Common)
                 if selection == recipe.label or selectedId == recipe.id then
                     local _, _, reason = isAlchemyRecipeCraftable(alchemy, recipe)
                     noteAlchemyRecipeCheck(reason)
-                    table.insert(candidates, recipe)
+                    candidateById[recipe.id] = recipe
+                    table.insert(membershipIds, recipe.id)
+                    table.insert(prioritizedIds, recipe.id)
                     break
                 end
             end
         end
 
-        if #candidates == 0 then
+        if #membershipIds == 0 then
             return nil, selection == "Best craftable"
                 and "no rebirth-eligible recipe"
                 or "selected recipe is unavailable"
         end
-        local candidateIds = {}
-        for _, recipe in ipairs(candidates) do
-            table.insert(candidateIds, recipe.id)
-        end
-        local recoveryKey = selection .. "|" .. table.concat(candidateIds, ",")
+
+        -- membershipIds is canonical and independent of material-hint flips.
+        -- The priority order is frozen for one recovery round so a changing
+        -- hint cannot reset the cursor/cooldown and repeat the same request.
+        local recoveryKey = "priority-v2|" .. selection .. "|"
+            .. table.concat(membershipIds, ",")
         if alchemyRecovery.key ~= recoveryKey then
             alchemyRecovery.key = recoveryKey
-            alchemyRecovery.candidateIds = candidateIds
+            alchemyRecovery.candidateIds = {}
+            for _, id in ipairs(prioritizedIds) do
+                table.insert(alchemyRecovery.candidateIds, id)
+            end
+            for _, id in ipairs(fallbackIds) do
+                table.insert(alchemyRecovery.candidateIds, id)
+            end
             alchemyRecovery.cursor = 1
             alchemyRecovery.nextAttemptAt = 0
         end
@@ -1050,16 +1110,24 @@ return function(locomotionFactory, Library, Common)
             return nil, "waiting before the next server-validated recipe", "cooldown"
         end
 
-        if alchemyRecovery.cursor > #candidates then alchemyRecovery.cursor = 1 end
-        local candidate = candidates[alchemyRecovery.cursor]
+        if alchemyRecovery.cursor > #alchemyRecovery.candidateIds then
+            alchemyRecovery.cursor = 1
+        end
+        local candidateId = alchemyRecovery.candidateIds[alchemyRecovery.cursor]
+        local candidate = candidateById[candidateId]
+        if candidate == nil then
+            resetAlchemyRecovery()
+            return nil, "recipe candidate changed; retrying"
+        end
         alchemyTelemetry.chosenId = candidate.id
         return candidate
     end
 
     local function finishAlchemyRecipeAttempt(confirmed)
         if confirmed then
-            alchemyRecovery.cursor = 1
-            alchemyRecovery.nextAttemptAt = 0
+            -- Materials changed after a successful craft. Rebuild local
+            -- priorities before choosing the next potion.
+            resetAlchemyRecovery()
             return
         end
         local count = #alchemyRecovery.candidateIds
@@ -1138,6 +1206,16 @@ return function(locomotionFactory, Library, Common)
         return false
     end
 
+    local function alchemyRequestDidNotStart(err, didInvoke)
+        return didInvoke == false
+            or err == "alchemy session closed before request"
+            or err == "Alchemy config reloading before request"
+            or err == "brew cancelled before request"
+            or err == "pickup cancelled before request"
+            or err == "dungeon state unknown before Alchemy request"
+            or err == "left base before Alchemy request"
+    end
+
     local ALCHEMY_STALE_LEASE_SECONDS = 30
 
     local function alchemyLeaseBlocksCycle(alchemy)
@@ -1164,7 +1242,7 @@ return function(locomotionFactory, Library, Common)
 
     local function invokeAlchemyAction(action, payload, recoverySnapshot)
         if alchemyInvokeLease.pending then
-            return false, nil, "a previous Alchemy request is still pending"
+            return false, nil, "a previous Alchemy request is still pending", true, false
         end
         alchemyInvokeLease.generation += 1
         local token = alchemyInvokeLease.generation
@@ -1178,15 +1256,46 @@ return function(locomotionFactory, Library, Common)
             recovery = recoverySnapshot,
         }
         local spawned, spawnError = pcall(task.spawn, function()
-            local callOk, sent, response, err = pcall(invokeAction, action, payload)
+            local function beforeInvoke()
+                if not sessionAlive then
+                    return false, "alchemy session closed before request"
+                end
+                if not configReady then
+                    return false, "Alchemy config reloading before request"
+                end
+                if action == "ALCHEMY_CRAFT_RECIPE" and not cfg.AutoBrew then
+                    return false, "brew cancelled before request"
+                end
+                if action == "ALCHEMY_PICKUP_FINISH_POTION"
+                    and not cfg.AutoPickupPotion
+                then
+                    return false, "pickup cancelled before request"
+                end
+                local challenge = playerNumber("InDungeonChallenge")
+                if challenge == nil then
+                    return false, "dungeon state unknown before Alchemy request"
+                end
+                if challenge > 0 then
+                    return false, "left base before Alchemy request"
+                end
+                return true
+            end
+            local callOk, sent, response, err, didInvoke = pcall(
+                invokeAction,
+                action,
+                payload,
+                beforeInvoke
+            )
             if not callOk then
                 err = tostring(sent)
                 sent = false
                 response = nil
+                didInvoke = false
             end
             outcome.sent = sent == true
             outcome.response = response
             outcome.err = err
+            outcome.didInvoke = didInvoke == true
             outcome.done = true
             if alchemyInvokeLease.generation == token then
                 alchemyInvokeLease.pending = false
@@ -1198,6 +1307,7 @@ return function(locomotionFactory, Library, Common)
                         sent = outcome.sent,
                         response = response,
                         err = err,
+                        didInvoke = outcome.didInvoke,
                         recovery = outcome.recovery,
                         completedAt = os.clock(),
                     }
@@ -1209,35 +1319,67 @@ return function(locomotionFactory, Library, Common)
                 alchemyInvokeLease.pending = false
                 alchemyInvokeLease.startedAt = nil
             end
-            return false, nil, "could not start Alchemy request: " .. tostring(spawnError)
+            return false,
+                nil,
+                "could not start Alchemy request: " .. tostring(spawnError),
+                false,
+                false
         end
 
         for _ = 1, 16 do
             if outcome.done then
-                return outcome.sent, outcome.response, outcome.err
+                return outcome.sent,
+                    outcome.response,
+                    outcome.err,
+                    false,
+                    outcome.didInvoke
             end
             if not sessionAlive then
                 -- Detach this caller but keep the shared lease. The old request
                 -- may still finish after a reload, and its result must be
                 -- reconciled by the next session instead of being discarded.
                 outcome.timedOut = true
-                return false, nil, "alchemy session closed while request was pending", true
+                return false,
+                    nil,
+                    "alchemy session closed while request was pending",
+                    true,
+                    outcome.didInvoke
             end
             task.wait(0.25)
         end
         if outcome.done then
-            return outcome.sent, outcome.response, outcome.err
+            return outcome.sent,
+                outcome.response,
+                outcome.err,
+                false,
+                outcome.didInvoke
         end
         -- The lease deliberately remains pending. A late completion clears it;
         -- until then neither this session nor a reload can duplicate the call.
         outcome.timedOut = true
-        return false, nil, "Alchemy request timed out; waiting for late completion", true
+        return false,
+            nil,
+            "Alchemy request timed out; waiting for late completion",
+            true,
+            outcome.didInvoke
     end
 
     local function reconcileLateAlchemyCompletion(alchemy)
         local completed = alchemyInvokeLease.completed
         if type(completed) ~= "table" then return false end
         alchemyInvokeLease.completed = nil
+        if alchemyRequestDidNotStart(completed.err, completed.didInvoke) then
+            if completed.action == "ALCHEMY_CRAFT_RECIPE" then
+                resetAlchemyRecovery()
+            elseif completed.action == "ALCHEMY_PICKUP_FINISH_POTION" then
+                alchemyPickupNextAttemptAt = 0
+            end
+            alchemyTelemetry.confirmed = false
+            alchemyTelemetry.remoteResult = completed.response
+            alchemyTelemetry.status = "late Alchemy request cancelled before send"
+            alchemyTelemetry.lastError = completed.err
+            return true, false, completed.err
+        end
         local rejected, rejection = alchemyResponseRejected(completed.response)
         local accepted = completed.sent == true and not rejected
         local errorText = completed.err
@@ -1246,7 +1388,14 @@ return function(locomotionFactory, Library, Common)
 
         if completed.action == "ALCHEMY_CRAFT_RECIPE" then
             local recovery = completed.recovery
-            if type(recovery) == "table" then
+            local snapshotEpoch = type(recovery) == "table"
+                and tonumber(recovery.inventoryEpoch)
+                or nil
+            local inventoryUnchanged = snapshotEpoch ~= nil
+                and snapshotEpoch == alchemyInvokeLease.inventoryEpoch
+                or snapshotEpoch == nil
+                    and alchemyInvokeLease.inventoryEpoch == 0
+            if type(recovery) == "table" and inventoryUnchanged then
                 alchemyRecovery.key = recovery.key
                 alchemyRecovery.candidateIds = type(recovery.candidateIds) == "table"
                     and recovery.candidateIds
@@ -1257,7 +1406,16 @@ return function(locomotionFactory, Library, Common)
             local brewing = alchemyState(alchemy, "IsBrewInProgress")
             local ready = alchemyState(alchemy, "IsBrewReadyForPickup")
             local confirmed = accepted and (brewing == true or ready == true)
-            finishAlchemyRecipeAttempt(confirmed)
+            if confirmed then
+                finishAlchemyRecipeAttempt(true)
+            elseif inventoryUnchanged then
+                finishAlchemyRecipeAttempt(false)
+            else
+                -- A stage trip changed the bag while this request was in
+                -- flight. Never resurrect the old frozen priority/cursor;
+                -- rank the current inventory afresh on the next fast tick.
+                resetAlchemyRecovery()
+            end
             alchemyTelemetry.confirmed = confirmed
             alchemyTelemetry.inProgress = brewing
             alchemyTelemetry.ready = ready
@@ -1316,7 +1474,12 @@ return function(locomotionFactory, Library, Common)
             alchemyTelemetry.lastError = nil
             return false
         end
+        observeAlchemyLocation(challenge)
         if challenge > 0 then
+            -- A dungeon trip can change the inventory. Discard any frozen
+            -- fallback order so returning to base immediately ranks the new
+            -- local craftability snapshot instead of resuming an old round.
+            resetAlchemyRecovery()
             alchemyTelemetry.status = "waiting for base"
             alchemyTelemetry.lastError = nil
             return false
@@ -1398,13 +1561,24 @@ return function(locomotionFactory, Library, Common)
                 end
                 alchemyTelemetry.pickupAttempts += 1
                 alchemyTelemetry.travel = "remote"
-                local sent, response, err, requestPending = invokeAlchemyAction(
-                    "ALCHEMY_PICKUP_FINISH_POTION"
-                )
+                local sent, response, err, requestPending, didInvoke =
+                    invokeAlchemyAction(
+                        "ALCHEMY_PICKUP_FINISH_POTION"
+                    )
                 if requestPending then
                     alchemyTelemetry.remoteResult = nil
                     alchemyTelemetry.status = "pickup request still pending"
                     alchemyTelemetry.lastError = err
+                    return false, err
+                end
+                if not sent and alchemyRequestDidNotStart(err, didInvoke) then
+                    alchemyTelemetry.pickupAttempts = math.max(
+                        0,
+                        alchemyTelemetry.pickupAttempts - 1
+                    )
+                    alchemyPickupNextAttemptAt = 0
+                    alchemyTelemetry.status = err
+                    alchemyTelemetry.lastError = nil
                     return false, err
                 end
                 local rejected, rejection = alchemyResponseRejected(response)
@@ -1524,8 +1698,9 @@ return function(locomotionFactory, Library, Common)
             key = alchemyRecovery.key,
             candidateIds = table.clone(alchemyRecovery.candidateIds),
             cursor = alchemyRecovery.cursor,
+            inventoryEpoch = alchemyInvokeLease.inventoryEpoch,
         }
-        local sent, response, err, requestPending = invokeAlchemyAction(
+        local sent, response, err, requestPending, didInvoke = invokeAlchemyAction(
             "ALCHEMY_CRAFT_RECIPE",
             { recipeId = recipe.id },
             recoverySnapshot
@@ -1534,6 +1709,16 @@ return function(locomotionFactory, Library, Common)
             alchemyTelemetry.remoteResult = nil
             alchemyTelemetry.status = "brew request still pending"
             alchemyTelemetry.lastError = err
+            return false, err
+        end
+        if not sent and alchemyRequestDidNotStart(err, didInvoke) then
+            alchemyTelemetry.craftAttempts = math.max(
+                0,
+                alchemyTelemetry.craftAttempts - 1
+            )
+            resetAlchemyRecovery()
+            alchemyTelemetry.status = err
+            alchemyTelemetry.lastError = nil
             return false, err
         end
         local rejected, rejection = alchemyResponseRejected(response)
@@ -1590,7 +1775,6 @@ return function(locomotionFactory, Library, Common)
 
         sellTelemetry.brewInProgress = nil
         sellTelemetry.authorization = cfg.AutoBrew and nil or "Auto Brew off"
-        local brewGateSatisfied = false
         if cfg.AutoBrew and confirmedActionThisCycle ~= "brew" then
             local alchemy, resolveError = resolveAlchemy()
             if alchemy == nil then
@@ -1612,26 +1796,44 @@ return function(locomotionFactory, Library, Common)
                 sellTelemetry.lastError = progressError
                 return false, 0, progressError
             end
-            brewGateSatisfied = true
             sellTelemetry.authorization = "already brewing"
         elseif cfg.AutoBrew then
             -- A craft can complete so quickly that replicated state moves
             -- directly from idle to ready. A typed confirmation from THIS
             -- worker tick still proves its ingredients were consumed. Pickup
             -- confirmations never set this permission.
-            brewGateSatisfied = true
             sellTelemetry.authorization = "craft confirmed"
         end
 
         sellTelemetry.attempts += 1
         sellTelemetry.status = "selling"
         local sold, count, err = sellAllMaterials(function()
+            local brewStateValidated = confirmedActionThisCycle == "brew"
+            if cfg.AutoBrew and confirmedActionThisCycle ~= "brew" then
+                -- A detached sell scan can overlap pickup/the next brew.
+                -- Re-read the authoritative state immediately before SELL so
+                -- a stale "already brewing" grant cannot sell ingredients in
+                -- the gap after pickup and before a new craft starts.
+                local currentAlchemy = resolveAlchemy()
+                if currentAlchemy == nil then return false, "waiting for Alchemy" end
+                local currentProgress = alchemyState(
+                    currentAlchemy,
+                    "IsBrewInProgress"
+                )
+                if currentProgress ~= true then
+                    return false, "waiting for confirmed brew"
+                end
+                brewStateValidated = true
+            end
+
+            -- Keep the base/config/toggle read last: the Alchemy state helpers
+            -- above may yield while Broom, reload or the user changes state.
             local stillAtBase, finalStatus, finalChallenge = autoSellBaseGate()
             sellTelemetry.challenge = finalChallenge
             if not stillAtBase then return false, finalStatus end
-            -- If AutoBrew was switched on during a yielding inventory scan,
-            -- the old AutoBrew-off decision must not sell ahead of a potion.
-            if cfg.AutoBrew and not brewGateSatisfied then
+            -- If AutoBrew switched on while the final gate yielded, the prior
+            -- AutoBrew-off decision is no longer a safe sell authorization.
+            if cfg.AutoBrew and not brewStateValidated then
                 return false, "waiting for confirmed brew"
             end
             return true
@@ -2608,8 +2810,72 @@ return function(locomotionFactory, Library, Common)
     end)
 
     task.spawn(function() -- alchemy
+        local nextAutoSellAt = 0
+        local autoSellCyclePending = false
+        local autoSellCycleGeneration = 0
+        local queuedCraftSellAuthorization = false
+        local queuedCraftSellGeneration = 0
+        local function clearQueuedCraftSellAuthorization()
+            if queuedCraftSellAuthorization then
+                queuedCraftSellGeneration += 1
+            end
+            queuedCraftSellAuthorization = false
+        end
+        local function startAutoSellCycle(confirmedAction, authorizationGeneration)
+            if autoSellCyclePending then return false end
+            autoSellCyclePending = true
+            autoSellCycleGeneration += 1
+            local token = autoSellCycleGeneration
+            local started, spawnError = pcall(task.spawn, function()
+                local ok, sold, _, err = pcall(
+                    runAutoSellCycle,
+                    confirmedAction
+                )
+                if autoSellCycleGeneration ~= token then return end
+                autoSellCyclePending = false
+                if not ok and sessionAlive then
+                    sellTelemetry.status = "sell error"
+                    sellTelemetry.lastError = tostring(sold)
+                elseif confirmedAction == "brew"
+                    and authorizationGeneration == queuedCraftSellGeneration
+                    and (sold == true or err == "nothing to sell")
+                then
+                    queuedCraftSellAuthorization = false
+                end
+
+                if queuedCraftSellAuthorization
+                    and (confirmedAction ~= "brew"
+                        or authorizationGeneration ~= queuedCraftSellGeneration)
+                then
+                    -- A newer craft was confirmed while this request ran.
+                    nextAutoSellAt = 0
+                else
+                    nextAutoSellAt = configReady and cfg.AutoSell
+                        and (os.clock() + 2)
+                        or 0
+                end
+            end)
+            if not started and autoSellCycleGeneration == token then
+                autoSellCyclePending = false
+                sellTelemetry.status = "sell error"
+                sellTelemetry.lastError = tostring(spawnError)
+                nextAutoSellAt = os.clock() + 2
+            end
+            return started
+        end
         while sessionAlive do
             local confirmedActionThisCycle = nil
+            -- Keep the inventory epoch current even while both Alchemy
+            -- toggles are off. A late request must never resurrect a frozen
+            -- pre-dungeon recipe order after the player collects new items.
+            local observedChallenge = playerNumber("InDungeonChallenge")
+            if observedChallenge ~= nil then
+                observeAlchemyLocation(observedChallenge)
+                if observedChallenge > 0 then
+                    resetAlchemyRecovery()
+                    clearQueuedCraftSellAuthorization()
+                end
+            end
             if configReady then
                 if cfg.AutoBrew or cfg.AutoPickupPotion then
                     local ok, err = pcall(runAlchemyCycle)
@@ -2621,15 +2887,46 @@ return function(locomotionFactory, Library, Common)
                     end
                 end
             end
-            local ok, err = pcall(
-                runAutoSellCycle,
-                confirmedActionThisCycle
-            )
-            if not ok then
-                sellTelemetry.status = "sell error"
-                sellTelemetry.lastError = tostring(err)
+
+            if confirmedActionThisCycle == "brew"
+                and configReady
+                and cfg.AutoSell
+            then
+                -- A sell request from the previous tick may still be in
+                -- flight. Preserve this one-shot ordering permission until a
+                -- new sell task actually accepts it; never confuse pickup.
+                queuedCraftSellAuthorization = true
+                queuedCraftSellGeneration += 1
+                if not autoSellCyclePending then nextAutoSellAt = 0 end
+            elseif not configReady or not cfg.AutoSell then
+                clearQueuedCraftSellAuthorization()
             end
-            task.wait(2)
+
+            -- Poll Alchemy quickly so enabling it or reaching base starts a
+            -- locally selected recipe within half a second. Automatic selling
+            -- keeps its two-second cadence, except that a newly confirmed brew
+            -- authorizes the ordered sale immediately in this same cycle.
+            local now = os.clock()
+            local queuedAuthorizationReady = queuedCraftSellAuthorization
+                and observedChallenge ~= nil
+                and observedChallenge <= 0
+                and now >= nextAutoSellAt
+            local sellAuthorization = queuedAuthorizationReady
+                and "brew"
+                or (not queuedCraftSellAuthorization and confirmedActionThisCycle)
+            local shouldCheckSell = queuedCraftSellAuthorization
+                and queuedAuthorizationReady
+                or not queuedCraftSellAuthorization
+                    and (not configReady
+                        or not cfg.AutoSell
+                        or now >= nextAutoSellAt)
+            if shouldCheckSell then
+                startAutoSellCycle(
+                    sellAuthorization,
+                    queuedCraftSellGeneration
+                )
+            end
+            task.wait(0.5)
         end
     end)
 
@@ -3198,9 +3495,10 @@ return function(locomotionFactory, Library, Common)
         tab:CreateSection("Notes"):AddParagraph({
             Title = "Automatic brewing",
             Text = "Alchemy runs remotely only while the player is at base. "
-                .. "Best craftable tests rebirth-eligible recipes from highest "
-                .. "to lowest because material hints can be stale away from the "
-                .. "Alchemy UI. It never moves the character or pauses Broom.",
+                .. "Best craftable checks every recipe locally in one pass and "
+                .. "sends the highest recipe reported as available immediately; "
+                .. "stale hints remain a safe fallback. It never moves the "
+                .. "character or pauses Broom.",
         })
     end
 
