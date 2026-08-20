@@ -533,6 +533,8 @@ local writesBeforeCraft = cframeWrites
 local sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil,
     "craft cycle failed: " .. tostring(craftError) .. " / " .. tostring(alchemyTelemetry.status))
+assert(alchemyTelemetry.confirmedAction == "brew",
+    "confirmed craft did not expose a typed brew outcome")
 assert(#calls == 1 and calls[1].action == "ALCHEMY_CRAFT_RECIPE",
     "craft used the wrong transport/action")
 assert(calls[1].payload.recipeId == 4,
@@ -575,6 +577,8 @@ waits = {{}}
 local writesBeforePickup = cframeWrites
 sent = runAlchemyCycle()
 assert(sent == true, "ready brewed potion was not picked up")
+assert(alchemyTelemetry.confirmedAction == "pickup",
+    "confirmed pickup was confused with a craft outcome")
 assert(#calls == 2 and calls[2].action == "ALCHEMY_PICKUP_FINISH_POTION",
     "pickup did not use the verified InvokeServer action")
 assert(calls[2].payload == nil, "pickup unexpectedly sent a payload")
@@ -822,7 +826,7 @@ print("alchemy_flow_smoke=ok")
             "    task.spawn(function() -- gear",
         )
         self.assertIn("pcall(runAlchemyCycle)", worker)
-        self.assertIn("configReady and", worker)
+        self.assertIn("if configReady then", worker)
         self.assertIn("task.wait(2)", worker)
         self.assertNotIn('cfg.FarmMode ~= "Walking"', source)
         self.assertNotIn('cfg.FarmMode ~= "Running"', source)

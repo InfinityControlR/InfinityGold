@@ -648,7 +648,19 @@ return function(locomotionFactory, Library, Common)
         return ok and marked == true
     end
 
-    local function sellAllMaterials()
+    local sellTelemetry = {
+        status = "waiting",
+        challenge = nil,
+        brewInProgress = nil,
+        authorization = nil,
+        attempts = 0,
+        requests = 0,
+        requestedItems = 0,
+        lastCount = 0,
+        lastError = nil,
+    }
+
+    local function sellAllMaterials(beforeSend)
         local bag, bagError = playerBag()
         if bag == nil then return false, 0, bagError or "inventory unavailable" end
         local ok, onlyIds = pcall(
@@ -661,6 +673,16 @@ return function(locomotionFactory, Library, Common)
             return false, 0, "inventory scan failed"
         end
         if #onlyIds == 0 then return false, 0, "nothing to sell" end
+
+        -- Automatic selling supplies a final base/config guard here, after the
+        -- inventory scan and immediately before the remote. Sell All Now omits
+        -- it intentionally and remains a manual override.
+        if type(beforeSend) == "function" then
+            local allowed, guardError = beforeSend()
+            if allowed ~= true then
+                return false, 0, guardError or "sell cancelled"
+            end
+        end
 
         local sent, _, err = invokeAction("SELL_MATERIAL", { onlyIDList = onlyIds })
         return sent, #onlyIds, err
@@ -814,6 +836,7 @@ return function(locomotionFactory, Library, Common)
         remoteResult = nil,
         travel = "idle",
         confirmed = false,
+        confirmedAction = nil,
     }
     local alchemyRecovery = {
         key = nil,
@@ -1243,6 +1266,7 @@ return function(locomotionFactory, Library, Common)
                 and "late brew confirmed"
                 or "late brew unconfirmed"
             alchemyTelemetry.lastError = confirmed and nil or errorText
+            if confirmed then alchemyTelemetry.confirmedAction = "brew" end
             return true, confirmed, alchemyTelemetry.lastError
         end
 
@@ -1257,7 +1281,10 @@ return function(locomotionFactory, Library, Common)
                 or "late pickup unconfirmed"
             alchemyTelemetry.lastError = confirmed and nil or errorText
             alchemyPickupNextAttemptAt = confirmed and 0 or (os.clock() + 8)
-            if confirmed then resetAlchemyRecovery() end
+            if confirmed then
+                alchemyTelemetry.confirmedAction = "pickup"
+                resetAlchemyRecovery()
+            end
             return true, confirmed, alchemyTelemetry.lastError
         end
         return false
@@ -1277,6 +1304,7 @@ return function(locomotionFactory, Library, Common)
 
     local function runAlchemyCycle()
         alchemyTelemetry.confirmed = false
+        alchemyTelemetry.confirmedAction = nil
         if not cfg.AutoBrew and not cfg.AutoPickupPotion then
             resetAlchemyRecovery()
             alchemyTelemetry.status = "disabled"
@@ -1403,6 +1431,7 @@ return function(locomotionFactory, Library, Common)
                     alchemyPickupNextAttemptAt = os.clock() + 8
                 end
                 if confirmed then
+                    alchemyTelemetry.confirmedAction = "pickup"
                     alchemyTelemetry.lastError = nil
                     alchemyTelemetry.status = "pickup confirmed"
                 else
@@ -1527,6 +1556,7 @@ return function(locomotionFactory, Library, Common)
         alchemyTelemetry.confirmed = confirmed
         finishAlchemyRecipeAttempt(confirmed)
         if confirmed then
+            alchemyTelemetry.confirmedAction = "brew"
             alchemyTelemetry.lastError = nil
             alchemyTelemetry.status = "brew confirmed"
         else
@@ -1535,6 +1565,99 @@ return function(locomotionFactory, Library, Common)
         end
         if confirmed then return true end
         return false, confirmation
+    end
+
+    local function autoSellBaseGate()
+        if not sessionAlive then return false, "session closed", nil end
+        if not configReady then return false, "waiting for config", nil end
+        if not cfg.AutoSell then return false, "disabled", nil end
+        local challenge = playerNumber("InDungeonChallenge")
+        if challenge == nil then
+            return false, "waiting for dungeon state", nil
+        end
+        if challenge > 0 then return false, "waiting for base", challenge end
+        return true, nil, challenge
+    end
+
+    local function runAutoSellCycle(confirmedActionThisCycle)
+        local baseAllowed, baseStatus, challenge = autoSellBaseGate()
+        sellTelemetry.challenge = challenge
+        if not baseAllowed then
+            sellTelemetry.status = baseStatus
+            sellTelemetry.lastError = nil
+            return false, 0
+        end
+
+        sellTelemetry.brewInProgress = nil
+        sellTelemetry.authorization = cfg.AutoBrew and nil or "Auto Brew off"
+        local brewGateSatisfied = false
+        if cfg.AutoBrew and confirmedActionThisCycle ~= "brew" then
+            local alchemy, resolveError = resolveAlchemy()
+            if alchemy == nil then
+                sellTelemetry.status = "waiting for Alchemy"
+                sellTelemetry.lastError = resolveError
+                return false, 0, resolveError
+            end
+            local inProgress, progressError = alchemyState(
+                alchemy,
+                "IsBrewInProgress"
+            )
+            sellTelemetry.brewInProgress = inProgress
+            if inProgress ~= true then
+                sellTelemetry.status = inProgress == false
+                    and (confirmedActionThisCycle == "pickup"
+                        and "waiting for next brew"
+                        or "waiting for confirmed brew")
+                    or "waiting for brew state"
+                sellTelemetry.lastError = progressError
+                return false, 0, progressError
+            end
+            brewGateSatisfied = true
+            sellTelemetry.authorization = "already brewing"
+        elseif cfg.AutoBrew then
+            -- A craft can complete so quickly that replicated state moves
+            -- directly from idle to ready. A typed confirmation from THIS
+            -- worker tick still proves its ingredients were consumed. Pickup
+            -- confirmations never set this permission.
+            brewGateSatisfied = true
+            sellTelemetry.authorization = "craft confirmed"
+        end
+
+        sellTelemetry.attempts += 1
+        sellTelemetry.status = "selling"
+        local sold, count, err = sellAllMaterials(function()
+            local stillAtBase, finalStatus, finalChallenge = autoSellBaseGate()
+            sellTelemetry.challenge = finalChallenge
+            if not stillAtBase then return false, finalStatus end
+            -- If AutoBrew was switched on during a yielding inventory scan,
+            -- the old AutoBrew-off decision must not sell ahead of a potion.
+            if cfg.AutoBrew and not brewGateSatisfied then
+                return false, "waiting for confirmed brew"
+            end
+            return true
+        end)
+        sellTelemetry.lastCount = count or 0
+        sellTelemetry.lastError = err
+        if sold then
+            sellTelemetry.requests += 1
+            sellTelemetry.requestedItems += count or 0
+            sellTelemetry.status = "sell request sent"
+        elseif err == "nothing to sell" then
+            sellTelemetry.status = "nothing to sell"
+            sellTelemetry.lastError = nil
+        elseif err == "waiting for config"
+            or err == "session closed"
+            or err == "disabled"
+            or err == "waiting for dungeon state"
+            or err == "waiting for base"
+            or err == "waiting for confirmed brew"
+        then
+            sellTelemetry.status = err
+            sellTelemetry.lastError = nil
+        else
+            sellTelemetry.status = "sell failed"
+        end
+        return sold, count or 0, err
     end
 
     -- Attack -----------------------------------------------------------------
@@ -2475,18 +2598,6 @@ return function(locomotionFactory, Library, Common)
         end
     end)
 
-    task.spawn(function() -- sell
-        while sessionAlive do
-            if cfg.AutoSell then
-                local sold = sellAllMaterials()
-                if sold then
-                    task.wait(2)
-                end
-            end
-            task.wait(2)
-        end
-    end)
-
     task.spawn(function() -- potions
         while sessionAlive do
             if cfg.AutoDrinkPotion then
@@ -2498,12 +2609,25 @@ return function(locomotionFactory, Library, Common)
 
     task.spawn(function() -- alchemy
         while sessionAlive do
-            if configReady and (cfg.AutoBrew or cfg.AutoPickupPotion) then
-                local ok, err = pcall(runAlchemyCycle)
-                if not ok then
-                    alchemyTelemetry.status = "alchemy error"
-                    alchemyTelemetry.lastError = tostring(err)
+            local confirmedActionThisCycle = nil
+            if configReady then
+                if cfg.AutoBrew or cfg.AutoPickupPotion then
+                    local ok, err = pcall(runAlchemyCycle)
+                    if not ok then
+                        alchemyTelemetry.status = "alchemy error"
+                        alchemyTelemetry.lastError = tostring(err)
+                    else
+                        confirmedActionThisCycle = alchemyTelemetry.confirmedAction
+                    end
                 end
+            end
+            local ok, err = pcall(
+                runAutoSellCycle,
+                confirmedActionThisCycle
+            )
+            if not ok then
+                sellTelemetry.status = "sell error"
+                sellTelemetry.lastError = tostring(err)
             end
             task.wait(2)
         end
@@ -2895,7 +3019,8 @@ return function(locomotionFactory, Library, Common)
                 .. "collected first. Range and landing checks always apply.",
         })
 
-        local sellGroup = bindGroup(tab:CreateSection("Selling"))
+        local sellSection = tab:CreateSection("Selling")
+        local sellGroup = bindGroup(sellSection)
         sellGroup:AddToggle("AutoSell", { Text = "Auto Sell (all)", Default = false })
         sellGroup:AddButton({
             Text = "Sell All Now",
@@ -2908,15 +3033,24 @@ return function(locomotionFactory, Library, Common)
                 end
             end,
         })
+        sellSection:AddParagraph({
+            Title = "Automatic order",
+            Text = "Auto Sell runs only at base. With Auto Brew enabled it waits "
+                .. "until a potion is already brewing, or until a new craft is "
+                .. "confirmed. Sell All Now remains a manual override.",
+        })
 
         local stats = tab:CreateSection("Session"):AddLabel("drops: 0 • picked: 0")
         task.spawn(function()
             while sessionAlive do
                 pcall(function()
                     stats:Set(string.format(
-                        "drops nearby: %d • picked this session: %d",
+                        "drops nearby: %d • picked this session: %d\n"
+                            .. "auto sell: %s • requested items: %d",
                         dropsNearby,
-                        pickupCount
+                        pickupCount,
+                        sellTelemetry.status,
+                        sellTelemetry.requestedItems
                     ))
                 end)
                 task.wait(1)

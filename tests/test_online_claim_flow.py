@@ -141,7 +141,7 @@ print("online_claim_flow_smoke=ok")
         source = (REPO_ROOT / "games" / "magicloot.lua").read_text(encoding="utf-8")
         worker = core_slice(
             "    task.spawn(function() -- online claims",
-            "    task.spawn(function() -- sell",
+            "    task.spawn(function() -- potions",
         )
         helper = core_slice(
             "    local function claimOnlineAwards()",

@@ -64,7 +64,10 @@ the InfinityGold dashboard.
   (numeric `GoldValue` exactly equal to 0) bypass minimum value and rarity filters
   and are collected first. Auto Sell and Sell All Now enumerate the player's
   Bag and send the eligible materials' unique `onlyID` values, excluding
-  locked items and materials reserved for Alchemy recipes.
+  locked items and materials reserved for Alchemy recipes. Automatic selling
+  runs only at base. When Auto Brew is enabled, the base-economy worker runs
+  Alchemy first and sells only after a craft was confirmed or while a potion is
+  already brewing; a pickup confirmation alone never unlocks selling.
 - **Broom**: sends only the selected-stage request (`关卡跳关请求`) and never
   toggles/equips the broom. It keeps single-flight epoch tokens, invalidation
   on toggle/stage/return changes, and base detection through the numeric
