@@ -143,9 +143,29 @@ return function(locomotionFactory, Library, Common)
             sessionEnvironment.__INFINITYGOLD_ALCHEMY_INVOKE = alchemyInvokeLease
         end
     end
-    if type(alchemyInvokeLease.travel) ~= "table" then
-        alchemyInvokeLease.holdUntil = nil
+    -- Migrate a request handed off by the previous physical-Alchemy build.
+    -- Restore only while the same root is still beside that old destination;
+    -- never overwrite a newer Broom/respawn position. New Alchemy requests are
+    -- remote and never publish a physical travel lease.
+    local inheritedAlchemyTravel = type(alchemyInvokeLease.travel) == "table"
+        and alchemyInvokeLease.travel
+        or nil
+    if inheritedAlchemyTravel ~= nil then
+        pcall(function()
+            local root = inheritedAlchemyTravel.root
+            local destination = inheritedAlchemyTravel.destination
+            if root ~= nil
+                and root.Parent ~= nil
+                and inheritedAlchemyTravel.home ~= nil
+                and destination ~= nil
+                and (root.Position - destination.Position).Magnitude <= 12
+            then
+                root.CFrame = inheritedAlchemyTravel.home
+            end
+        end)
     end
+    alchemyInvokeLease.travel = nil
+    alchemyInvokeLease.holdUntil = nil
 
     -- Common helpers: loader-supplied module with a minimal local fallback so
     -- a missing download only degrades sorting, never the whole script.
@@ -774,17 +794,6 @@ return function(locomotionFactory, Library, Common)
 
     -- Alchemy ---------------------------------------------------------------
 
-    local carriedAlchemyTravel = type(alchemyInvokeLease.travel) == "table"
-        and alchemyInvokeLease.travel
-        or nil
-    local alchemyBusy = carriedAlchemyTravel ~= nil
-    local alchemyTravelEpoch = carriedAlchemyTravel ~= nil
-        and (tonumber(carriedAlchemyTravel.epoch) or 0)
-        or 0
-    local activeAlchemyTravel = carriedAlchemyTravel
-    local pauseAlchemyMovement = function() end
-    local resumeAlchemyMovement = function() end
-    local alchemyBroomPending = function() return false end
     local alchemyReturnPending = function() return false end
     local alchemyTelemetry = {
         status = "waiting",
@@ -968,31 +977,20 @@ return function(locomotionFactory, Library, Common)
         alchemyTelemetry.chosenId = nil
         local candidates = {}
         if selection == "Best craftable" then
-            local preferred = {}
-            local fallback = {}
+            local rebirthEligible = {}
             for _, recipe in ipairs(catalog) do
-                local craftable, _, reason = isAlchemyRecipeCraftable(alchemy, recipe)
+                local _, _, reason = isAlchemyRecipeCraftable(alchemy, recipe)
                 noteAlchemyRecipeCheck(reason)
-                if craftable then
-                    table.insert(preferred, recipe)
-                elseif reason == "rebirth-error"
-                    or reason == "materials-error"
-                    or reason == "api"
-                then
-                    -- Only an actual predicate failure is ambiguous. A normal
-                    -- false (missing materials/rebirth) remains authoritative
-                    -- for Best craftable and is never brute-forced.
-                    table.insert(fallback, recipe)
+                if reason ~= "rebirth" then
+                    -- CanCraftRecipe is only a client hint: live use proved it
+                    -- can say false away from the Alchemy UI while the server
+                    -- accepts the same explicit recipe. Keep every recipe that
+                    -- is not explicitly rebirth-locked in stable ID order.
+                    table.insert(rebirthEligible, recipe)
                 end
             end
-            -- Preserve the old "best" preference (highest locally eligible
-            -- id), then let the server validate the remaining rows one at a
-            -- time if the local predicates are stale.
-            for index = #preferred, 1, -1 do
-                table.insert(candidates, preferred[index])
-            end
-            for index = #fallback, 1, -1 do
-                table.insert(candidates, fallback[index])
+            for index = #rebirthEligible, 1, -1 do
+                table.insert(candidates, rebirthEligible[index])
             end
         else
             local selectedId = math.floor(tonumber(selection) or 0)
@@ -1011,7 +1009,7 @@ return function(locomotionFactory, Library, Common)
 
         if #candidates == 0 then
             return nil, selection == "Best craftable"
-                and "no locally craftable recipe"
+                and "no rebirth-eligible recipe"
                 or "selected recipe is unavailable"
         end
         local candidateIds = {}
@@ -1066,163 +1064,6 @@ return function(locomotionFactory, Library, Common)
         return values
     end
 
-    local function restoreAlchemyRoot(travel)
-        if travel == nil or travel.root == nil or travel.root.Parent == nil then return end
-        local shouldRestore = true
-        local positionOk, distance = pcall(function()
-            return (travel.root.Position - travel.destination.Position).Magnitude
-        end)
-        -- A Broom/return/respawn may have moved the player while the
-        -- RemoteFunction was yielding. Never teleport that newer state back
-        -- to the stale pre-Alchemy CFrame.
-        if positionOk and distance > 12 then shouldRestore = false end
-        if shouldRestore then
-            pcall(function() travel.root.CFrame = travel.home end)
-        end
-    end
-
-    local function scheduleAlchemyTravelWatchdog(travel, delay)
-        task.delay(math.max(0, tonumber(delay) or 0), function()
-            if alchemyBusy
-                and alchemyTravelEpoch == travel.epoch
-                and activeAlchemyTravel == travel
-            then
-                -- The network lease continues blocking duplicate requests, but
-                -- the physical character is released after the bounded actor
-                -- proximity window.
-                restoreAlchemyRoot(travel)
-                alchemyTravelEpoch += 1
-                activeAlchemyTravel = nil
-                alchemyBusy = false
-                if alchemyInvokeLease.travel == travel then
-                    alchemyInvokeLease.travel = nil
-                    alchemyInvokeLease.holdUntil = nil
-                end
-                resumeAlchemyMovement()
-                alchemyTelemetry.travel = "watchdog restored"
-            end
-        end)
-    end
-
-    if carriedAlchemyTravel ~= nil then
-        local holdUntil = tonumber(alchemyInvokeLease.holdUntil) or os.clock()
-        scheduleAlchemyTravelWatchdog(
-            carriedAlchemyTravel,
-            holdUntil - os.clock()
-        )
-    end
-
-    local function beginAlchemyTravel(alchemy, resolverName)
-        if alchemyReturnPending() then
-            return nil, "inventory return is still pending"
-        end
-        if alchemyBroomPending() then
-            return nil, "Broom travel is still pending"
-        end
-        -- Reserve the physical character before any resolver/API can yield.
-        -- This also suspends an armed Broom worker before it can race the
-        -- Alchemy teleport.
-        alchemyTravelEpoch += 1
-        local reservedEpoch = alchemyTravelEpoch
-        alchemyBusy = true
-        pauseAlchemyMovement()
-        -- The two probes above can call game-owned code and yield. Recheck after
-        -- Broom has been suspended and the movement worker has been reserved;
-        -- from this point neither travel producer can start underneath Alchemy.
-        if alchemyReturnPending() or alchemyBroomPending() then
-            alchemyBusy = false
-            resumeAlchemyMovement()
-            return nil, "character travel started before Alchemy could reserve it"
-        end
-        local parts = characterParts()
-        if parts == nil then
-            alchemyBusy = false
-            resumeAlchemyMovement()
-            return nil, "character unavailable"
-        end
-        local resolver = alchemy[resolverName]
-        if type(resolver) ~= "function" then
-            alchemyBusy = false
-            resumeAlchemyMovement()
-            return nil, resolverName .. " unavailable"
-        end
-
-        local ok, target = pcall(resolver)
-        if not ok then
-            alchemyBusy = false
-            resumeAlchemyMovement()
-            return nil, resolverName .. " failed: " .. tostring(target)
-        end
-        if typeof(target) ~= "CFrame" then
-            alchemyBusy = false
-            resumeAlchemyMovement()
-            return nil, resolverName .. " returned " .. typeof(target)
-        end
-
-        local root = parts.root
-        local destination = target + Vector3.new(0, 3, 0)
-        local travel = {
-            root = root,
-            home = root.CFrame,
-            destination = destination,
-            epoch = reservedEpoch,
-            holdUntil = os.clock() + 10,
-        }
-        activeAlchemyTravel = travel
-        local moved = pcall(function()
-            root.CFrame = destination
-        end)
-        if not moved then
-            activeAlchemyTravel = nil
-            alchemyBusy = false
-            resumeAlchemyMovement()
-            return nil, "could not reach Alchemy actor"
-        end
-        alchemyTelemetry.travel = resolverName == "ResolveBrewActorCFrame"
-            and "brew actor"
-            or "pickup actor"
-        -- InvokeServer is not cancellable. Keep the player at the actor long
-        -- enough to observe the replicated Alchemy state, but never freeze the
-        -- physical farm forever if a game build leaves the request yielding.
-        scheduleAlchemyTravelWatchdog(travel, 10)
-        task.wait(0.2)
-        return travel
-    end
-
-    local function reaffirmAlchemyTravel(travel)
-        if travel == nil
-            or travel.epoch ~= alchemyTravelEpoch
-            or activeAlchemyTravel ~= travel
-            or travel.root == nil
-            or travel.root.Parent == nil
-        then
-            return false, "Alchemy travel expired"
-        end
-        local ok, err = pcall(function()
-            travel.root.CFrame = travel.destination
-        end)
-        if not ok then return false, tostring(err) end
-        return true
-    end
-
-    local function finishAlchemyTravel(travel, shouldRestore)
-        if travel == nil
-            or travel.epoch ~= alchemyTravelEpoch
-            or activeAlchemyTravel ~= travel
-        then
-            return
-        end
-        if shouldRestore then restoreAlchemyRoot(travel) end
-        if alchemyInvokeLease.travel == travel then
-            alchemyInvokeLease.travel = nil
-            alchemyInvokeLease.holdUntil = nil
-        end
-        activeAlchemyTravel = nil
-        alchemyBusy = false
-        resumeAlchemyMovement()
-        alchemyTelemetry.travel = shouldRestore and "restored" or "at actor"
-    end
-
     local function alchemyState(alchemy, methodName)
         local method = alchemy[methodName]
         if type(method) ~= "function" then
@@ -1235,10 +1076,8 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function waitForAlchemyConfirmation(alchemy, kind, initialReady)
-        -- The original script remains beside the actor after InvokeServer.
-        -- InfinityGold may restore the old position, but only after the game
-        -- itself confirms the state transition. A successful pcall alone is
-        -- merely transport, not proof that the server accepted the action.
+        -- A successful pcall is merely transport, not proof that the server
+        -- accepted the remote action. Confirm it from replicated game state.
         for attempt = 1, 10 do
             if not sessionAlive then return false, "alchemy session closed" end
             if kind == "brew" and not cfg.AutoBrew then
@@ -1443,9 +1282,16 @@ return function(locomotionFactory, Library, Common)
             alchemyTelemetry.status = "disabled"
             return false
         end
-        if alchemyBusy then
-            alchemyTelemetry.status = "Alchemy request still pending"
-            return false, "Alchemy request still pending"
+        local challenge = playerNumber("InDungeonChallenge")
+        if challenge == nil then
+            alchemyTelemetry.status = "waiting for dungeon state"
+            alchemyTelemetry.lastError = nil
+            return false
+        end
+        if challenge > 0 then
+            alchemyTelemetry.status = "waiting for base"
+            alchemyTelemetry.lastError = nil
+            return false
         end
         local alchemy, resolveError = resolveAlchemy()
         if alchemy == nil then
@@ -1462,19 +1308,9 @@ return function(locomotionFactory, Library, Common)
             alchemy
         )
         if reconciled then return reconciledOk, reconciledError end
-        -- Logical network recovery must run before physical-travel gates. Once
-        -- the bounded actor hold has ended, an armed Broom must not prevent a
-        -- stale lease from being retired forever.
-        if alchemyReturnPending() then
-            alchemyTelemetry.status = "waiting for inventory return"
-            alchemyTelemetry.lastError = nil
-            return false
-        end
-        if alchemyBroomPending() then
-            alchemyTelemetry.status = "waiting for Broom travel"
-            alchemyTelemetry.lastError = nil
-            return false
-        end
+        -- Alchemy actions are server requests and do not move the character.
+        -- They can therefore run while Walking, Running, Broom or Auto Return
+        -- are active; only the shared network lease serializes them.
         if type(alchemy.CanUseAlchemy) == "function" then
             local canUseOk, canUse = pcall(alchemy.CanUseAlchemy, player)
             if canUseOk then
@@ -1516,62 +1352,24 @@ return function(locomotionFactory, Library, Common)
                     alchemyTelemetry.lastError = "waiting before retrying pickup"
                     return false, alchemyTelemetry.lastError
                 end
-                if alchemyReturnPending() then
-                    alchemyTelemetry.status = "waiting for inventory return"
-                    return false
-                end
-                if alchemyBroomPending() then
-                    alchemyTelemetry.status = "waiting for Broom travel"
-                    return false
-                end
-                local travel, travelError = beginAlchemyTravel(
-                    alchemy,
-                    "ResolveFinishSpawnCFrame"
-                )
-                if travel == nil then
-                    alchemyTelemetry.status = "pickup actor unavailable"
-                    alchemyTelemetry.lastError = travelError
-                    alchemyTelemetry.travel = "failed"
-                    alchemyPickupNextAttemptAt = os.clock() + 4
-                    return false, travelError
-                end
-                local stillAtActor, actorError = reaffirmAlchemyTravel(travel)
-                if not stillAtActor then
-                    finishAlchemyTravel(travel, true)
-                    alchemyTelemetry.status = "pickup travel interrupted"
-                    alchemyTelemetry.lastError = actorError
-                    return false, actorError
-                end
-                local canUseAtActor = alchemyState(alchemy, "CanUseAlchemy")
-                if canUseAtActor ~= nil then alchemyTelemetry.canUse = canUseAtActor end
-                local readyAtActor, readyAtActorError = alchemyState(
+                local readyNow, readyNowError = alchemyState(
                     alchemy,
                     "IsBrewReadyForPickup"
                 )
-                if readyAtActor ~= nil then alchemyTelemetry.ready = readyAtActor end
-                if readyAtActor ~= true then
-                    finishAlchemyTravel(travel, true)
+                if readyNow ~= nil then alchemyTelemetry.ready = readyNow end
+                if readyNow ~= true then
                     alchemyTelemetry.status = "pickup state changed"
-                    alchemyTelemetry.lastError = readyAtActorError
+                    alchemyTelemetry.lastError = readyNowError
                         or "potion is no longer ready"
                     return false, alchemyTelemetry.lastError
                 end
-                readyBefore = readyAtActor
+                readyBefore = readyNow
                 if not sessionAlive or not cfg.AutoPickupPotion then
-                    finishAlchemyTravel(travel, true)
                     alchemyTelemetry.status = "pickup cancelled"
                     return false, "pickup cancelled"
                 end
                 alchemyTelemetry.pickupAttempts += 1
-                local finalActorCheck, finalActorError = reaffirmAlchemyTravel(travel)
-                if not finalActorCheck then
-                    finishAlchemyTravel(travel, true)
-                    alchemyTelemetry.status = "pickup travel interrupted"
-                    alchemyTelemetry.lastError = finalActorError
-                    return false, finalActorError
-                end
-                alchemyInvokeLease.travel = travel
-                alchemyInvokeLease.holdUntil = travel.holdUntil
+                alchemyTelemetry.travel = "remote"
                 local sent, response, err, requestPending = invokeAlchemyAction(
                     "ALCHEMY_PICKUP_FINISH_POTION"
                 )
@@ -1611,7 +1409,6 @@ return function(locomotionFactory, Library, Common)
                     alchemyTelemetry.lastError = confirmation
                     alchemyTelemetry.status = "pickup unconfirmed"
                 end
-                finishAlchemyTravel(travel, true)
                 if confirmed then return true end
                 return false, confirmation
             end
@@ -1660,76 +1457,40 @@ return function(locomotionFactory, Library, Common)
         end
 
         alchemyTelemetry.selected = recipe.label
-        if alchemyReturnPending() then
-            alchemyTelemetry.status = "waiting for inventory return"
-            return false
-        end
-        if alchemyBroomPending() then
-            alchemyTelemetry.status = "waiting for Broom travel"
-            return false
-        end
-        local travel, travelError = beginAlchemyTravel(alchemy, "ResolveBrewActorCFrame")
-        if travel == nil then
-            alchemyTelemetry.status = "brew actor unavailable"
-            alchemyTelemetry.lastError = travelError
-            alchemyTelemetry.travel = "failed"
-            alchemyRecovery.nextAttemptAt = os.clock() + 2
-            return false, travelError
-        end
-        local stillAtActor, actorError = reaffirmAlchemyTravel(travel)
-        if not stillAtActor then
-            finishAlchemyTravel(travel, true)
-            alchemyTelemetry.status = "brew travel interrupted"
-            alchemyTelemetry.lastError = actorError
-            return false, actorError
-        end
-        local canUseAtActor = alchemyState(alchemy, "CanUseAlchemy")
-        if canUseAtActor ~= nil then alchemyTelemetry.canUse = canUseAtActor end
-        local progressAtActor, progressAtActorError = alchemyState(
+        local progressBeforeSend, progressBeforeSendError = alchemyState(
             alchemy,
             "IsBrewInProgress"
         )
-        if progressAtActor ~= nil then
-            alchemyTelemetry.inProgress = progressAtActor
+        if progressBeforeSend ~= nil then
+            alchemyTelemetry.inProgress = progressBeforeSend
         end
-        if progressAtActor ~= false then
-            finishAlchemyTravel(travel, true)
-            alchemyTelemetry.status = progressAtActor == true
+        if progressBeforeSend ~= false then
+            alchemyTelemetry.status = progressBeforeSend == true
                 and "brewing"
                 or "brew state changed"
-            alchemyTelemetry.lastError = progressAtActorError
-            return false, progressAtActorError
+            alchemyTelemetry.lastError = progressBeforeSendError
+            return false, progressBeforeSendError
         end
-        local readyAtActor, readyAtActorError = alchemyState(
+        local readyBeforeSend, readyBeforeSendError = alchemyState(
             alchemy,
             "IsBrewReadyForPickup"
         )
-        if readyAtActor ~= nil then alchemyTelemetry.ready = readyAtActor end
-        if readyAtActor ~= false then
-            finishAlchemyTravel(travel, true)
-            alchemyTelemetry.status = readyAtActor == true
+        if readyBeforeSend ~= nil then alchemyTelemetry.ready = readyBeforeSend end
+        if readyBeforeSend ~= false then
+            alchemyTelemetry.status = readyBeforeSend == true
                 and "potion ready for pickup"
                 or "brew readiness changed"
-            alchemyTelemetry.lastError = readyAtActorError
+            alchemyTelemetry.lastError = readyBeforeSendError
                 or "a brewed potion must be picked up first"
             return false, alchemyTelemetry.lastError
         end
-        readyBefore = readyAtActor
+        readyBefore = readyBeforeSend
         if not sessionAlive or not cfg.AutoBrew then
-            finishAlchemyTravel(travel, true)
             alchemyTelemetry.status = "brew cancelled"
             return false, "brew cancelled"
         end
         alchemyTelemetry.craftAttempts += 1
-        local finalActorCheck, finalActorError = reaffirmAlchemyTravel(travel)
-        if not finalActorCheck then
-            finishAlchemyTravel(travel, true)
-            alchemyTelemetry.status = "brew travel interrupted"
-            alchemyTelemetry.lastError = finalActorError
-            return false, finalActorError
-        end
-        alchemyInvokeLease.travel = travel
-        alchemyInvokeLease.holdUntil = travel.holdUntil
+        alchemyTelemetry.travel = "remote"
         local recoverySnapshot = {
             key = alchemyRecovery.key,
             candidateIds = table.clone(alchemyRecovery.candidateIds),
@@ -1772,7 +1533,6 @@ return function(locomotionFactory, Library, Common)
             alchemyTelemetry.lastError = confirmation
             alchemyTelemetry.status = "brew unconfirmed"
         end
-        finishAlchemyTravel(travel, true)
         if confirmed then return true end
         return false, confirmation
     end
@@ -2044,26 +1804,6 @@ return function(locomotionFactory, Library, Common)
         end
     end
 
-    alchemyBroomPending = function()
-        if loco == nil or type(loco.GetBroomStatus) ~= "function" then
-            return false
-        end
-        local ok, status = pcall(function() return loco:GetBroomStatus() end)
-        if not ok or type(status) ~= "table" then return false end
-        if status.armed == true
-            or status.transactionActive == true
-            or status.waitingForBase == true
-        then
-            return true
-        end
-        -- During config bootstrap, give an enabled Broom worker its first tick
-        -- so Alchemy cannot win the race and teleport away before stage travel
-        -- has even armed.
-        return cfg.AutoBroom == true
-            and status.configReady == true
-            and status.enabled ~= true
-    end
-
     local lastFarmMode = nil
 
     local running = {
@@ -2129,29 +1869,6 @@ return function(locomotionFactory, Library, Common)
         end
     end
 
-    pauseAlchemyMovement = function()
-        if loco ~= nil and type(loco.SetBroomSuspended) == "function" then
-            pcall(function() loco:SetBroomSuspended(true) end)
-        end
-        if cfg.FarmMode == "Walking" and loco ~= nil then
-            if type(loco.PauseWalking) == "function" then
-                pcall(function() loco:PauseWalking() end)
-            else
-                pcall(function() loco:StopWalking() end)
-            end
-            return
-        end
-        if cfg.FarmMode == "Running" then
-            stopMovementModes()
-        end
-    end
-
-    resumeAlchemyMovement = function()
-        if loco ~= nil and type(loco.SetBroomSuspended) == "function" then
-            pcall(function() loco:SetBroomSuspended(false) end)
-        end
-    end
-
     -- Return episode (inventory full) ------------------------------------------
 
     local MAX_RETURN_ATTEMPTS = 15
@@ -2188,7 +1905,7 @@ return function(locomotionFactory, Library, Common)
         if challenge == nil or challenge <= 0 then return false end
         -- Auto Return deliberately stops after its bounded request count. Once
         -- the last travel hold has expired, that terminal state must release
-        -- Alchemy instead of acting like an invisible permanent return.
+        -- Broom/re-entry coordination instead of becoming an invisible return.
         if returnEpisode.blocked then return false end
         if not cfg.AutoReturnFull then return false end
         local full = bagFull()
@@ -2395,12 +2112,6 @@ return function(locomotionFactory, Library, Common)
             running.lastPosition = nil
             running.lastProgress = os.clock()
             running.arrived = false
-        end
-
-        if alchemyBusy or type(alchemyInvokeLease.travel) == "table" then
-            pauseAlchemyMovement()
-            setMovementStatus("alchemy action in progress")
-            return
         end
 
         local full = bagFull()
@@ -2790,13 +2501,6 @@ return function(locomotionFactory, Library, Common)
             if configReady and (cfg.AutoBrew or cfg.AutoPickupPotion) then
                 local ok, err = pcall(runAlchemyCycle)
                 if not ok then
-                    local failedTravel = activeAlchemyTravel
-                    if failedTravel ~= nil then
-                        finishAlchemyTravel(failedTravel, true)
-                    else
-                        alchemyBusy = false
-                        resumeAlchemyMovement()
-                    end
                     alchemyTelemetry.status = "alchemy error"
                     alchemyTelemetry.lastError = tostring(err)
                 end
@@ -2864,22 +2568,6 @@ return function(locomotionFactory, Library, Common)
         unloaded = true
         sessionAlive = false
         configReady = false
-        alchemyTravelEpoch += 1
-        local staleAlchemyTravel = activeAlchemyTravel
-        activeAlchemyTravel = nil
-        local handoffPendingTravel = reason == "reload"
-            and alchemyInvokeLease.pending
-            and staleAlchemyTravel ~= nil
-            and alchemyInvokeLease.travel == staleAlchemyTravel
-        if staleAlchemyTravel ~= nil and not handoffPendingTravel then
-            restoreAlchemyRoot(staleAlchemyTravel)
-            if alchemyInvokeLease.travel == staleAlchemyTravel then
-                alchemyInvokeLease.travel = nil
-                alchemyInvokeLease.holdUntil = nil
-            end
-        end
-        alchemyBusy = false
-        if not handoffPendingTravel then resumeAlchemyMovement() end
         resetAlchemyRecovery()
         if loco ~= nil then
             pcall(function() loco:Stop() end)
@@ -3375,10 +3063,10 @@ return function(locomotionFactory, Library, Common)
         end)
         tab:CreateSection("Notes"):AddParagraph({
             Title = "Automatic brewing",
-            Text = "Best craftable tries locally eligible recipes first, then "
-                .. "lets the server validate one fallback at a time if those "
-                .. "checks are stale. Success is reported only after the game "
-                .. "confirms brewing or pickup.",
+            Text = "Alchemy runs remotely only while the player is at base. "
+                .. "Best craftable tests rebirth-eligible recipes from highest "
+                .. "to lowest because material hints can be stale away from the "
+                .. "Alchemy UI. It never moves the character or pauses Broom.",
         })
     end
 

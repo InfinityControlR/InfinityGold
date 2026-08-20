@@ -37,7 +37,7 @@ def run_luau(source: str) -> subprocess.CompletedProcess:
 
 
 ALCHEMY_HELPERS = core_slice(
-    "    local carriedAlchemyTravel =",
+    "    local alchemyReturnPending = function() return false end",
     "    -- Attack -----------------------------------------------------------------",
 )
 ALCHEMY_INVOKE_HELPER = core_slice(
@@ -48,9 +48,69 @@ RETURN_PENDING_HELPER = core_slice(
     "    alchemyReturnPending = function()",
     "    local function resetReturnEpisode()",
 )
+ALCHEMY_LEGACY_MIGRATION = core_slice(
+    "    -- Migrate a request handed off by the previous physical-Alchemy build.",
+    "    -- Common helpers:",
+)
 
 
 class AlchemyFlowTests(unittest.TestCase):
+    def test_legacy_physical_lease_is_cleaned_without_overwriting_new_travel(self):
+        fixture = f"""
+local vectorMt = {{
+    __sub = function(left, right)
+        return {{ Magnitude = math.abs(left.value - right.value) }}
+    end,
+}}
+local function vector(value)
+    return setmetatable({{ value = value }}, vectorMt)
+end
+
+local home = {{ name = "old farm home" }}
+local actor = {{ Position = vector(0) }}
+local root = {{ Parent = {{}}, Position = vector(1), CFrame = {{ name = "actor" }} }}
+local alchemyInvokeLease = {{
+    pending = true,
+    generation = 7,
+    returnHoldUntil = 42,
+    returnEpisodeToken = 3,
+    travel = {{ root = root, home = home, destination = actor }},
+    holdUntil = 99,
+}}
+do
+{ALCHEMY_LEGACY_MIGRATION}
+end
+assert(root.CFrame == home, "nearby legacy actor trip was not restored once")
+assert(alchemyInvokeLease.travel == nil and alchemyInvokeLease.holdUntil == nil,
+    "legacy physical lease was not cleared")
+assert(alchemyInvokeLease.pending == true
+    and alchemyInvokeLease.generation == 7
+    and alchemyInvokeLease.returnHoldUntil == 42
+    and alchemyInvokeLease.returnEpisodeToken == 3,
+    "legacy cleanup damaged the logical network/return lease")
+
+local newerPosition = {{ name = "Broom destination" }}
+root.Position = vector(100)
+root.CFrame = newerPosition
+alchemyInvokeLease.travel = {{ root = root, home = home, destination = actor }}
+alchemyInvokeLease.holdUntil = 120
+do
+{ALCHEMY_LEGACY_MIGRATION}
+end
+assert(root.CFrame == newerPosition,
+    "legacy cleanup overwrote a newer Broom/respawn position")
+assert(alchemyInvokeLease.travel == nil and alchemyInvokeLease.holdUntil == nil,
+    "far legacy physical lease was not retired")
+print("alchemy_legacy_migration_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"Alchemy legacy migration smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("alchemy_legacy_migration_smoke=ok", completed.stdout)
+
     def test_return_hold_treats_loading_challenge_as_pending(self):
         fixture = f"""
 local fakeClock = 5
@@ -238,6 +298,11 @@ print("alchemy_invoke_lease_smoke=ok")
     def test_nested_alchemy_selects_best_and_picks_up_with_invoke(self):
         fixture = f"""
 local player = {{ marker = "local-player" }}
+local challenge = 0
+local function playerNumber(name)
+    assert(name == "InDungeonChallenge", "wrong Alchemy location state")
+    return challenge
+end
 local cfg = {{
     AutoBrew = true,
     AutoPickupPotion = true,
@@ -281,15 +346,31 @@ local function typeof(value)
 end
 
 local home = makeCFrame("home")
-local root = {{ CFrame = home, Parent = {{}} }}
+local rootCFrame = home
+local cframeWrites = 0
+local root = setmetatable({{ Parent = {{}} }}, {{
+    __index = function(_, key)
+        if key == "CFrame" then return rootCFrame end
+        return nil
+    end,
+    __newindex = function(self, key, value)
+        if key == "CFrame" then
+            cframeWrites += 1
+            rootCFrame = value
+            return
+        end
+        rawset(self, key, value)
+    end,
+}})
 local function characterParts()
-    return {{ root = root, humanoid = {{ Health = 100 }}, character = {{}} }}
+    error("remote Alchemy must not inspect or reserve the character")
 end
 
 local inProgress = false
 local progressNilReads = 0
 local readyForPickup = false
 local readyNilReads = 0
+local readyReadHook = function() end
 local recipeListReads = 0
 local potionConfReads = 0
 local potionFindCalls = 0
@@ -323,6 +404,7 @@ local alchemy = {{
             readyNilReads -= 1
             return nil
         end
+        readyReadHook()
         return readyForPickup
     end,
     CanMeetRecipeRebirth = function(actualPlayer, raw)
@@ -338,8 +420,12 @@ local alchemy = {{
         if not recipesReady then error("recipe data still loading") end
         return recipes
     end,
-    ResolveBrewActorCFrame = function() return makeCFrame("actor") end,
-    ResolveFinishSpawnCFrame = function() return makeCFrame("finish") end,
+    ResolveBrewActorCFrame = function()
+        error("remote brew must not resolve or visit the Alchemy actor")
+    end,
+    ResolveFinishSpawnCFrame = function()
+        error("remote pickup must not resolve or visit the Alchemy actor")
+    end,
 }}
 local function resolveGetData() return {{ Alchemy = alchemy }} end
 local function resolveRuntimeModule(name)
@@ -428,23 +514,41 @@ local legacyRecipe = selectAlchemyRecipe(alchemy, "#4 old-language label")
 assert(legacyRecipe ~= nil and legacyRecipe.id == 4,
     "a saved recipe label was not preserved by numeric id")
 
+local callsBeforeStageGate = #calls
+challenge = nil
+local blocked, blockedError = runAlchemyCycle()
+assert(blocked == false and blockedError == nil
+    and alchemyTelemetry.status == "waiting for dungeon state"
+    and #calls == callsBeforeStageGate,
+    "Alchemy guessed base while dungeon state was unknown")
+challenge = 4
+blocked, blockedError = runAlchemyCycle()
+assert(blocked == false and blockedError == nil
+    and alchemyTelemetry.status == "waiting for base"
+    and #calls == callsBeforeStageGate,
+    "Alchemy ran while the player was inside a stage")
+challenge = 0
+
+local writesBeforeCraft = cframeWrites
 local sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil,
     "craft cycle failed: " .. tostring(craftError) .. " / " .. tostring(alchemyTelemetry.status))
 assert(#calls == 1 and calls[1].action == "ALCHEMY_CRAFT_RECIPE",
     "craft used the wrong transport/action")
 assert(calls[1].payload.recipeId == 4,
-    "Best craftable did not choose the highest eligible recipe")
+    "Best craftable did not start with the highest rebirth-eligible candidate")
 assert(recipeListReads == 5, "Alchemy.GetRecipeList was not retried by UI and worker")
 assert(potionConfReads == 0, "potionConf incorrectly replaced the recipe list")
 assert(potionFindCalls == 12 and translationCalls == 15,
     "recipe display metadata was not localized independently of craft data: "
         .. tostring(potionFindCalls) .. "/" .. tostring(translationCalls))
-assert(calls[1].root.name == "actor+offset", "craft request was not sent at the actor")
-assert(root.CFrame == home, "craft did not restore the player's position")
-assert(waits[1] == 0.2 and waits[2] == 0.4, "craft cadence changed")
-assert(alchemyBusy == false, "craft left the movement lock active")
-assert(pauseCalls == 1, "Walking was not paused synchronously before craft")
+assert(calls[1].root == home, "remote craft moved the player")
+assert(root.CFrame == home, "remote craft changed the player's position")
+assert(cframeWrites == writesBeforeCraft,
+    "remote craft wrote Root.CFrame before restoring it")
+assert(waits[1] == 0.4 and waits[2] == 0.25, "remote craft cadence changed")
+assert(pauseCalls == 0 and resumeCalls == 0,
+    "remote craft paused or resumed character movement")
 assert(refreshCalls == 1, "craft did not refresh PotionBrewingGame")
 assert(alchemyTelemetry.canUse == true
     and alchemyTelemetry.ready == false
@@ -468,15 +572,19 @@ cfg.AutoPickupPotion = true
 inProgress = false
 readyForPickup = true
 waits = {{}}
+local writesBeforePickup = cframeWrites
 sent = runAlchemyCycle()
 assert(sent == true, "ready brewed potion was not picked up")
 assert(#calls == 2 and calls[2].action == "ALCHEMY_PICKUP_FINISH_POTION",
     "pickup did not use the verified InvokeServer action")
 assert(calls[2].payload == nil, "pickup unexpectedly sent a payload")
-assert(calls[2].root.name == "finish+offset", "pickup request was not sent at finish")
-assert(root.CFrame == home, "pickup did not restore the player's position")
-assert(waits[1] == 0.2 and waits[2] == 0.5, "pickup cadence changed")
-assert(pauseCalls == 2, "Walking was not paused synchronously before pickup")
+assert(calls[2].root == home, "remote pickup moved the player")
+assert(root.CFrame == home, "remote pickup changed the player's position")
+assert(cframeWrites == writesBeforePickup,
+    "remote pickup wrote Root.CFrame before restoring it")
+assert(waits[1] == 0.5 and waits[2] == 0.25, "remote pickup cadence changed")
+assert(pauseCalls == 0 and resumeCalls == 0,
+    "remote pickup paused or resumed character movement")
 assert(refreshCalls == 2, "pickup did not refresh PotionBrewingGame")
 
 cfg.AutoBrew = true
@@ -500,7 +608,7 @@ root.CFrame = home
 local callsBeforeUnknownBaseline = #calls
 sent, craftError = runAlchemyCycle()
 assert(sent == false and craftError == "a brewed potion must be picked up first",
-    "unknown->ready was not rejected by the actor recheck")
+    "unknown->ready was not rejected by the final remote recheck")
 assert(#calls == callsBeforeUnknownBaseline and alchemyTelemetry.confirmed == false,
     "unknown baseline emitted or confirmed a new brew")
 readyForPickup = false
@@ -519,33 +627,37 @@ assert(#calls == callsBeforeUnknownProgress,
 
 fakeClock = 2.5
 readyForPickup = false
-travelHook = function()
-    readyForPickup = true
-    travelHook = function() end
+local readyReads = 0
+readyReadHook = function()
+    readyReads += 1
+    if readyReads == 2 then readyForPickup = true end
 end
 local callsBeforeTravelRace = #calls
 sent, craftError = runAlchemyCycle()
 assert(sent == false and craftError == "a brewed potion must be picked up first",
-    "ready state was not revalidated at the actor")
+    "ready state was not revalidated immediately before remote craft")
 assert(#calls == callsBeforeTravelRace,
-    "craft remote was sent after a potion became ready during travel")
+    "craft remote was sent after a potion became ready during selection")
+readyReadHook = function() end
 readyForPickup = false
 
 local validBrewResolver = alchemy.ResolveBrewActorCFrame
-alchemy.ResolveBrewActorCFrame = function() return nil end
+alchemy.ResolveBrewActorCFrame = nil
 local callsBeforeTravelFailure = #calls
+fakeClock = 3
+remoteMode = "accept"
 sent, craftError = runAlchemyCycle()
-assert(sent == false and string.find(craftError, "returned nil", 1, true) ~= nil,
-    "missing actor CFrame was not exposed")
-assert(#calls == callsBeforeTravelFailure,
-    "craft remote was sent even though travel to the actor failed")
-assert(alchemyTelemetry.status == "brew actor unavailable"
-    and alchemyTelemetry.travel == "failed",
-    "travel failure telemetry is misleading")
+assert(sent == true and craftError == nil,
+    "remote craft incorrectly required ResolveBrewActorCFrame")
+assert(#calls == callsBeforeTravelFailure + 1 and root.CFrame == home,
+    "remote craft did not stay independent of the actor resolver")
+assert(alchemyTelemetry.travel == "remote",
+    "remote Alchemy telemetry still reports a physical trip")
 
 alchemy.ResolveBrewActorCFrame = validBrewResolver
 remoteMode = "unconfirmed"
 fakeClock = 5
+inProgress = false
 root.CFrame = home
 waits = {{}}
 sent, craftError = runAlchemyCycle()
@@ -555,19 +667,51 @@ assert(alchemyTelemetry.confirmed == false
     and alchemyTelemetry.status == "brew unconfirmed",
     "unconfirmed craft diagnostics are misleading")
 assert(root.CFrame == home,
-    "unconfirmed craft did not restore the original farm position after polling")
-assert(waits[1] == 0.2 and waits[2] == 0.4 and waits[3] == 0.25,
-    "confirmation polling did not keep the player at the actor")
-assert(alchemyBusy == false, "unconfirmed craft left movement locked")
+    "unconfirmed remote craft moved the original farm position")
+assert(waits[1] == 0.4 and waits[2] == 0.25,
+    "remote confirmation polling cadence changed")
 
 fakeClock = 10
-remoteMode = "accept-one"
+remoteMode = "accept"
 root.CFrame = home
 sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil,
     "Best craftable did not advance after an unconfirmed server candidate")
 assert(calls[#calls].payload.recipeId == 1,
     "Best craftable did not rotate to the next server-validated candidate")
+
+-- This is the live regression: away from the UI both material predicates can
+-- say false, while the same explicit recipe is accepted by the server. Best
+-- must still emit the highest rebirth-eligible candidate instead of no-oping.
+fakeClock = 15
+inProgress = false
+recipes[1].craftable = false
+recipes[2].craftable = false
+cfg.BrewRecipe = "Best craftable"
+resetAlchemyRecovery()
+local callsBeforeStaleMaterials = #calls
+sent, craftError = runAlchemyCycle()
+assert(sent == true and craftError == nil,
+    "Best craftable trusted stale material predicates")
+assert(#calls == callsBeforeStaleMaterials + 1
+    and calls[#calls].payload.recipeId == 4
+    and alchemyTelemetry.craftable == 0,
+    "Best did not server-validate the highest rebirth-eligible recipe")
+recipes[1].craftable = true
+recipes[2].craftable = true
+
+fakeClock = 16
+resetAlchemyRecovery()
+recipes[2].craftable = false
+local firstStableCandidate = selectAlchemyRecipe(alchemy, "Best craftable")
+assert(firstStableCandidate.id == 4, "stale material hint removed the best candidate")
+finishAlchemyRecipeAttempt(false)
+recipes[2].craftable = true
+fakeClock = 20
+local secondStableCandidate = selectAlchemyRecipe(alchemy, "Best craftable")
+assert(secondStableCandidate.id == 1,
+    "changing material hints reset Best candidate rotation")
+resetAlchemyRecovery()
 
 fakeClock = 20
 remoteMode = "accept"
@@ -633,16 +777,11 @@ alchemyInvokeLease.startedAt = 1
 local callsBeforeStaleLease = #calls
 alchemyBroomPending = function() return true end
 sent, craftError = runAlchemyCycle()
-assert(sent == false and alchemyTelemetry.status == "waiting for Broom travel"
-    and #calls == callsBeforeStaleLease
-    and alchemyInvokeLease.pending == false,
-    "Broom gate prevented an abandoned lease from being retired")
-alchemyBroomPending = function() return false end
-fakeClock = 101
-sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil
-    and #calls == callsBeforeStaleLease + 1,
-    "Alchemy did not resume after stale-lease recovery and Broom release")
+    and #calls == callsBeforeStaleLease + 1
+    and alchemyInvokeLease.pending == false,
+    "remote Alchemy was blocked by Broom after stale-lease recovery")
+alchemyBroomPending = function() return false end
 
 fakeClock = 200
 inProgress = false
@@ -656,18 +795,12 @@ local resumesBeforeTimeout = resumeCalls
 sent, craftError = runAlchemyCycle()
 assert(sent == false and string.find(craftError, "timed out", 1, true) ~= nil,
     "full Alchemy cycle did not expose its bounded timeout")
-assert(root.CFrame.name == "actor+offset"
-    and alchemyBusy == true
-    and alchemyInvokeLease.pending == true,
-    "timeout abandoned the actor or physical lock before the watchdog")
-assert(#delayed == 1 and delayed[1].seconds == 10,
-    "Alchemy travel watchdog was not scheduled for the bounded hold")
-delayed[1].callback()
-assert(root.CFrame == home and alchemyBusy == false
-    and resumeCalls == resumesBeforeTimeout + 1,
-    "watchdog did not restore the farm and release movement")
+assert(root.CFrame == home and alchemyInvokeLease.pending == true,
+    "remote timeout moved or physically locked the character")
+assert(#delayed == 0 and resumeCalls == resumesBeforeTimeout,
+    "remote timeout scheduled a physical travel watchdog")
 assert(alchemyInvokeLease.pending == true,
-    "watchdog incorrectly released the unresolved network lease")
+    "remote timeout incorrectly released the unresolved network lease")
 pendingInvokeCallback()
 assert(alchemyInvokeLease.pending == false
     and type(alchemyInvokeLease.completed) == "table",
@@ -703,12 +836,8 @@ print("alchemy_flow_smoke=ok")
         self.assertIn("alchemyInvokeLease.pending", ALCHEMY_HELPERS)
         self.assertIn("ALCHEMY_STALE_LEASE_SECONDS", ALCHEMY_HELPERS)
         self.assertIn('pcall(previousUnload, "reload")', source)
-        self.assertIn('reason == "reload"', source)
         self.assertIn("alchemyInvokeLease.returnHoldUntil", source)
         self.assertIn("returnTravelPending = function()", source)
-        self.assertIn("alchemyInvokeLease.travel == staleAlchemyTravel", source)
-        self.assertIn("scheduleAlchemyTravelWatchdog(travel, 10)", ALCHEMY_HELPERS)
-        self.assertIn("if travel == nil then", ALCHEMY_HELPERS)
         self.assertIn('BrewRecipe = "Best craftable"', source)
         self.assertIn("AutoPickupPotion = true", source)
         self.assertIn('group:AddDropdown("BrewRecipe"', source)
@@ -716,6 +845,8 @@ print("alchemy_flow_smoke=ok")
         self.assertIn("pcall(cfgFind.FindCfgByID, potionId, 9)", ALCHEMY_HELPERS)
         self.assertIn("pcall(helper.TranslateByKey, key)", ALCHEMY_HELPERS)
         self.assertIn('string.match(selection, "^#(%d+)")', ALCHEMY_HELPERS)
+        self.assertIn('if reason ~= "rebirth" then', ALCHEMY_HELPERS)
+        self.assertIn("table.insert(rebirthEligible, recipe)", ALCHEMY_HELPERS)
         self.assertNotIn('GetCfgByName, "potionConf"', ALCHEMY_HELPERS)
         recipe_ui = core_slice(
             '        local recipeValues = alchemyDropdownValues()',
@@ -724,29 +855,26 @@ print("alchemy_flow_smoke=ok")
         self.assertNotIn("if #recipeValues == 1 then", recipe_ui)
         self.assertNotIn("fingerprint = refreshedFingerprint\n                    break", recipe_ui)
         self.assertIn('table.concat(recipeValues, "\\30")', recipe_ui)
-        self.assertLess(
-            source.index("pauseAlchemyMovement()", source.index("local function beginAlchemyTravel")),
-            source.index("root.CFrame = destination", source.index("local function beginAlchemyTravel")),
+        cycle = core_slice(
+            "    local function runAlchemyCycle()",
+            "    -- Attack -----------------------------------------------------------------",
         )
-        movement_start = source.index("    local function updateMovement()")
-        busy_start = source.index(
-            '        if alchemyBusy or type(alchemyInvokeLease.travel) == "table" then',
-            movement_start,
-        )
-        busy_gate = source[
-            busy_start : source.index("        local full = bagFull()", busy_start)
-        ]
-        self.assertIn("pauseAlchemyMovement()", busy_gate)
-        self.assertIn("alchemyInvokeLease.travel", busy_gate)
-        self.assertNotIn("alchemyInvokeLease.pending", busy_gate)
-        self.assertNotIn("stopMovementModes()", busy_gate)
+        self.assertIn('alchemyTelemetry.travel = "remote"', cycle)
+        self.assertIn('playerNumber("InDungeonChallenge")', cycle)
+        self.assertIn('alchemyTelemetry.status = "waiting for base"', cycle)
+        self.assertNotIn("beginAlchemyTravel", cycle)
+        self.assertNotIn("reaffirmAlchemyTravel", cycle)
+        self.assertNotIn("finishAlchemyTravel", cycle)
+        self.assertNotIn("ResolveBrewActorCFrame", cycle)
+        self.assertNotIn("ResolveFinishSpawnCFrame", cycle)
+        self.assertNotIn("root.CFrame", cycle)
+        self.assertNotIn("alchemyBroomPending()", cycle)
+        self.assertNotIn("alchemyReturnPending()", cycle)
         locomotion = (REPO_ROOT / "games" / "magicloot_locomotion.lua").read_text(
             encoding="utf-8"
         )
         self.assertIn("if broom.suspended then", locomotion)
         self.assertIn("function api:SetBroomSuspended(suspended)", locomotion)
-        self.assertIn("loco:SetBroomSuspended(true)", source)
-        self.assertIn("loco:SetBroomSuspended(false)", source)
         pause = locomotion[
             locomotion.index("    function api:PauseWalking()") : locomotion.index(
                 "    function api:Stop()", locomotion.index("    function api:PauseWalking()")

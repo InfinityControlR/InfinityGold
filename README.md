@@ -131,9 +131,10 @@ These surfaces need confirmation inside Roblox (fail-open until then):
 - `PLAYER_REBIRTH`, `INDEX_CLAIM_REWARD` and `DRINK_POTION` payload shapes
   (currently sent without arguments).
 - `GetData.GetCfgByName("weaponConf"|"armorConf")` shape for shop automation.
-- Alchemy resolves `GetData.Alchemy`, prefers the highest recipe that passes
-  the local rebirth/material checks, and lets the server validate one bounded
-  fallback at a time when those client predicates are stale. Craft/pickup use
-  the verified InvokeServer actions only after reaching the correct actor, and
-  success is confirmed from the replicated brewing state before restoring the
-  previous position.
+- Alchemy resolves `GetData.Alchemy` and tests recipes in stable descending ID
+  order. It still excludes recipes locked by rebirth, but treats the local
+  material check as diagnostic because it can be stale away from the Alchemy
+  UI. Craft and pickup use the verified
+  InvokeServer actions remotely only when `InDungeonChallenge <= 0`, without
+  moving the character or suspending Walking, Running or Broom. Success is
+  confirmed from the replicated brewing state.

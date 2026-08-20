@@ -99,6 +99,8 @@ local modules = {{
         INVOKE_EMPTY = invokeRemote,
         TRAIN_MANUAL_CLICK = invokeRemote,
         CLAIM_ONLINE_AWARD = invokeRemote,
+        ALCHEMY_CRAFT_RECIPE = invokeRemote,
+        ALCHEMY_PICKUP_FINISH_POTION = invokeRemote,
         DUNGEON_RETURN_TOWN = fireRemote,
         SHOW_LOCAL_UI = fireRemote,
     }},
@@ -174,6 +176,21 @@ assert(invoked and result.accepted == 12,
     "online reward did not preserve its numeric award id")
 assert(#invokeCalls == 4 and invokeCalls[4] == 12,
     "online reward did not use InvokeServer with a scalar id")
+
+invoked, result, invokeError = invokeAction(
+    "ALCHEMY_CRAFT_RECIPE",
+    {{ recipeId = 4 }}
+)
+assert(invoked, "Alchemy craft InvokeServer failed: " .. tostring(invokeError))
+assert(#invokeCalls == 5
+    and type(invokeCalls[5]) == "table"
+    and invokeCalls[5].recipeId == 4,
+    "Alchemy craft did not preserve its recipeId table payload")
+
+invoked, result, invokeError = invokeAction("ALCHEMY_PICKUP_FINISH_POTION")
+assert(invoked, "Alchemy pickup InvokeServer failed: " .. tostring(invokeError))
+assert(#invokeCalls == 6 and invokeCalls[6] == "empty",
+    "Alchemy pickup did not send only its descriptor")
 
 sent, sendError = fireBindableAction(
     "SHOW_LOCAL_UI",
