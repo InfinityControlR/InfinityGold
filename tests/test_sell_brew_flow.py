@@ -220,8 +220,12 @@ end
 
 {BASE_PRIORITY}
 
+broomFarmRoute.stage = 28
+broomFarmRoute.bypassEnterDelay = true
 assert(broomEconomyGate() == false and farmObjectiveGate() == false,
     "Alchemy did not block Broom and Farm")
+assert(broomFarmRoute.stage == nil and broomFarmRoute.bypassEnterDelay == false,
+    "returning to base did not clear the prior Broom Farm route")
 setBasePriorityPhase("sell", "test")
 assert(broomEconomyGate() == false and farmObjectiveGate() == false,
     "Sell did not block Broom and Farm")

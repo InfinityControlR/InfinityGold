@@ -127,6 +127,12 @@ function Module.create(context)
         end
     end
 
+    local function notifyBroomStageEntered(stage)
+        if type(context.onBroomStageEntered) == "function" then
+            pcall(context.onBroomStageEntered, stage)
+        end
+    end
+
     local function broomPriorityGate()
         if type(context.broomGate) ~= "function" then return true end
         local ok, allowed, detail = pcall(context.broomGate)
@@ -307,6 +313,10 @@ function Module.create(context)
             if reason == "inventory return" then broom.returnEpisode = false end
             disarmBroom()
             if attempts > 0 then
+                -- Broom has now been accepted by replicated dungeon state.
+                -- Hand the selected stage to the core so its configured Farm
+                -- mode starts continuously without an EnterDelay pause.
+                notifyBroomStageEntered(selected)
                 broom.status = string.format(
                     "broom stage %d confirmed after %d request(s)",
                     selected,
@@ -1011,7 +1021,7 @@ function Module.create(context)
         end
     end
 
-    function api:Update(mode, stage, stagePart, root, destination)
+    function api:Update(mode, stage, stagePart, root, destination, bypassEnterDelay)
         if mode ~= "Walking" and mode ~= "Running" then
             resetAll()
             return "locomotion mode unavailable"
@@ -1030,6 +1040,9 @@ function Module.create(context)
         end
 
         local now = os.clock()
+        if bypassEnterDelay == true then
+            state.routeChangedAt = now - readEnterDelay()
+        end
         local remainingDelay = readEnterDelay() - (now - state.routeChangedAt)
         if remainingDelay > 0 then
             stopMovement()

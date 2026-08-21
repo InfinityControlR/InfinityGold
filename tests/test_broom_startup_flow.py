@@ -49,6 +49,7 @@ local enabled = true
 local selected = "28"
 local challenge = 0
 local calls = {{}}
+local enteredStages = {{}}
 local priorityAllowed = false
 
 local function clockNow()
@@ -68,6 +69,9 @@ function context.broomGate()
     return priorityAllowed, "broom waiting for alchemy"
 end
 function context.notify() end
+function context.onBroomStageEntered(stage)
+    table.insert(enteredStages, {{ stage = stage, at = now }})
+end
 
 local challengeValue = {{ Value = challenge }}
 local player = {{}}
@@ -146,15 +150,20 @@ assert(#calls == 1)
 now = 7
 updateBroom()
 assert(#calls == 2 and broom.requestAttempts == 2)
+assert(#enteredStages == 0, "Broom announced entry before room confirmation")
 
 -- Entering the first room confirms the trip and cancels the pending retry.
 challenge = 1
 now = 10
 updateBroom()
 assert(#calls == 2 and broom.armed == false)
+assert(#enteredStages == 1 and enteredStages[1].stage == 28
+    and enteredStages[1].at == 10,
+    "confirmed Broom did not hand the selected stage to Farm")
 now = 50
 updateBroom()
-assert(#calls == 2)
+assert(#calls == 2 and #enteredStages == 1,
+    "confirmed Broom entry was emitted more than once")
 
 -- Loading the same enabled config while already in a room must not request a
 -- duplicate journey.

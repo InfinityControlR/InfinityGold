@@ -315,7 +315,10 @@ class CoreInvariantTests(unittest.TestCase):
             self.source.index('        if mode == "Orbit" then') :
             self.source.index('        setMovementStatus("unknown farm mode', self.source.index('        if mode == "Orbit" then'))
         ]
-        self.assertIn('if not applyEnterDelay(stage) then return end', orbit)
+        self.assertIn(
+            'if not applyEnterDelay(stage, bypassEnterDelay) then return end',
+            orbit,
+        )
 
     def test_shared_attack_block(self):
         self.assertIn("local function blocksAttack()", self.source)
@@ -696,15 +699,19 @@ class CombatDiagnosticsTests(unittest.TestCase):
             self.assertIn(marker, self.source)
 
     def test_skill_resolution_uses_original_nested_manager_path(self):
-        manager = 'playerScripts:WaitForChild("Manager", 8)'
-        skill = 'managerFolder:WaitForChild("PlayerSkillClientManager", 8)'
+        manager = 'playerScripts:FindFirstChild("Manager")'
+        skill = 'managerFolder:FindFirstChild("PlayerSkillClientManager")'
         self.assertIn(manager, self.source)
         self.assertIn(skill, self.source)
         self.assertLess(self.source.index(manager), self.source.index(skill))
         self.assertNotIn(
-            'playerScripts:WaitForChild("PlayerSkillClientManager", 8)',
+            'playerScripts:FindFirstChild("PlayerSkillClientManager")',
             self.source,
         )
+        attack_resolver = self.source.split("local function resolveAttack()", 1)[1].split(
+            "local function setNowTarget", 1
+        )[0]
+        self.assertNotIn("WaitForChild", attack_resolver)
         self.assertIn("pcall(setIdentity, 2)", self.source)
         self.assertNotIn("math.max(original, 2)", self.source)
 

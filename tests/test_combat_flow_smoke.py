@@ -51,6 +51,7 @@ class CombatFlowSmokeTests(unittest.TestCase):
 local lookups = {{}}
 local inputPayload = {{ simulateSlotPressRelease = function() end }}
 local configPayload = {{ NORMAL_ATTACK_SLOT_INDEX = 7 }}
+local managerReady = false
 
 local function module(payload)
     return {{ payload = payload }}
@@ -58,7 +59,7 @@ end
 
 local skillManager
 skillManager = {{
-    WaitForChild = function(_, name)
+    FindFirstChild = function(_, name)
         table.insert(lookups, name)
         if name == "PlayerSkillInput" then return module(inputPayload) end
         if name == "SkillSlotConfig" then return module(configPayload) end
@@ -66,21 +67,21 @@ skillManager = {{
     end,
 }}
 local managerFolder = {{
-    WaitForChild = function(_, name)
+    FindFirstChild = function(_, name)
         table.insert(lookups, name)
         if name == "PlayerSkillClientManager" then return skillManager end
         return nil
     end,
 }}
 local playerScripts = {{
-    WaitForChild = function(_, name)
+    FindFirstChild = function(_, name)
         table.insert(lookups, name)
-        if name == "Manager" then return managerFolder end
+        if name == "Manager" and managerReady then return managerFolder end
         return nil
     end,
 }}
 local player = {{
-    WaitForChild = function(_, name)
+    FindFirstChild = function(_, name)
         table.insert(lookups, name)
         if name == "PlayerScripts" then return playerScripts end
         return nil
@@ -92,12 +93,16 @@ local function require(value) return value.payload end
 
 {helper}
 
+local missing = resolveAttack()
+assert(missing == nil and attack.status == "Manager not found",
+    "missing Manager did not fail the current tick immediately")
+managerReady = true
 local resolved = resolveAttack()
 assert(resolved == inputPayload, "input module was not resolved")
 assert(attack.slotIndex == 7, "normal attack slot was not resolved")
 assert(
     table.concat(lookups, "/")
-        == "PlayerScripts/Manager/PlayerSkillClientManager/PlayerSkillInput/SkillSlotConfig",
+        == "PlayerScripts/Manager/PlayerScripts/Manager/PlayerSkillClientManager/PlayerSkillInput/SkillSlotConfig",
     "wrong skill module path: " .. table.concat(lookups, "/")
 )
 print("attack_resolver_smoke=ok")

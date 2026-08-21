@@ -62,7 +62,9 @@ the InfinityGold dashboard.
   speed/jump-power mutation is used.
 - **Combat**: Auto Attack (0.2 s cadence) and Auto Click
   (`1 / max(1, ClickRate)`), sharing one attack block fed by the locomotion
-  bridge. Auto Click continuously sends the confirmed `TRAIN_MANUAL_CLICK`
+  bridge. Auto Attack resolves the nested skill modules without yielding; if
+  one is not replicated yet, that tick reports the missing step and retries
+  0.2 s later. Auto Click continuously sends the confirmed `TRAIN_MANUAL_CLICK`
   power request (one request in flight at a time) and releases the normal
   attack skill against the nearest monster, without injecting mouse input or
   moving the real cursor.
@@ -112,6 +114,11 @@ the InfinityGold dashboard.
   timers start only after Sell settles. Farm/Train stays blocked until Broom
   enters a stage, or is skipped because Auto Broom is disabled; only then does
   the full Enter Delay begin.
+  A stage entered through a confirmed Broom request is the exception: that
+  Broom stage becomes the effective Farm route for the whole dungeon stay and
+  the configured Running, Walking, Ground, Above or Orbit mode starts
+  continuously without applying Enter Delay. Returning to base clears the
+  override.
   When Auto Broom, Auto Farm and Farm Specific are all off, a confirmed brew
   keeps a one-second readiness watch at base. It reads only
   `IsBrewReadyForPickup`; when true, Alchemy collects it and immediately starts

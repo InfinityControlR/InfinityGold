@@ -37,6 +37,38 @@ def run_luau(source: str) -> subprocess.CompletedProcess:
 
 
 class PhysicalStageGateTests(unittest.TestCase):
+    def test_broom_entry_bypasses_teleport_enter_delay_continuously(self):
+        helper = core_slice(
+            "    local enterDelay = {",
+            "    local function nearestMonsterPosition",
+        )
+        fixture = f"""
+local fakeClock = 0
+local os = {{ clock = function() return fakeClock end }}
+local cfg = {{ EnterDelay = 30 }}
+local movementStatus = "idle"
+local function setMovementStatus(text) movementStatus = text end
+
+{helper}
+
+assert(applyEnterDelay(28, false) == false,
+    "normal route did not preserve Enter Delay")
+assert(string.find(movementStatus, "entering stage 28", 1, true) ~= nil)
+assert(applyEnterDelay(28, true) == true,
+    "confirmed Broom route did not bypass Enter Delay")
+fakeClock = 10
+assert(applyEnterDelay(28, true) == true,
+    "Broom route reapplied a pause instead of staying continuous")
+print("broom_teleport_fast_start_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"Broom teleport fast-start smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("broom_teleport_fast_start_smoke=ok", completed.stdout)
+
     def test_physical_modes_dispatch_without_waiting_for_dungeon_state(self):
         movement = core_slice("    local function updateMovement()", "    -- Combat")
         self.assertNotIn("shouldWaitForPhysicalStage", movement)
@@ -46,6 +78,15 @@ class PhysicalStageGateTests(unittest.TestCase):
             movement.index("local stagePartInstance = stagePart(stage)"),
             movement.index("return loco:Update("),
         )
+        self.assertIn("stage = broomFarmRoute.stage", movement)
+        self.assertIn("bypassEnterDelay", movement)
+        self.assertIn("groundPoint(stagePartInstance),\n                    bypassEnterDelay", movement)
+        self.assertEqual(
+            movement.count("applyEnterDelay(stage, bypassEnterDelay)"),
+            3,
+        )
+        bridge = core_slice("    -- Locomotion bridge", "    local lastFarmMode")
+        self.assertIn("onBroomStageEntered = function(stage)", bridge)
 
     def test_stopping_physical_mode_delegates_to_locomotion_module(self):
         helper = core_slice(

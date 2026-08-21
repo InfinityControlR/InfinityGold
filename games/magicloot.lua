@@ -1071,6 +1071,10 @@ return function(locomotionFactory, Library, Common)
         reason = "initial base check",
         alchemyOutcome = nil,
     }
+    local broomFarmRoute = {
+        stage = nil,
+        bypassEnterDelay = false,
+    }
 
     local function setBasePriorityPhase(phase, reason)
         basePriority.phase = phase
@@ -1095,6 +1099,10 @@ return function(locomotionFactory, Library, Common)
         if not configReady then return false, "farm waiting for config" end
         local challenge = playerNumber("InDungeonChallenge")
         if challenge == nil then return false, "farm waiting for dungeon state" end
+        if challenge <= 0 then
+            broomFarmRoute.stage = nil
+            broomFarmRoute.bypassEnterDelay = false
+        end
         if challenge > 0 then return true end
         if basePriority.phase ~= "broom" then
             return false, "farm waiting for " .. basePriority.phase
@@ -2898,15 +2906,18 @@ return function(locomotionFactory, Library, Common)
             return attack.skillInput
         end
         local ok, result = withElevatedIdentity(function()
-            local playerScripts = player:WaitForChild("PlayerScripts", 8)
+            -- Match Magic's non-yielding resolver. Missing modules fail this
+            -- 0.2 s combat tick and are retried on the next one instead of
+            -- blocking Auto Attack inside chained eight-second waits.
+            local playerScripts = player:FindFirstChild("PlayerScripts")
             if playerScripts == nil then return { error = "PlayerScripts not found" } end
-            local managerFolder = playerScripts:WaitForChild("Manager", 8)
+            local managerFolder = playerScripts:FindFirstChild("Manager")
             if managerFolder == nil then return { error = "Manager not found" } end
-            local skillManager = managerFolder:WaitForChild("PlayerSkillClientManager", 8)
+            local skillManager = managerFolder:FindFirstChild("PlayerSkillClientManager")
             if skillManager == nil then return { error = "PlayerSkillClientManager not found" } end
-            local inputModule = skillManager:WaitForChild("PlayerSkillInput", 8)
+            local inputModule = skillManager:FindFirstChild("PlayerSkillInput")
             if inputModule == nil then return { error = "PlayerSkillInput not found" } end
-            local configModule = skillManager:WaitForChild("SkillSlotConfig", 8)
+            local configModule = skillManager:FindFirstChild("SkillSlotConfig")
             if configModule == nil then return { error = "SkillSlotConfig not found" } end
             local inputOk, inputTable = pcall(require, inputModule)
             if not inputOk or type(inputTable) ~= "table" then
@@ -3088,6 +3099,12 @@ return function(locomotionFactory, Library, Common)
                 return sessionAlive
             end,
             broomGate = broomEconomyGate,
+            onBroomStageEntered = function(stage)
+                local numeric = math.floor(tonumber(stage) or 0)
+                if numeric <= 0 then return end
+                broomFarmRoute.stage = numeric
+                broomFarmRoute.bypassEnterDelay = true
+            end,
         })
         if ok and type(module) == "table" then
             loco = module
@@ -3216,7 +3233,12 @@ return function(locomotionFactory, Library, Common)
         until_ = 0,
     }
 
-    local function applyEnterDelay(stage)
+    local function applyEnterDelay(stage, bypass)
+        if bypass == true then
+            enterDelay.stage = stage
+            enterDelay.until_ = 0
+            return true
+        end
         if enterDelay.stage ~= stage then
             enterDelay.stage = stage
             enterDelay.until_ = os.clock() + math.max(0, tonumber(cfg.EnterDelay) or 0)
@@ -3287,8 +3309,12 @@ return function(locomotionFactory, Library, Common)
             cfg.AutoFarmSpecific == true,
             MAX_FARM_STAGE
         )
+        if broomFarmRoute.stage ~= nil then
+            stage = broomFarmRoute.stage
+        end
 
         local mode = cfg.FarmMode
+        local bypassEnterDelay = broomFarmRoute.bypassEnterDelay == true
 
         local stagePartInstance = stagePart(stage)
         if stagePartInstance == nil then
@@ -3317,7 +3343,8 @@ return function(locomotionFactory, Library, Common)
                     stage,
                     stagePartInstance,
                     parts.root,
-                    groundPoint(stagePartInstance)
+                    groundPoint(stagePartInstance),
+                    bypassEnterDelay
                 )
             end)
             if ok then
@@ -3330,7 +3357,7 @@ return function(locomotionFactory, Library, Common)
 
         -- Teleport-based modes below this point.
         if mode == "Ground" then
-            if not applyEnterDelay(stage) then return end
+            if not applyEnterDelay(stage, bypassEnterDelay) then return end
             if isOverFootprint(stagePartInstance, parts.root.Position) then
                 setMovementStatus("stage " .. stage .. " farming")
                 return
@@ -3341,7 +3368,7 @@ return function(locomotionFactory, Library, Common)
         end
 
         if mode == "Above" then
-            if not applyEnterDelay(stage) then return end
+            if not applyEnterDelay(stage, bypassEnterDelay) then return end
             local center = nearestMonsterPosition(tonumber(cfg.AttackRange) or 120, groundPoint(stagePartInstance))
             parts.root.CFrame = CFrame.new(center + Vector3.new(0, tonumber(cfg.FarmHeight) or 20, 0))
             setMovementStatus("stage " .. stage .. " farming above")
@@ -3349,7 +3376,7 @@ return function(locomotionFactory, Library, Common)
         end
 
         if mode == "Orbit" then
-            if not applyEnterDelay(stage) then return end
+            if not applyEnterDelay(stage, bypassEnterDelay) then return end
             local center = nearestMonsterPosition(tonumber(cfg.AttackRange) or 120, groundPoint(stagePartInstance))
             local height = tonumber(cfg.FarmHeight) or 20
             local radius = tonumber(cfg.OrbitRadius) or 25

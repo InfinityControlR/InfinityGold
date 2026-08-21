@@ -121,10 +121,11 @@ local root = {
     Position = Vector3.new(-60, 3, 0),
 }
 local runningDistance = 12
+local enterDelay = 30
 local context = {}
 function context.option(name, fallback)
     if name == "RunningDistance" then return runningDistance end
-    if name == "EnterDelay" then return 0 end
+    if name == "EnterDelay" then return enterDelay end
     return fallback
 end
 function context.stagePart()
@@ -139,7 +140,10 @@ assert(controller:Supports("Walking"))
 assert(controller:Supports("Running"))
 
 controller:Prepare("Running", 2, stagePart)
-local approaching = controller:Update("Running", 2, stagePart, root, center)
+local delayed = controller:Update("Running", 2, stagePart, root, center)
+assert(string.find(delayed, "entering stage 2", 1, true) ~= nil)
+assert(renderCallback == nil, "normal route ignored its configured Enter Delay")
+local approaching = controller:Update("Running", 2, stagePart, root, center, true)
 assert(string.find(approaching, "running", 1, true) ~= nil)
 assert(renderCallback ~= nil)
 assert(humanoid.Jump == false)
@@ -148,7 +152,7 @@ assert(humanoid.Jump == false)
 -- Simulate the normal controller clearing Jump first: our later render step
 -- must restore both the Jump property and the Jumping state request.
 root.Position = Vector3.new(-49, 3, 0)
-local orbiting = controller:Update("Running", 2, stagePart, root, center)
+local orbiting = controller:Update("Running", 2, stagePart, root, center, true)
 assert(string.find(orbiting, "running 12.0 studs from center", 1, true) ~= nil)
 humanoid.Jump = false
 renderCallback()
@@ -163,7 +167,7 @@ assert(humanoid.Jump == false)
 
 -- The radius option is read live without preparing the route again.
 runningDistance = 20
-local resized = controller:Update("Running", 2, stagePart, root, center)
+local resized = controller:Update("Running", 2, stagePart, root, center, true)
 assert(string.find(resized, "running 20.0 studs from center", 1, true) ~= nil)
 
 -- Walking retains Magic's center-destination contract and never jumps when it
@@ -172,7 +176,7 @@ humanoid.Jump = false
 humanoid.lastState = nil
 root.Position = center
 controller:Prepare("Walking", 2, stagePart)
-local arrived = controller:Update("Walking", 2, stagePart, root, center)
+local arrived = controller:Update("Walking", 2, stagePart, root, center, true)
 assert(string.find(arrived, "walking arrived", 1, true) ~= nil)
 assert(humanoid.Jump == false)
 assert(humanoid.lastState == nil)
