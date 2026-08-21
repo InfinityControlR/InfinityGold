@@ -145,7 +145,14 @@ the InfinityGold dashboard.
   Broom and both farming switches, so its route is `Alchemy -> Sell -> Train`.
   Auto Return still handles the full temporary bag. Index claims are
   built from live `IndexView` snapshots and online rewards are filtered through
-  `OnlineBox` before individual claims.
+  `OnlineBox` before individual claims. Auto Claim Event performs an invisible
+  server-state refresh, discovers the current timed, daily and once-per-event
+  quest rows already loaded by the game, and submits only rows whose live
+  `canClaim` state is true (or whose accepted progress meets the dynamically
+  discovered requirement). Quest names and requirements come from `onlyTag`,
+  `Accepted`, `Progress`, `Completed` and `need`; none of the current quests is
+  hard-coded, so reloading the script incorporates future event catalogs. It
+  never clicks the Event button or changes local interface visibility.
 - **Potions and gear**: Auto Drink sends each selected potion inventory
   `onlyID`; its selector continuously discovers new live potion config rows.
   Alchemy captures the game's sparse/keyed recipe list once per full script

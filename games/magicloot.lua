@@ -297,6 +297,7 @@ return function(locomotionFactory, Library, Common)
         -- Rewards
         AutoClaimIndex = false,
         AutoClaimOnline = false,
+        AutoClaimEvent = false,
         -- Gear
         AutoBuyBest = false,
         AutoEquipBest = false,
@@ -547,6 +548,100 @@ return function(locomotionFactory, Library, Common)
         return true, result, nil, true
     end
 
+    -- Event quests expose their transport names directly instead of through
+    -- the stable English NetMsg aliases used by the rest of the hub. The live
+    -- one-shot probe confirmed the physical RemoteEvent/RemoteFunction path;
+    -- retain the NetWork facade only as a compatibility fallback.
+    local function sendLiteralAction(action, payload)
+        if type(action) ~= "string" or action == "" then
+            return false, "literal action unavailable"
+        end
+        local direct = nil
+        pcall(function()
+            local msg = ReplicatedStorage:FindFirstChild("Msg")
+            if msg == nil then return nil end
+            local folder = msg:FindFirstChild("RemoteEvent")
+            if folder == nil then return nil end
+            local candidate = folder:FindFirstChild("NetWorkRemoteEvent")
+            if candidate ~= nil and candidate:IsA("RemoteEvent") then
+                direct = candidate
+            end
+        end)
+        if direct ~= nil then
+            local ok, err
+            if payload == nil then
+                ok, err = pcall(function() direct:FireServer(action) end)
+            else
+                ok, err = pcall(function() direct:FireServer(action, payload) end)
+            end
+            if not ok then return false, tostring(err) end
+            return true
+        end
+
+        local network = resolveNet()
+        if network == nil then return false, net.status end
+        local methodOk, fireServer = pcall(function()
+            return network.FireServer
+        end)
+        if not methodOk or type(fireServer) ~= "function" then
+            return false, "NetWork.FireServer unavailable"
+        end
+        local ok, err
+        if payload == nil then
+            ok, err = pcall(fireServer, action)
+        else
+            ok, err = pcall(fireServer, action, payload)
+        end
+        if not ok then return false, tostring(err) end
+        return true
+    end
+
+    local function invokeLiteralAction(action, payload)
+        if type(action) ~= "string" or action == "" then
+            return false, nil, "literal action unavailable"
+        end
+        local direct = nil
+        pcall(function()
+            local msg = ReplicatedStorage:FindFirstChild("Msg")
+            if msg == nil then return nil end
+            local folder = msg:FindFirstChild("RemoteFunction")
+            if folder == nil then return nil end
+            local candidate = folder:FindFirstChild("NetWorkRemoteFunction")
+            if candidate ~= nil and candidate:IsA("RemoteFunction") then
+                direct = candidate
+            end
+        end)
+        if direct ~= nil then
+            local ok, result
+            if payload == nil then
+                ok, result = pcall(function() return direct:InvokeServer(action) end)
+            else
+                ok, result = pcall(function()
+                    return direct:InvokeServer(action, payload)
+                end)
+            end
+            if not ok then return false, nil, tostring(result) end
+            return true, result
+        end
+
+        local network = resolveNet()
+        if network == nil then return false, nil, net.status end
+        local methodOk, invokeServer = pcall(function()
+            return network.InvokeServer
+        end)
+        if not methodOk or type(invokeServer) ~= "function" then
+            return false, nil, "NetWork.InvokeServer unavailable"
+        end
+        local ok, result
+        if payload == nil then
+            ok, result = pcall(invokeServer, action)
+        else
+            ok, result = pcall(invokeServer, action, payload)
+        end
+        if not ok then return false, nil, tostring(result) end
+        return true, result
+    end
+
     local function fireBindableAction(action, ...)
         local network = resolveNet()
         if network == nil then return false, net.status end
@@ -782,6 +877,202 @@ return function(locomotionFactory, Library, Common)
 
         onlineClaimTelemetry.status = claimed > 0 and "claimed" or "waiting"
         return claimed, onlineClaimTelemetry.lastError
+    end
+
+    local eventClaims = {}
+    do
+        local refreshAction = "活动界面已打开"
+        local submitAction = "活动任务提交"
+        local telemetry = {
+            available = 0,
+            attempts = 0,
+            claimed = 0,
+            scanned = 0,
+            stateGroups = 0,
+            configRows = 0,
+            lastError = nil,
+            status = "waiting",
+        }
+        local attemptedAt = {}
+
+        local function questNeed(value)
+            local valueType = type(value)
+            if valueType == "number" or valueType == "string" then
+                local direct = tonumber(value)
+                if direct ~= nil then return direct end
+            end
+            if type(value) ~= "table" then return nil end
+            for _, item in pairs(value) do
+                local number = tonumber(item)
+                if number ~= nil then return number end
+            end
+            return nil
+        end
+
+        local function sourcesFrom(objects)
+            local sources = {
+                stateByTag = {},
+                requirements = {},
+                derivedByTag = {},
+                scanned = 0,
+                stateGroups = 0,
+                configRows = 0,
+            }
+            if type(objects) ~= "table" then return sources end
+
+            for _, object in ipairs(objects) do
+                sources.scanned += 1
+                if type(object) == "table" then
+                    local accepted = rawget(object, "Accepted")
+                    local progress = rawget(object, "Progress")
+                    local completed = rawget(object, "Completed")
+                    if type(accepted) == "table"
+                        and type(progress) == "table"
+                        and type(completed) == "table"
+                    then
+                        sources.stateGroups += 1
+                        for key, value in pairs(accepted) do
+                            local tag = type(value) == "string" and value
+                                or (type(key) == "string" and value and key or nil)
+                            if type(tag) == "string" and tag ~= "" then
+                                sources.stateByTag[tag] = object
+                            end
+                        end
+                    end
+
+                    local cfgRow = rawget(object, "cfg")
+                    local row = type(cfgRow) == "table" and cfgRow or object
+                    local tag = rawget(row, "onlyTag")
+                    local need = questNeed(rawget(row, "need"))
+                    if type(tag) == "string"
+                        and tag ~= ""
+                        and rawget(row, "ResetType") ~= nil
+                        and need ~= nil
+                    then
+                        sources.requirements[tag] = need
+                        sources.configRows += 1
+                    end
+
+                    local derivedTag = rawget(object, "onlyTag")
+                    if type(derivedTag) == "string"
+                        and derivedTag ~= ""
+                        and type(rawget(object, "canClaim")) == "boolean"
+                        and rawget(object, "claimed") ~= nil
+                    then
+                        sources.derivedByTag[derivedTag] = object
+                    end
+                end
+            end
+            return sources
+        end
+
+        local function stateClaimed(state, tag)
+            local completed = type(state) == "table"
+                and rawget(state, "Completed") or nil
+            if type(completed) ~= "table" then return false end
+            local value = rawget(completed, tag)
+            return value ~= nil and value ~= false and value ~= 0
+        end
+
+        local function claimableFrom(sources)
+            local candidates = {}
+            if type(sources) ~= "table" then return candidates end
+
+            for tag, state in pairs(sources.stateByTag or {}) do
+                local derived = (sources.derivedByTag or {})[tag]
+                local claimed = stateClaimed(state, tag)
+                local claimable = false
+                if type(derived) == "table" then
+                    claimable = rawget(derived, "canClaim") == true
+                        and rawget(derived, "claimed") ~= true
+                        and not claimed
+                else
+                    local progressTable = rawget(state, "Progress")
+                    local progress = type(progressTable) == "table"
+                        and tonumber(rawget(progressTable, tag)) or nil
+                    local need = tonumber((sources.requirements or {})[tag])
+                    claimable = not claimed
+                        and progress ~= nil
+                        and need ~= nil
+                        and progress >= need
+                end
+                if claimable then table.insert(candidates, tag) end
+            end
+
+            for tag, derived in pairs(sources.derivedByTag or {}) do
+                if sources.stateByTag[tag] == nil
+                    and rawget(derived, "canClaim") == true
+                    and rawget(derived, "claimed") ~= true
+                then
+                    table.insert(candidates, tag)
+                end
+            end
+            table.sort(candidates)
+            return candidates
+        end
+
+        local function claimableTags()
+            if type(getgc) ~= "function" then
+                return nil, "getgc unavailable"
+            end
+            local ok, objects = pcall(getgc, true)
+            if not ok or type(objects) ~= "table" then
+                return nil, "event state scan failed"
+            end
+            local sources = sourcesFrom(objects)
+            telemetry.scanned = sources.scanned
+            telemetry.stateGroups = sources.stateGroups
+            telemetry.configRows = sources.configRows
+            return claimableFrom(sources)
+        end
+
+        function eventClaims.claim()
+            if not sessionAlive or not cfg.AutoClaimEvent then return 0 end
+            local refreshed, refreshError = sendLiteralAction(refreshAction)
+            if not refreshed then
+                telemetry.lastError = refreshError
+                telemetry.status = refreshError or "refresh unavailable"
+                return 0, refreshError
+            end
+            task.wait(0.1)
+            if not sessionAlive or not cfg.AutoClaimEvent then return 0 end
+
+            local tags, scanError = claimableTags()
+            if tags == nil then
+                telemetry.available = 0
+                telemetry.lastError = scanError
+                telemetry.status = scanError or "waiting"
+                return 0, scanError
+            end
+            telemetry.available = #tags
+            telemetry.lastError = nil
+            telemetry.status = #tags > 0 and "claiming" or "waiting"
+
+            local claimed = 0
+            for _, tag in ipairs(tags) do
+                if not sessionAlive or not cfg.AutoClaimEvent then break end
+                local now = os.clock()
+                local lastAttempt = attemptedAt[tag]
+                if lastAttempt == nil or now - lastAttempt >= 5 then
+                    attemptedAt[tag] = now
+                    telemetry.attempts += 1
+                    local ok, _, err = invokeLiteralAction(submitAction, tag)
+                    if ok then
+                        claimed += 1
+                        telemetry.claimed += 1
+                    else
+                        telemetry.lastError = err
+                    end
+                    task.wait(0.25)
+                end
+            end
+            telemetry.status = claimed > 0 and "claimed" or "waiting"
+            return claimed, telemetry.lastError
+        end
+
+        eventClaims.telemetry = telemetry
+        eventClaims.sourcesFrom = sourcesFrom
+        eventClaims.claimableFrom = claimableFrom
     end
 
     local indexViewModule = nil
@@ -3836,6 +4127,15 @@ return function(locomotionFactory, Library, Common)
         end
     end)
 
+    task.spawn(function() -- event claims
+        while sessionAlive do
+            if cfg.AutoClaimEvent then
+                eventClaims.claim()
+            end
+            task.wait(2)
+        end
+    end)
+
     task.spawn(function() -- potions
         while sessionAlive do
             if cfg.AutoDrinkPotion then
@@ -4825,6 +5125,7 @@ return function(locomotionFactory, Library, Common)
         local group = bindGroup(tab:CreateSection("Claims"))
         group:AddToggle("AutoClaimIndex", { Text = "Auto Claim Index", Default = false })
         group:AddToggle("AutoClaimOnline", { Text = "Auto Claim Online", Default = false })
+        group:AddToggle("AutoClaimEvent", { Text = "Auto Claim Event", Default = false })
     end
 
     -- Gear tab

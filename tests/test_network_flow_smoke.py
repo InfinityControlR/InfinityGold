@@ -61,6 +61,8 @@ local fireRemote = "fire-message-descriptor"
 local invokeRemote = "训练点屏"
 local fireCalls = {{}}
 local invokeCalls = {{}}
+local literalFireCalls = {{}}
+local literalInvokeCalls = {{}}
 local bindableCalls = {{}}
 local registryReads = {{}}
 
@@ -69,6 +71,11 @@ local network = {{
         local count = select("#", ...)
         local remote, payload = ...
         assert(count == 1 or count == 2, "FireServer received " .. tostring(count) .. " args")
+        if remote == "活动界面已打开" then
+            assert(count == 1, "event refresh unexpectedly received a payload")
+            table.insert(literalFireCalls, remote)
+            return
+        end
         assert(remote == fireRemote, "FireServer first arg was not the remote")
         table.insert(fireCalls, payload or "empty")
     end,
@@ -76,6 +83,11 @@ local network = {{
         local count = select("#", ...)
         local remote, payload = ...
         assert(count == 1 or count == 2, "InvokeServer received " .. tostring(count) .. " args")
+        if remote == "活动任务提交" then
+            assert(count == 2, "event claim lost its dynamic quest tag")
+            table.insert(literalInvokeCalls, payload)
+            return {{ accepted = payload }}
+        end
         assert(remote == invokeRemote, "InvokeServer first arg was not the remote")
         table.insert(invokeCalls, payload or "empty")
         local accepted = payload
@@ -161,6 +173,11 @@ assert(sent, "dungeon return FireServer failed: " .. tostring(sendError))
 assert(#fireCalls == 3 and fireCalls[3] == "empty",
     "dungeon return did not send only its descriptor")
 
+sent, sendError = sendLiteralAction("活动界面已打开")
+assert(sent, "literal Event refresh failed: " .. tostring(sendError))
+assert(#literalFireCalls == 1 and literalFireCalls[1] == "活动界面已打开",
+    "Event refresh was not sent as a raw action")
+
 local guardCalls = 0
 local invoked, result, invokeError, didInvoke = invokeAction(
     "INVOKE",
@@ -241,6 +258,15 @@ assert(invoked and #invokeCalls == 9
     and invokeCalls[9].tag == "Monster"
     and invokeCalls[9].progress == 25,
     "index claim payload changed")
+
+invoked, result, invokeError = invokeLiteralAction(
+    "活动任务提交",
+    "future-event-quest"
+)
+assert(invoked and result.accepted == "future-event-quest",
+    "literal Event claim failed: " .. tostring(invokeError))
+assert(#literalInvokeCalls == 1 and literalInvokeCalls[1] == "future-event-quest",
+    "Event claim did not preserve its dynamic quest tag")
 
 invoked, result, invokeError = invokeAction(
     "EQUIP_SHOP_BUY",
