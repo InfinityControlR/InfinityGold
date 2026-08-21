@@ -80,9 +80,9 @@ end
 -- URLs for minutes and sometimes ignores cache-busting query strings.
 -- Only this loader itself is served from main.
 local UI = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/11d313ac902b4c025608242b8b5e334c120b7c77/ui/InfinityUI.lua'
-local COMMON = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/c80662d1080f7dcf72d4bf89bec42861b7733d3b/games/magicloot_common.lua'
-local LOCOMOTION = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/33a1b96c4e41875759846df9e1891f0d4c3c57d1/games/magicloot_locomotion.lua'
-local CORE = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/c8fb3d2746f47382899a220b50886153792c288a/games/magicloot.lua'
+local COMMON = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/a0e6f878e761d98b94df67a0ec82a7b2afc0c164/games/magicloot_common.lua'
+local LOCOMOTION = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/a0e6f878e761d98b94df67a0ec82a7b2afc0c164/games/magicloot_locomotion.lua'
+local CORE = 'https://raw.githubusercontent.com/InfinityControlR/InfinityGold/a0e6f878e761d98b94df67a0ec82a7b2afc0c164/games/magicloot.lua'
 
 -- Belt and braces: a fresh cache key per run for the pinned URLs too.
 local CACHE_BUST = '?t=' .. tostring(os.time())
