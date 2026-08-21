@@ -2499,12 +2499,14 @@ return function(locomotionFactory, Library, Common)
                     alchemyTelemetry.status = "pickup unconfirmed"
                 end
                 if not confirmed then return false, confirmation end
-                -- A confirmed pickup closes this Alchemy pass. Sell and Broom
-                -- receive their turns before a later base return can start a
-                -- new potion; otherwise a failed replacement selection leaves
-                -- the strict priority machine stuck in Alchemy indefinitely.
+                -- The station slot is free now. When Auto Brew is enabled,
+                -- continue in this same base pass so the material snapshot can
+                -- start exactly one new Best recipe immediately. A verified
+                -- empty result releases the next priority below; API/schema
+                -- errors remain fail-closed in Alchemy.
                 observeAlchemyLocation(challenge)
-                return true
+                readyBefore = false
+                if not cfg.AutoBrew then return true end
             end
             alchemyPickupNextAttemptAt = 0
         elseif readyBefore == true then
@@ -2692,7 +2694,9 @@ return function(locomotionFactory, Library, Common)
 
     local function alchemyPriorityOutcome()
         if alchemyTelemetry.confirmedAction == "brew" then return "brew" end
-        if alchemyTelemetry.confirmedAction == "pickup" then return "pickup" end
+        if alchemyTelemetry.confirmedAction == "pickup" and not cfg.AutoBrew then
+            return "pickup"
+        end
         if alchemyTelemetry.inProgress == true
             and alchemyTelemetry.status == "brewing (one potion at a time)"
         then

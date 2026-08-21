@@ -86,8 +86,10 @@ the InfinityGold dashboard.
   that no recipe is craftable, or a finished potion is picked up successfully.
   Sell releases Broom only after a follow-up inventory
   scan reports that no configured item remains sellable; transport success alone
-  is not confirmation. A confirmed pickup closes the current Alchemy pass and
-  never chains another brew before Sell/Broom receive their turns. Dungeon
+  is not confirmation. A confirmed pickup frees the station slot and, while
+  Auto Brew remains enabled, immediately starts the highest locally available
+  Best recipe in the same base pass. If that material check proves no recipe is
+  craftable, Alchemy releases Sell/Broom/farming without sending a request. Dungeon
   drops live in the small temporary `LimitBag` while farming and move into the
   visible 999-slot `PlayerData.Bag` only at base. Best Craftable watches that
   handoff, uses the recipe/MID/NeedCount snapshot captured once on script load,

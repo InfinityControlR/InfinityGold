@@ -230,8 +230,18 @@ alchemyTelemetry.status = "brewing (one potion at a time)"
 alchemyTelemetry.inProgress = true
 assert(alchemyPriorityOutcome() == "brew")
 alchemyTelemetry.confirmedAction = "pickup"
+alchemyTelemetry.inProgress = false
+alchemyTelemetry.status = "pickup confirmed"
+assert(alchemyPriorityOutcome() == nil,
+    "a pickup released Alchemy before checking for another recipe")
+alchemyTelemetry.status = "no recipe candidate"
+assert(alchemyPriorityOutcome() == "alchemy-empty",
+    "a pickup plus verified empty recipe result did not release Alchemy")
+cfg.AutoBrew = false
+alchemyTelemetry.status = "pickup confirmed"
 assert(alchemyPriorityOutcome() == "pickup",
-    "a confirmed pickup did not close the current Alchemy phase")
+    "pickup-only mode did not release Alchemy")
+cfg.AutoBrew = true
 alchemyTelemetry.confirmedAction = nil
 alchemyTelemetry.inProgress = false
 alchemyTelemetry.status = "potion ready for pickup"
