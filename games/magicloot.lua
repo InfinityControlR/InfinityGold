@@ -12,7 +12,7 @@
 --     module disables its feature with a status message instead of erroring.
 
 local BRAND = "InfinityGold"
-local MAX_FARM_STAGE = 27
+local MAX_FARM_STAGE = 32
 local MAX_PICKUP_TIER = 10
 local PLACE_ID = 133188236593503
 local CREATOR_ID = 118455659

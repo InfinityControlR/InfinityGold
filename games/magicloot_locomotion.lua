@@ -92,8 +92,15 @@ function Module.create(context)
 
     -- Broom only asks the server to jump to the selected stage. It deliberately
     -- never toggles/equips the broom; the game keeps ownership of the transition.
-    local broomStages = { 4, 8, 13, 18, 23 }
-    local broomStageSet = { [4] = true, [8] = true, [13] = true, [18] = true, [23] = true }
+    local broomStages = { 4, 8, 13, 18, 23, 28 }
+    local broomStageSet = {
+        [4] = true,
+        [8] = true,
+        [13] = true,
+        [18] = true,
+        [23] = true,
+        [28] = true,
+    }
     local BROOM_INITIAL_DELAY = 1
     local BROOM_CONFIRM_TIMEOUT = 5
     local BROOM_ARM_TIMEOUT = 30
@@ -676,7 +683,7 @@ function Module.create(context)
         })
         group:AddDropdown("BroomStage", {
             Text = "Broom stage",
-            Values = { "4", "8", "13", "18", "23" },
+            Values = { "4", "8", "13", "18", "23", "28" },
             Default = "4",
             Multi = false,
         })

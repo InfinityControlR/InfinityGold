@@ -75,7 +75,7 @@ print("broom_alchemy_suspension_api=ok")
         fixture = f'''\
 local now = 0
 local enabled = true
-local selected = "13"
+local selected = "28"
 local challenge = 0
 local challengeAvailable = true
 local returnBlocked = false
@@ -152,6 +152,9 @@ end
 
 {section}
 
+assert(broomStage("28") == 28, "new Broom stage 28 was rejected")
+assert(broomStage("32") == nil, "farm ceiling 32 leaked into the Broom catalog")
+
 -- The worker must remain completely passive until the core finishes loading
 -- all saved controls.
 updateBroom()
@@ -173,7 +176,7 @@ assert(#calls == 0 and broom.armed == true,
     "Alchemy suspension did not hold the armed Broom request")
 broom.suspended = false
 updateBroom()
-assert(#calls == 1 and calls[1].action == "关卡跳关请求" and calls[1].stage == 13,
+assert(#calls == 1 and calls[1].action == "关卡跳关请求" and calls[1].stage == 28,
     "initial stage request was not emitted")
 assert(broom.armed == true and broom.requestAttempts == 1,
     "request was consumed before dungeon confirmation")
@@ -335,7 +338,7 @@ remoteAvailable = true
 challengeAvailable = false
 enabled = true
 broom.enabled = true
-broom.stage = 13
+broom.stage = 28
 broom.waitingForBase = true
 broom.returnEpisode = true
 broom.armed = false

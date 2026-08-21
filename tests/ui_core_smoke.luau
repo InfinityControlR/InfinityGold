@@ -510,6 +510,29 @@ do
         return nil
     end
 
+    local function findDropdownByCaption(root, expectedCaption)
+        for _, child in ipairs(root:GetChildren()) do
+            if child.Name == "Dropdown" then
+                local button = child:FindFirstChild("Button")
+                local caption = button and button:FindFirstChild("Caption")
+                if caption ~= nil and caption.Text == expectedCaption then
+                    return child
+                end
+            end
+            local found = findDropdownByCaption(child, expectedCaption)
+            if found then return found end
+        end
+        return nil
+    end
+
+    local function hasVisibleText(root, expectedText)
+        if root:IsA("TextLabel") and root.Text == expectedText then return true end
+        for _, child in ipairs(root:GetChildren()) do
+            if hasVisibleText(child, expectedText) then return true end
+        end
+        return false
+    end
+
     local windowFrame = Library._windows[1] and Library._windows[1].Frame
     local minimumGoldInput = windowFrame and findDescendant(windowFrame, "Input")
     if minimumGoldInput == nil or not minimumGoldInput:IsA("TextBox") then
@@ -649,7 +672,7 @@ do
         fail("running capture action button does not use the high-contrast palette")
     end
 
-    local dropdown = windowFrame and findDescendant(windowFrame, "Dropdown")
+    local dropdown = windowFrame and findDropdownByCaption(windowFrame, "Stage")
     if dropdown == nil then
         fail("cannot simulate a dropdown: none found in the window")
     else
@@ -658,7 +681,7 @@ do
         if header == nil or list == nil then
             fail("dropdown is missing its header or list")
         else
-            -- Open via the header: the 27-stage list must cap at 5 rows.
+            -- Open via the header: the 32-stage list must cap at 5 rows.
             header.MouseButton1Click:Fire()
             if list.Visible ~= true then
                 fail("clicking the dropdown header did not open it")
@@ -668,6 +691,9 @@ do
                     "list height not capped to 5 rows: %d",
                     list.Size.Y.Offset
                 ))
+            end
+            if not hasVisibleText(list, "32") then
+                fail("farm stage dropdown does not include stage 32")
             end
             if dropdown.Size.Y.Offset ~= 242 then
                 fail(string.format(

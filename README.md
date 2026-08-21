@@ -44,8 +44,8 @@ the InfinityGold dashboard.
 ## Features
 
 - **Farm**: Auto Farm (progresses from `DungeonRunMaxClear + 1`, respects a
-  raised start stage), specific-stage farming, modes `Ground`, `Above`,
-  `Orbit`, `Running`, `Walking`, configurable height/orbit/enter delay.
+  raised start stage, up to stage 32), specific-stage farming, modes `Ground`,
+  `Above`, `Orbit`, `Running`, `Walking`, configurable height/orbit/enter delay.
 - **Walking**: `humanoid:Move` driven from a render-step binding at
   `Enum.RenderPriority.Character + 1`. No teleports, no WalkSpeed/JumpPower
   changes. Its final farm point is halfway between the stage entrance edge
@@ -79,7 +79,8 @@ the InfinityGold dashboard.
   snapshot. The game has one brewing slot, so a live
   `brewing (one potion at a time)` state is an intentional wait for the current
   potion rather than a recipe-search delay.
-- **Broom**: sends only the selected-stage request (`关卡跳关请求`) and never
+- **Broom**: offers stages 4, 8, 13, 18, 23 and 28, sends only the
+  selected-stage request (`关卡跳关请求`) and never
   toggles/equips the broom. It keeps single-flight epoch tokens, invalidation
   on toggle/stage/return changes, and base detection through the numeric
   `InDungeonChallenge` transition. Startup waits until config restoration has

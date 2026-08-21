@@ -88,6 +88,12 @@ class LocomotionInvariantTests(unittest.TestCase):
         self.assertNotIn("task.wait(0.25)", request)
         self.assertIn('return true, "stage request"', request)
 
+    def test_broom_catalog_adds_stage_28_but_not_the_farm_ceiling(self):
+        self.assertIn("local broomStages = { 4, 8, 13, 18, 23, 28 }", self.source)
+        self.assertIn("[28] = true", self.source)
+        self.assertIn('Values = { "4", "8", "13", "18", "23", "28" }', self.source)
+        self.assertNotIn("[32] = true", self.source)
+
     def test_broom_single_flight_protection(self):
         for marker in (
             "transactionActive",
@@ -126,6 +132,10 @@ class CoreInvariantTests(unittest.TestCase):
 
     def test_combat_cadence(self):
         self.assertIn("task.wait(0.2)", self.source)
+
+    def test_farm_stage_ceiling_is_32(self):
+        self.assertIn("local MAX_FARM_STAGE = 32", self.source)
+        self.assertIn("for stage = 1, MAX_FARM_STAGE do", self.source)
 
     def test_click_cadence_formula(self):
         self.assertIn("1 / math.max(1, tonumber(cfg.ClickRate) or 10)", self.source)

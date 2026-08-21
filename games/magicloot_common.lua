@@ -96,7 +96,7 @@ end
 --                    progresses past the cleared run and respects a manually
 --                    raised starting stage; always clamped to [1, maxStage].
 function Common.farmStageTarget(cleared, selected, specific, maxStage)
-    local ceiling = tonumber(maxStage) or 27
+    local ceiling = tonumber(maxStage) or 32
     ceiling = math.max(1, math.floor(ceiling))
 
     if specific then

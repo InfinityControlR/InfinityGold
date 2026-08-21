@@ -105,12 +105,14 @@ check("gate: tier 10 selected", Common.gateDrop(
 ))
 
 -- farmStageTarget
-check("farm: specific exact", Common.farmStageTarget(10, 5, true, 27) == 5)
-check("farm: progress past clear", Common.farmStageTarget(10, 1, false, 27) == 11)
-check("farm: raised start", Common.farmStageTarget(2, 15, false, 27) == 15)
-check("farm: clamp to ceiling", Common.farmStageTarget(30, 1, false, 27) == 27)
-check("farm: clamp specific", Common.farmStageTarget(10, 99, true, 27) == 27)
-check("farm: nil cleared uses selected", Common.farmStageTarget(nil, 3, false, 27) == 3)
+check("farm: specific exact", Common.farmStageTarget(10, 5, true, 32) == 5)
+check("farm: progress past clear", Common.farmStageTarget(10, 1, false, 32) == 11)
+check("farm: raised start", Common.farmStageTarget(2, 28, false, 32) == 28)
+check("farm: progresses through stage 32", Common.farmStageTarget(31, 1, false, 32) == 32)
+check("farm: clamp to ceiling", Common.farmStageTarget(40, 1, false, 32) == 32)
+check("farm: clamp specific", Common.farmStageTarget(10, 99, true, 32) == 32)
+check("farm: default ceiling is 32", Common.farmStageTarget(40, 1, false) == 32)
+check("farm: nil cleared uses selected", Common.farmStageTarget(nil, 3, false, 32) == 3)
 
 -- parseTierSelection
 local tiers = Common.parseTierSelection({ "1", "3", "x", 4 })
