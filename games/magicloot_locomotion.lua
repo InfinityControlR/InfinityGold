@@ -540,9 +540,11 @@ function Module.create(context)
             local name = type(entry.name) == "string" and entry.name ~= ""
                 and entry.name
                 or ("Wand " .. tostring(entry.id))
-            local label = "#" .. tostring(entry.id) .. " " .. name
-            labelsById[entry.id] = label
-            table.insert(values, label)
+            labelsById[entry.id] = name
+            table.insert(values, {
+                Value = tostring(entry.id),
+                Text = name,
+            })
         end
         return values, labelsById
     end

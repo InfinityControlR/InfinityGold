@@ -141,6 +141,19 @@ broomStage, released = Common.broomFarmStageTarget(29, nil, true)
 check("farm: missing Broom route keeps normal target",
     broomStage == 29 and released == false)
 
+local displayName, usedFallback = Common.catalogDisplayName("#101 Ember", "Material", 101)
+check("catalog display: strips legacy hash id",
+    displayName == "Ember" and usedFallback == false)
+displayName, usedFallback = Common.catalogDisplayName("101 Golden Potion", "Potion", 101)
+check("catalog display: strips legacy numeric id",
+    displayName == "Golden Potion" and usedFallback == false)
+displayName, usedFallback = Common.catalogDisplayName("Poción Áurea", "Potion", 102)
+check("catalog display: preserves localized non-CJK text",
+    displayName == "Poción Áurea" and usedFallback == false)
+displayName, usedFallback = Common.catalogDisplayName("火焰药水", "Potion", 103)
+check("catalog display: replaces untranslated CJK key",
+    displayName == "Potion" and usedFallback == true)
+
 local orbitX, orbitZ = Common.runningOrbitOffset(0, 12)
 check("running orbit: zero angle", math.abs(orbitX - 12) < 0.001
     and math.abs(orbitZ) < 0.001)

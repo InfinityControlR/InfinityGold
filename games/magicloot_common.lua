@@ -123,6 +123,39 @@ function Common.broomFarmStageTarget(normalStage, broomStage, progressive)
     return broom, false
 end
 
+-- Keep catalog identity in the dropdown Value while presenting a clean label.
+-- Old configs and some game facades expose "#ID name"; untranslated ZhName
+-- values are CJK keys rather than useful localized text.
+function Common.catalogDisplayName(value, fallbackPrefix, id)
+    local text = type(value) == "string" and value or ""
+    text = string.match(text, "^%s*(.-)%s*$") or ""
+    local legacy = string.match(text, "^#%d+%s*(.*)$")
+        or string.match(text, "^%d+%s+(.+)$")
+    if legacy ~= nil then
+        text = string.match(legacy, "^%s*(.-)%s*$") or ""
+    end
+
+    local containsCjk = false
+    local utf8Ok = pcall(function()
+        for _, codepoint in utf8.codes(text) do
+            if (codepoint >= 0x3400 and codepoint <= 0x4DBF)
+                or (codepoint >= 0x4E00 and codepoint <= 0x9FFF)
+                or (codepoint >= 0xF900 and codepoint <= 0xFAFF)
+            then
+                containsCjk = true
+                break
+            end
+        end
+    end)
+    if text ~= "" and utf8Ok and not containsCjk then
+        return text, false
+    end
+
+    local prefix = type(fallbackPrefix) == "string" and fallbackPrefix ~= ""
+        and fallbackPrefix or "Item"
+    return prefix, true
+end
+
 -- Local-space offset for Running's circular waypoints. Keeping the trigonometry
 -- pure makes the orbit contract testable without Roblox services.
 function Common.runningOrbitOffset(angle, radius)

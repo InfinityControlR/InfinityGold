@@ -80,8 +80,10 @@ the InfinityGold dashboard.
   every two seconds it re-reads both game config facades, accepts array/map and
   shallow wrapped schemas plus common ID/name/price aliases, and adds patch-day
   material IDs without a hub update or losing existing selections. Catalog
-  lists show names only while retaining stable numeric IDs internally, including
-  migration of old saved `#ID name` selections. Automatic
+  lists show clean names while retaining stable numeric IDs internally, including
+  migration of old saved `#ID name` selections. Translation echoes and raw CJK
+  keys are replaced by an English typed fallback instead of leaking into Items,
+  Training Ground, Potions or Selected Wand. Automatic
   selling runs only at base through a strict `Alchemy -> Sell -> Broom` state
   machine. Alchemy releases Sell only after a brew is confirmed/already brewing,
   a finished potion occupies the slot, or a non-empty valid recipe catalog proves

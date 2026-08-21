@@ -748,28 +748,33 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function translatedConfigName(raw, id, fallbackPrefix)
-        local name = type(raw) == "table"
-            and (raw.ZhName
-                or raw.Name
-                or raw.name
-                or raw.DisplayName
-                or raw.displayName)
+        local directName = type(raw) == "table"
+            and (raw.Name or raw.name or raw.DisplayName or raw.displayName)
             or nil
-        if name ~= nil then
+        local translationKey = type(raw) == "table" and raw.ZhName or nil
+        if translationKey ~= nil then
             local translation = resolveRuntimeModule("TranslationHelper")
             if translation ~= nil
                 and type(translation.TranslateByKey) == "function"
             then
-                local ok, value = pcall(translation.TranslateByKey, name)
+                local ok, value = pcall(translation.TranslateByKey, translationKey)
                 if ok and type(value) == "string" and value ~= "" then
-                    name = value
+                    local display, usedFallback = Common.catalogDisplayName(
+                        value,
+                        fallbackPrefix,
+                        id
+                    )
+                    if not usedFallback then return display end
                 end
             end
         end
-        if type(name) ~= "string" or name == "" then
-            name = tostring(fallbackPrefix or "Item")
-        end
-        return name
+        local display, usedFallback = Common.catalogDisplayName(
+            directName,
+            fallbackPrefix,
+            id
+        )
+        if not usedFallback then return display end
+        return Common.catalogDisplayName(translationKey, fallbackPrefix, id)
     end
 
     local function catalogByName(name, itemType)
@@ -5150,7 +5155,16 @@ return function(locomotionFactory, Library, Common)
         if loco ~= nil then
             local selectedBridge = {
                 [1] = function(configName, itemType)
-                    return catalogByName(configName, itemType)
+                    local entries = catalogByName(configName, itemType)
+                    local visible = {}
+                    for _, entry in ipairs(entries) do
+                        table.insert(visible, {
+                            id = entry.id,
+                            price = entry.price,
+                            name = translatedConfigName(entry.raw, entry.id, "Wand"),
+                        })
+                    end
+                    return visible
                 end,
                 [2] = function(id, itemType)
                     local bag = playerBag()
