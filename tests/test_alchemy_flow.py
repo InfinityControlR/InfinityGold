@@ -352,6 +352,9 @@ local readyReadHook = function() end
 local recipeListReads = 0
 local craftPredicateReads = 0
 local rebirthCheckMode = "ok"
+local refreshRequiresTransferredBag = false
+local transferredBagVisible = false
+local materialArrived = false
 local potionConfReads = 0
 local potionFindCalls = 0
 local translationCalls = 0
@@ -399,6 +402,9 @@ local alchemy = {{
     CanCraftRecipe = function(actualPlayer, raw)
         assert(actualPlayer == player, "craft check received the wrong player")
         craftPredicateReads += 1
+        if refreshRequiresTransferredBag and raw.recipeId == 1 then
+            return raw.craftable and transferredBagVisible
+        end
         return raw.craftable
     end,
     GetRecipeList = function()
@@ -473,6 +479,9 @@ local function fireBindableAction(action, gameName, empty, visible, animate)
         "wrong PotionBrewingGame bindable arguments")
     assert(visible == false and animate == false, "wrong UI refresh flags")
     refreshCalls += 1
+    if refreshRequiresTransferredBag and materialArrived then
+        transferredBagVisible = true
+    end
     return true
 end
 
@@ -849,6 +858,46 @@ assert(sent == false
     and #calls == callsBeforeEmptyTransfer,
     "empty transfer remained trapped at base or guessed a recipe id")
 rebirthCheckMode = "ok"
+
+-- LimitBag can clear before the permanent Bag receives its material rows. The
+-- first local UI refresh is then necessarily stale. A later fingerprint change
+-- must rearm the refresh and craft immediately from the updated facade.
+recipes[1].craftable = true
+refreshRequiresTransferredBag = true
+transferredBagVisible = false
+materialArrived = false
+inProgress = false
+readyForPickup = false
+remoteMode = "accept-one"
+resetAlchemyRecovery()
+challenge = 18
+temporaryBagUsed = 5
+runAlchemyCycle()
+challenge = 0
+temporaryBagUsed = 0
+local callsBeforeDelayedPermanentBag = #calls
+local refreshBeforeDelayedPermanentBag = refreshCalls
+sent, craftError = runAlchemyCycle()
+assert(sent == false
+    and #calls == callsBeforeDelayedPermanentBag
+    and refreshCalls == refreshBeforeDelayedPermanentBag + 1
+    and alchemyInventoryTransfer.refreshed == true,
+    "the pre-transfer facade refresh was not reproduced")
+
+table.insert(bag, {{ id = 777, onlyID = 5777, tp = 2, count = 1 }})
+materialArrived = true
+fakeClock += 0.1
+sent, craftError = runAlchemyCycle()
+assert(sent == true and craftError == nil
+    and #calls == callsBeforeDelayedPermanentBag + 1
+    and calls[#calls].action == "ALCHEMY_CRAFT_RECIPE"
+    and calls[#calls].payload.recipeId == 1
+    and refreshCalls == refreshBeforeDelayedPermanentBag + 3,
+    "a delayed permanent-Bag update did not refresh then craft immediately")
+refreshRequiresTransferredBag = false
+transferredBagVisible = false
+materialArrived = false
+inProgress = false
 
 -- Stage-13 regression: recipe #17 becomes locally craftable while loot is
 -- arriving in the Bag, then the same predicate is stale/false at base. The

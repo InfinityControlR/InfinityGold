@@ -91,7 +91,10 @@ the InfinityGold dashboard.
   drops live in the small temporary `LimitBag` while farming and move into the
   visible 999-slot `PlayerData.Bag` only at base. Best Craftable watches that
   handoff, refreshes the local Alchemy facade and sends the highest recipe whose
-  material predicate is positive in the first base cycle. A stale rebirth hint
+  material predicate is positive in the first base cycle. If `LimitBagUsed`
+  clears before the permanent Bag changes, the later material fingerprint rearms
+  that refresh and is ranked immediately instead of reusing the stale facade.
+  A stale rebirth hint
   is diagnostic rather than a veto because the server still validates the one
   selected ID. When every material predicate is false, a missing/stale rebirth
   helper cannot hide the resulting `alchemy-empty` outcome. It never walks

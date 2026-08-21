@@ -1291,6 +1291,11 @@ return function(locomotionFactory, Library, Common)
                 alchemyInventoryTransfer.stableSince = now
                 alchemyInventoryTransfer.changed = true
                 alchemyInventoryTransfer.permanentChanged = true
+                -- LimitBagUsed can reach zero before PlayerData.Bag receives
+                -- the transferred rows. Any refresh performed on that earlier
+                -- snapshot is stale; rearm it so CanCraftRecipe sees the real
+                -- permanent inventory in this same fast polling cycle.
+                alchemyInventoryTransfer.refreshed = false
                 resetAlchemyRecovery()
                 clearAlchemyStageCandidate(alchemyInvokeLease.inventoryEpoch)
             end
