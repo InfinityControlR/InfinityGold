@@ -249,6 +249,23 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn("Multi = true", rarity_dropdown)
         self.assertIn("MaxVisible = 5", rarity_dropdown)
 
+    def test_pickup_minimum_value_is_an_unbounded_numeric_input(self):
+        loot_start = self.source.index('window:CreateTab({ Name = "Loot"')
+        loot_end = self.source.index('-- Progress tab', loot_start)
+        loot_ui = self.source[loot_start:loot_end]
+        self.assertIn('group:AddInput("PickupMinValue"', loot_ui)
+        self.assertNotIn('group:AddSlider("PickupMinValue"', loot_ui)
+        self.assertNotIn("Max = 100000", loot_ui)
+        self.assertIn('group:AddLabel("Minimum gold value (no limit)")', loot_ui)
+        self.assertIn("Parser = parsePickupMinimumValue", loot_ui)
+
+        parser = self.source.split(
+            "    local function parsePickupMinimumValue(value)", 1
+        )[1].split("    local configReady", 1)[0]
+        self.assertIn("local numeric = tonumber(value)", parser)
+        self.assertIn("numeric == math.huge", parser)
+        self.assertIn("return math.max(0, math.floor(numeric))", parser)
+
     def test_walking_mode_dispatch(self):
         self.assertIn('cfg.FarmMode == "Walking"', self.source)
         self.assertIn('loco:Update("Walking"', self.source)

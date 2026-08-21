@@ -72,6 +72,14 @@ check("gate: normal respects minimum", not Common.gateDrop(
     { hasPrimaryPart = true, landed = true, inRange = true, gold = 5, tier = 1 },
     { minValue = 10 }
 ))
+check("gate: accepts a drop above a multi-billion minimum", Common.gateDrop(
+    { hasPrimaryPart = true, landed = true, inRange = true, gold = 7500000000000, tier = 1 },
+    { minValue = 5000000000000 }
+))
+check("gate: rejects a drop below a multi-billion minimum", not Common.gateDrop(
+    { hasPrimaryPart = true, landed = true, inRange = true, gold = 4500000000000, tier = 1 },
+    { minValue = 5000000000000 }
+))
 
 -- gateDrop: rarity filter semantics
 local rareDrop = { hasPrimaryPart = true, landed = true, inRange = true, gold = 50, tier = 3 }

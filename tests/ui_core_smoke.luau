@@ -511,6 +511,32 @@ do
     end
 
     local windowFrame = Library._windows[1] and Library._windows[1].Frame
+    local minimumGoldInput = windowFrame and findDescendant(windowFrame, "Input")
+    if minimumGoldInput == nil or not minimumGoldInput:IsA("TextBox") then
+        fail("minimum gold manual input was not constructed")
+    elseif minimumGoldInput.Size.X.Scale ~= 1
+        or minimumGoldInput.Size.X.Offset ~= 0
+        or minimumGoldInput.Text ~= "0"
+        or minimumGoldInput.PlaceholderText
+            ~= "Type a whole number, for example 1000000000000"
+    then
+        fail("minimum gold input is not full-width or has the wrong defaults")
+    else
+        minimumGoldInput.Text = "7500000000000"
+        minimumGoldInput.FocusLost:Fire(false)
+        pump(1)
+        if minimumGoldInput.Text ~= "7500000000000" then
+            fail("minimum gold input rejected a value above the old slider limit")
+        end
+
+        minimumGoldInput.Text = "not-a-number"
+        minimumGoldInput.FocusLost:Fire(false)
+        pump(1)
+        if minimumGoldInput.Text ~= "7500000000000" then
+            fail("minimum gold input did not restore the last valid value")
+        end
+    end
+
     local navigation = windowFrame and findDescendant(windowFrame, "Navigation")
     local firstTab = navigation and navigation:FindFirstChild("Tab1")
     local firstTabName = firstTab and firstTab:FindFirstChild("Name")

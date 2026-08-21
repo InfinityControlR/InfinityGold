@@ -275,6 +275,19 @@ return function(locomotionFactory, Library, Common)
         AutoBuyBest = false,
         AutoEquipBest = false,
     }
+
+    local function parsePickupMinimumValue(value)
+        local numeric = tonumber(value)
+        if numeric == nil
+            or numeric ~= numeric
+            or numeric == math.huge
+            or numeric == -math.huge
+        then
+            return nil
+        end
+        return math.max(0, math.floor(numeric))
+    end
+
     local configReady = false
 
     local registry = {}
@@ -3585,11 +3598,26 @@ return function(locomotionFactory, Library, Common)
             end,
             AddInput = function(_, name, options)
                 options = options or {}
-                local element = section:AddInput({
+                local element
+                element = section:AddInput({
                     Text = options.Text,
-                    Default = options.Default,
+                    Default = options.Default ~= nil and options.Default or cfg[name],
                     Placeholder = options.Placeholder,
-                    Callback = function(value) cfg[name] = value end,
+                    Callback = function(value)
+                        local parsed = value
+                        if type(options.Parser) == "function" then
+                            local ok, result = pcall(options.Parser, value)
+                            if not ok or result == nil then
+                                if element ~= nil then element:Set(cfg[name]) end
+                                return
+                            end
+                            parsed = result
+                        end
+                        cfg[name] = parsed
+                        if type(options.Parser) == "function" and element ~= nil then
+                            element:Set(parsed)
+                        end
+                    end,
                 })
                 return bind(name, element)
             end,
@@ -3812,9 +3840,11 @@ return function(locomotionFactory, Library, Common)
             Text = "Pickup range",
             Default = 150, Min = 10, Max = 400, Rounding = 0,
         })
-        group:AddSlider("PickupMinValue", {
-            Text = "Minimum gold value",
-            Default = 0, Min = 0, Max = 100000, Rounding = 0,
+        group:AddLabel("Minimum gold value (no limit)")
+        group:AddInput("PickupMinValue", {
+            Default = 0,
+            Placeholder = "Type a whole number, for example 1000000000000",
+            Parser = parsePickupMinimumValue,
         })
         group:AddToggle("PickupFilterRarity", {
             Text = "Filter by rarity",

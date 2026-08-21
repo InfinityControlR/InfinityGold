@@ -60,7 +60,8 @@ the InfinityGold dashboard.
   moving the real cursor.
 - **Loot**: Auto Pickup with the modern drop schema (`ItemId` attribute,
   `DropLanded`, `GoldValue`, `Xyd`) plus legacy `DropItem` models. The rarity
-  selector exposes tiers 1–10 in a compact scrolling list. Event drops
+  selector exposes tiers 1–10 in a compact scrolling list. Its minimum gold
+  value is a full-width manual numeric input with no slider ceiling. Event drops
   (numeric `GoldValue` exactly equal to 0) bypass minimum value and rarity filters
   and are collected first. Auto Sell and Sell All Now enumerate the player's
   Bag and send the eligible materials' unique `onlyID` values, excluding
