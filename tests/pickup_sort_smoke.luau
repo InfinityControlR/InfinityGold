@@ -149,6 +149,26 @@ check("catalog: normalized and sorted", #catalog == 2
     and catalog[1].price == 500
     and catalog[2].itemType == 9)
 
+-- New game patches may wrap a config and change field capitalization. These
+-- rows must appear automatically without adding their IDs to InfinityGold.
+local patchedCatalog = Common.catalogEntries({
+    Data = {
+        { ID = 101, Name = "Patch item", Cost = 700, ItemType = 2 },
+        { ItemId = 102, DisplayName = "Patch potion", Gold = 900 },
+        { itemID = 103, ZhName = "Patch gear", price = 800 },
+    },
+    Items = {
+        duplicate = { id = 101, Price = 0 },
+        train = { trainId = 104, name = "Patch ground", Price = 600 },
+    },
+}, 9)
+check("catalog: patch aliases and wrappers", #patchedCatalog == 4
+    and patchedCatalog[1].id == 102
+    and patchedCatalog[2].id == 103
+    and patchedCatalog[3].id == 101
+    and patchedCatalog[3].name == "Patch item"
+    and patchedCatalog[4].id == 104)
+
 local owned = Common.ownedItemIds({
     { id = 4, tp = 9 },
     { id = 8, tp = 13 },

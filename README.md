@@ -71,8 +71,10 @@ the InfinityGold dashboard.
   and are collected first. Auto Sell All, Auto Sell Specific and Sell All Now
   enumerate the player's Bag and send the eligible materials' unique `onlyID`
   values, excluding locked items and materials reserved for Alchemy recipes.
-  The All/Specific switches are mutually exclusive and their catalog refreshes
-  after late game-module initialization without losing selections. Automatic
+  The All/Specific switches are mutually exclusive and their catalog stays live:
+  every two seconds it re-reads both game config facades, accepts array/map and
+  shallow wrapped schemas plus common ID/name/price aliases, and adds patch-day
+  material IDs without a hub update or losing existing selections. Automatic
   selling runs only at base. When Auto Brew is enabled, the base-economy worker runs
   Alchemy first and sells only after a craft was confirmed or while a potion is
   already brewing; a pickup confirmation alone never unlocks selling. Dungeon
@@ -101,10 +103,14 @@ the InfinityGold dashboard.
   built from live `IndexView` snapshots and online rewards are filtered through
   `OnlineBox` before individual claims.
 - **Potions and gear**: Auto Drink sends each selected potion inventory
-  `onlyID`; its selector also refreshes when the catalog arrives late. Wand and
+  `onlyID`; its selector continuously discovers new live potion config rows.
+  Alchemy likewise re-reads the game's recipe list and accepts sparse/keyed
+  additions. Wand and
   armor buying/equipping are separate, choose the best affordable/unowned or
-  best owned entry, and use Magic's item types 9 and 13. All integrations stay
-  fail-open when a required game module is unavailable.
+  best owned entry, use Magic's item types 9 and 13, and re-evaluate the current
+  weapon/armor configs on every worker cycle. Training grounds use the same live
+  catalog sync. All integrations stay fail-open when a required game module is
+  unavailable.
 - **Utility**: Anti AFK is enabled by default and can restore the original idle
   connections when switched off.
 - **Dashboard**: InfinityUI — obsidian-black surface, gold accents, draggable

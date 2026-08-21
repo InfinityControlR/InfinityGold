@@ -47,7 +47,7 @@ PLAYER_NUMBER = helper_source(
     "    local getData = nil",
 )
 GET_DATA = helper_source(
-    "    local function resolveGetData()",
+    "    local function resolveGetData(refresh)",
     "    local function playerBag()",
 )
 BAG_HELPERS = helper_source(

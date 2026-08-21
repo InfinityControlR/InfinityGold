@@ -51,7 +51,7 @@ NETWORK_HELPERS = helper_source(
 
 RUNTIME_MODULE_HELPER = helper_source(
     "    local runtimeModules = {}",
-    "    local function resolveGetData()",
+    "    local function resolveGetData(refresh)",
 )
 
 

@@ -155,30 +155,94 @@ function Common.parseIdSelection(values)
     return ids
 end
 
--- Normalize the game's config maps into the descriptor order used by Magic's
--- shop and selector workers. Configs can be arrays or dictionaries, and live
--- builds have used both Price/price spellings.
+-- Normalize live game config maps into the descriptor order used by Magic's
+-- shop and selector workers. Patch releases have exposed arrays, dictionaries
+-- and shallow wrapper tables, with several ID/price/name spellings. Keep this
+-- pure and schema-tolerant so new rows appear without a hub update.
 function Common.catalogEntries(raw, itemType)
-    local entries = {}
-    if type(raw) ~= "table" then return entries end
+    if type(raw) ~= "table" then return {} end
 
-    for key, value in pairs(raw) do
-        if type(value) == "table" then
-            local id = tonumber(value.id) or tonumber(key)
-            if id ~= nil and id > 0 then
-                table.insert(entries, {
-                    id = math.floor(id),
-                    itemType = tonumber(value.itemType)
-                        or tonumber(value.tp)
-                        or itemType,
-                    price = tonumber(value.Price)
-                        or tonumber(value.price)
-                        or 0,
-                    name = value.ZhName or value.name,
-                    raw = value,
-                })
+    local byId = {}
+    local visited = {}
+    local wrapperKeys = {
+        Config = true, config = true,
+        Configs = true, configs = true,
+        Data = true, data = true,
+        Items = true, items = true,
+        List = true, list = true,
+        Rows = true, rows = true,
+        Values = true, values = true,
+    }
+
+    local function scan(container, depth)
+        if type(container) ~= "table" or visited[container] then return end
+        visited[container] = true
+
+        for key, value in pairs(container) do
+            if type(value) == "table" then
+                local id = tonumber(value.id)
+                    or tonumber(value.ID)
+                    or tonumber(value.Id)
+                    or tonumber(value.itemId)
+                    or tonumber(value.ItemId)
+                    or tonumber(value.itemID)
+                    or tonumber(value.equipID)
+                    or tonumber(value.trainId)
+                    or tonumber(value.recipeId)
+                    or tonumber(value.potionId)
+                    or tonumber(value.materialId)
+                    or tonumber(value.weaponId)
+                    or tonumber(value.armorId)
+                    or tonumber(key)
+                if id ~= nil and id > 0 then
+                    id = math.floor(id)
+                    local candidate = {
+                        id = id,
+                        itemType = tonumber(value.itemType)
+                            or tonumber(value.ItemType)
+                            or tonumber(value.tp)
+                            or tonumber(value.Type)
+                            or itemType,
+                        price = tonumber(value.Price)
+                            or tonumber(value.price)
+                            or tonumber(value.Cost)
+                            or tonumber(value.cost)
+                            or tonumber(value.Gold)
+                            or tonumber(value.gold)
+                            or tonumber(value.NeedGold)
+                            or 0,
+                        name = value.ZhName
+                            or value.Name
+                            or value.name
+                            or value.DisplayName
+                            or value.displayName
+                            or value.Title,
+                        raw = value,
+                    }
+                    local previous = byId[id]
+                    if previous == nil then
+                        byId[id] = candidate
+                    else
+                        if previous.name == nil then previous.name = candidate.name end
+                        if previous.itemType == nil then
+                            previous.itemType = candidate.itemType
+                        end
+                        if candidate.price > previous.price then
+                            previous.price = candidate.price
+                        end
+                    end
+                elseif depth < 2 and wrapperKeys[key] == true then
+                    scan(value, depth + 1)
+                end
             end
         end
+    end
+
+    scan(raw, 0)
+
+    local entries = {}
+    for _, entry in pairs(byId) do
+        table.insert(entries, entry)
     end
 
     table.sort(entries, function(left, right)

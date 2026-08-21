@@ -554,31 +554,34 @@ return function(locomotionFactory, Library, Common)
 
     local runtimeModules = {}
 
-    local function resolveRuntimeModule(name)
-        if runtimeModules[name] ~= nil then return runtimeModules[name] end
+    local function resolveRuntimeModule(name, refresh)
+        if not refresh and runtimeModules[name] ~= nil then
+            return runtimeModules[name]
+        end
         local utils = resolveClientUtils()
-        if utils == nil then return nil end
+        if utils == nil then return runtimeModules[name] end
 
         local candidate = readUtilsEntry(utils, name)
-        if candidate == nil then return nil end
+        if candidate == nil then return runtimeModules[name] end
 
         if typeof(candidate) == "Instance" then
             local ok
             ok, candidate = pcall(require, candidate)
-            if not ok then return nil end
+            if not ok then return runtimeModules[name] end
         end
-        if type(candidate) ~= "table" then return nil end
+        if type(candidate) ~= "table" then return runtimeModules[name] end
 
         runtimeModules[name] = candidate
         return candidate
     end
 
-    local function resolveGetData()
+    local function resolveGetData(refresh)
         -- UtilsSystem is populated asynchronously on some clients. Cache only
         -- a successful resolution so an early probe cannot disable every
-        -- GetData-backed feature for the rest of the session.
-        if getData ~= nil then return getData end
-        getData = resolveRuntimeModule("GetData")
+        -- GetData-backed feature for the rest of the session. Catalog scans may
+        -- explicitly refresh this reference when a game patch swaps the facade.
+        if getData ~= nil and not refresh then return getData end
+        getData = resolveRuntimeModule("GetData", refresh) or getData
         return getData
     end
 
@@ -597,18 +600,33 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function configByName(name)
-        local cfgFind = resolveRuntimeModule("CfgFind")
-        if cfgFind ~= nil and type(cfgFind.GetCfgByName) == "function" then
-            local ok, result = pcall(cfgFind.GetCfgByName, name)
-            if ok and type(result) == "table" then return result end
+        -- Query both live facades on every catalog scan. A patch can replace a
+        -- registry entry or populate one facade before the other; selecting the
+        -- richest normalized result prevents a stale/empty table from hiding
+        -- newly released items.
+        local best = nil
+        local bestCount = -1
+        local function consider(result)
+            if type(result) ~= "table" then return end
+            local count = #Common.catalogEntries(result)
+            if count > bestCount then
+                best = result
+                bestCount = count
+            end
         end
 
-        local data = resolveGetData()
+        local cfgFind = resolveRuntimeModule("CfgFind", true)
+        if cfgFind ~= nil and type(cfgFind.GetCfgByName) == "function" then
+            local ok, result = pcall(cfgFind.GetCfgByName, name)
+            if ok then consider(result) end
+        end
+
+        local data = resolveGetData(true)
         if data ~= nil and type(data.GetCfgByName) == "function" then
             local ok, result = pcall(data.GetCfgByName, name)
-            if ok and type(result) == "table" then return result end
+            if ok then consider(result) end
         end
-        return nil
+        return best
     end
 
     local function translatedConfigName(raw, id, fallbackPrefix)
@@ -1324,7 +1342,7 @@ return function(locomotionFactory, Library, Common)
         if rawRecipes == nil then return nil, err end
 
         local catalog = {}
-        for _, raw in ipairs(rawRecipes) do
+        for _, raw in pairs(rawRecipes) do
             if type(raw) == "table" then
                 local id = math.floor(tonumber(raw.recipeId) or 0)
                 if id > 0 then
@@ -1418,7 +1436,7 @@ return function(locomotionFactory, Library, Common)
         if rawRecipes == nil then return nil, recipeError end
         local bestId = nil
         local advisoryId = nil
-        for _, raw in ipairs(rawRecipes) do
+        for _, raw in pairs(rawRecipes) do
             if type(raw) == "table" then
                 local id = math.floor(tonumber(raw.recipeId) or 0)
                 if id > 0 then
