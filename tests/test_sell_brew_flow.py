@@ -59,6 +59,155 @@ ALCHEMY_WORKER = AUTO_SELL_OPTIONS + BASE_PRIORITY + core_slice(
 
 
 class SellBrewFlowTests(unittest.TestCase):
+    def test_idle_base_watches_only_confirmed_brew_until_ready(self):
+        fixture = f"""
+local sessionAlive = true
+local configReady = true
+local cfg = {{
+    AutoBrew = true,
+    AutoPickupPotion = true,
+    BrewRecipe = "Best craftable",
+    AutoSell = false,
+    AutoSellSpecific = false,
+    SellItems = {{}},
+    AutoBroom = false,
+    AutoFarm = false,
+    AutoFarmSpecific = false,
+}}
+local fakeClock = 0
+local os = {{ clock = function() return fakeClock end }}
+local alchemyTelemetry = {{
+    confirmedAction = nil,
+    inProgress = false,
+    ready = false,
+    status = "waiting",
+}}
+local sellTelemetry = {{ status = "waiting", lastError = nil }}
+local alchemy = {{}}
+local readyChecks = 0
+local alchemyRuns = 0
+local rearmedAt = nil
+
+local function playerNumber(name)
+    assert(name == "InDungeonChallenge")
+    return 0
+end
+local function observeAlchemyLocation(_challenge) end
+local function alchemyInventoryTransferPending() return false end
+local function resetAlchemyRecovery() end
+local function clearAlchemyStageCandidate() end
+local function resolveAlchemy() return alchemy end
+local function alchemyState(actual, method)
+    assert(actual == alchemy and method == "IsBrewReadyForPickup")
+    readyChecks += 1
+    return readyChecks >= 3
+end
+local function runAlchemyCycle()
+    alchemyRuns += 1
+    if alchemyRuns == 1 then
+        alchemyTelemetry.confirmedAction = "brew"
+        alchemyTelemetry.inProgress = true
+        alchemyTelemetry.ready = false
+        alchemyTelemetry.status = "brew confirmed"
+        return true
+    end
+    rearmedAt = fakeClock
+    sessionAlive = false
+    return false
+end
+local function alchemyPriorityOutcome()
+    return alchemyTelemetry.confirmedAction
+end
+local function runAutoSellCycle()
+    error("disabled AutoSell was invoked")
+end
+
+local task = {{}}
+task.spawn = function(callback) callback() end
+task.wait = function(seconds)
+    fakeClock += seconds
+    assert(fakeClock < 10, "idle readiness watcher did not terminate")
+end
+
+{ALCHEMY_WORKER}
+
+assert(alchemyRuns == 2 and readyChecks == 3,
+    "idle brew was not watched and rearmed exactly once")
+assert(rearmedAt >= 2.5 and rearmedAt < 3,
+    "readiness polling cadence was not approximately one second")
+print("idle_brew_ready_watch_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"idle brew watch smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("idle_brew_ready_watch_smoke=ok", completed.stdout)
+
+        exhausted_fixture = f"""
+local sessionAlive = true
+local configReady = true
+local cfg = {{
+    AutoBrew = true,
+    AutoPickupPotion = true,
+    BrewRecipe = "Best craftable",
+    AutoSell = false,
+    AutoSellSpecific = false,
+    SellItems = {{}},
+    AutoBroom = false,
+    AutoFarm = false,
+    AutoFarmSpecific = false,
+}}
+local fakeClock = 0
+local os = {{ clock = function() return fakeClock end }}
+local alchemyTelemetry = {{
+    confirmedAction = nil,
+    inProgress = false,
+    ready = false,
+    status = "no recipe candidate",
+}}
+local sellTelemetry = {{ status = "waiting", lastError = nil }}
+local alchemyRuns = 0
+local readyChecks = 0
+local function playerNumber(_name) return 0 end
+local function observeAlchemyLocation(_challenge) end
+local function alchemyInventoryTransferPending() return false end
+local function resetAlchemyRecovery() end
+local function clearAlchemyStageCandidate() end
+local function resolveAlchemy() readyChecks += 1 return {{}} end
+local function alchemyState() readyChecks += 1 return false end
+local function runAlchemyCycle()
+    alchemyRuns += 1
+    alchemyTelemetry.confirmedAction = nil
+    alchemyTelemetry.inProgress = false
+    alchemyTelemetry.ready = false
+    alchemyTelemetry.status = "no recipe candidate"
+    return false
+end
+local function alchemyPriorityOutcome() return "alchemy-empty" end
+local function runAutoSellCycle() error("disabled AutoSell was invoked") end
+local task = {{}}
+task.spawn = function(callback) callback() end
+task.wait = function(seconds)
+    fakeClock += seconds
+    if fakeClock >= 2 then sessionAlive = false end
+end
+
+{ALCHEMY_WORKER}
+
+assert(alchemyRuns == 1 and readyChecks == 0,
+    "exhausted materials kept the idle watcher active")
+print("idle_brew_exhausted_smoke=ok")
+"""
+        completed = run_luau(exhausted_fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"idle exhausted smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("idle_brew_exhausted_smoke=ok", completed.stdout)
+
     def test_broom_and_farm_have_separate_sequential_gates(self):
         fixture = f"""
 local cfg = {{ AutoBroom = true }}

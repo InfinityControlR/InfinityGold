@@ -3820,6 +3820,8 @@ return function(locomotionFactory, Library, Common)
 
     task.spawn(function() -- alchemy
         local nextAutoSellAt = 0
+        local nextIdleBrewCheckAt = 0
+        local IDLE_BREW_READY_POLL_SECONDS = 1
         local autoSellCyclePending = false
         local autoSellCycleGeneration = 0
         local lastObservedChallenge = nil
@@ -3834,6 +3836,49 @@ return function(locomotionFactory, Library, Common)
                 tostring(cfg.AutoSellSpecific),
                 tostring(cfg.SellItems),
             }, "|")
+        end
+
+        local function idleBaseAlchemyEnabled()
+            return cfg.AutoBrew == true
+                and cfg.AutoPickupPotion == true
+                and cfg.AutoBroom ~= true
+                and cfg.AutoFarm ~= true
+                and cfg.AutoFarmSpecific ~= true
+        end
+
+        local function rearmIdleAlchemyIfReady(observedChallenge)
+            if observedChallenge == nil
+                or observedChallenge > 0
+                or basePriority.phase ~= "broom"
+                or not idleBaseAlchemyEnabled()
+            then
+                nextIdleBrewCheckAt = 0
+                return false
+            end
+            if alchemyTelemetry.ready == true then
+                alchemyTelemetry.inProgress = false
+                resetBasePriority("idle brewed potion ready")
+                nextAutoSellAt = 0
+                nextIdleBrewCheckAt = 0
+                return true
+            end
+            if alchemyTelemetry.inProgress ~= true then
+                nextIdleBrewCheckAt = 0
+                return false
+            end
+            local now = os.clock()
+            if now < nextIdleBrewCheckAt then return false end
+            nextIdleBrewCheckAt = now + IDLE_BREW_READY_POLL_SECONDS
+            local alchemy = resolveAlchemy()
+            if alchemy == nil then return false end
+            local ready = alchemyState(alchemy, "IsBrewReadyForPickup")
+            if ready ~= nil then alchemyTelemetry.ready = ready end
+            if ready ~= true then return false end
+            alchemyTelemetry.inProgress = false
+            resetBasePriority("idle brewed potion ready")
+            nextAutoSellAt = 0
+            nextIdleBrewCheckAt = 0
+            return true
         end
 
         local function startAutoSellCycle(confirmedAction, priorityGeneration)
@@ -3950,6 +3995,12 @@ return function(locomotionFactory, Library, Common)
                     )
                 end
             end
+
+            -- If no travel objective owns the base, keep only one cheap
+            -- readiness watch alive for the confirmed brew. Once it finishes,
+            -- restart Alchemy so pickup -> Best repeats until the material scan
+            -- proves that no replacement recipe exists.
+            rearmIdleAlchemyIfReady(observedChallenge)
 
             -- Alchemy owns the fastest cadence. Sell and Broom cannot advance
             -- until the preceding phase has produced a terminal outcome.

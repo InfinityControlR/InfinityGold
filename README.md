@@ -112,6 +112,11 @@ the InfinityGold dashboard.
   timers start only after Sell settles. Farm/Train stays blocked until Broom
   enters a stage, or is skipped because Auto Broom is disabled; only then does
   the full Enter Delay begin.
+  When Auto Broom, Auto Farm and Farm Specific are all off, a confirmed brew
+  keeps a one-second readiness watch at base. It reads only
+  `IsBrewReadyForPickup`; when true, Alchemy collects it and immediately starts
+  the next Best recipe, repeating until the material scan finds no candidate.
+  Recipe `Time` is nominal duration, not authoritative remaining time.
   A game update is incorporated by re-running the loader, which captures the
   new recipe configuration before the next Best calculation.
   Pickup prepares each real prompt with zero hold duration and expands its
