@@ -1774,6 +1774,111 @@ return function(locomotionFactory, Library, Common)
         return values
     end
 
+    local function alchemyBestDiagnosticReport()
+        local lines = {
+            "InfinityGold Best craftable diagnostic",
+            "status=" .. tostring(alchemyTelemetry.status),
+            "transfer=" .. tostring(alchemyTelemetry.transferStatus),
+        }
+        local seen = {}
+        local function describe(value, depth)
+            local valueType = typeof(value)
+            if valueType == "Instance" then
+                return "<Instance:" .. tostring(value.ClassName) .. ">"
+            end
+            local luaType = type(value)
+            if luaType == "string" then
+                local text = value
+                if #text > 160 then text = string.sub(text, 1, 160) .. "..." end
+                return string.format("%q", text)
+            end
+            if luaType == "number" or luaType == "boolean" or luaType == "nil" then
+                return tostring(value)
+            end
+            if luaType ~= "table" then return "<" .. luaType .. ">" end
+            if seen[value] then return "<cycle>" end
+            if depth <= 0 then return "{...}" end
+            seen[value] = true
+            local keys = {}
+            for key in pairs(value) do table.insert(keys, key) end
+            table.sort(keys, function(left, right)
+                return tostring(left) < tostring(right)
+            end)
+            local parts = {}
+            for index, key in ipairs(keys) do
+                if index > 40 then
+                    table.insert(parts, "...=" .. tostring(#keys - 40) .. " more")
+                    break
+                end
+                table.insert(parts,
+                    "[" .. describe(key, 1) .. "]=" .. describe(value[key], depth - 1))
+            end
+            seen[value] = nil
+            return "{" .. table.concat(parts, ",") .. "}"
+        end
+
+        local bag, bagError = playerBag()
+        if bag == nil then
+            table.insert(lines, "BAG ERROR: " .. tostring(bagError))
+        else
+            local materials = {}
+            for key, item in pairs(bag) do
+                if type(item) == "table" and tonumber(item.tp) == 2 then
+                    table.insert(materials, {
+                        id = math.floor(tonumber(item.id) or 0),
+                        key = tostring(key),
+                        item = item,
+                    })
+                end
+            end
+            table.sort(materials, function(left, right)
+                if left.id ~= right.id then return left.id < right.id end
+                return left.key < right.key
+            end)
+            table.insert(lines, "BAG MATERIAL ROWS=" .. tostring(#materials))
+            for _, entry in ipairs(materials) do
+                table.insert(lines, "bag " .. tostring(entry.id) .. " "
+                    .. describe(entry.item, 3))
+            end
+        end
+
+        local alchemy, resolveError = resolveAlchemy()
+        if alchemy == nil then
+            table.insert(lines, "ALCHEMY ERROR: " .. tostring(resolveError))
+        else
+            local catalog, catalogError = alchemyRecipeCatalog(alchemy)
+            if catalog == nil then
+                table.insert(lines, "RECIPE ERROR: " .. tostring(catalogError))
+            else
+                table.insert(lines, "RECIPES=" .. tostring(#catalog))
+                for index = #catalog, 1, -1 do
+                    local recipe = catalog[index]
+                    local craftable, checkError, reason = isAlchemyRecipeCraftable(
+                        alchemy,
+                        recipe
+                    )
+                    table.insert(lines, string.format(
+                        "recipe %d pid=%d rebirth=%d craftable=%s reason=%s error=%s raw=%s",
+                        recipe.id,
+                        recipe.potionId,
+                        recipe.rebirth,
+                        tostring(craftable),
+                        tostring(reason),
+                        tostring(checkError),
+                        describe(recipe.recipe, 4)
+                    ))
+                end
+            end
+        end
+
+        local report = table.concat(lines, "\n")
+        if #report > 30000 then
+            report = string.sub(report, 1, 30000)
+                .. "\n<report truncated at 30000 characters>"
+        end
+        return report
+    end
+
     local function alchemyState(alchemy, methodName)
         local method = alchemy[methodName]
         if type(method) ~= "function" then
@@ -4382,6 +4487,22 @@ return function(locomotionFactory, Library, Common)
             false,
             "Best craftable"
         )
+        group:AddButton({
+            Text = "Copy Best diagnostic",
+            Callback = function()
+                local report = alchemyBestDiagnosticReport()
+                local copied = false
+                if type(setclipboard) == "function" then
+                    copied = pcall(setclipboard, report)
+                elseif type(toclipboard) == "function" then
+                    copied = pcall(toclipboard, report)
+                end
+                print(report)
+                notify(copied
+                    and "Best diagnostic copied to clipboard"
+                    or "Best diagnostic printed to console")
+            end,
+        })
         group:AddToggle("AutoDrinkPotion", { Text = "Auto Drink Potion", Default = false })
         local potionValues = catalogDropdownValues("potionConf", "Potion")
         local potionDropdown = group:AddDropdown("DrinkPotions", {

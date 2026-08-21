@@ -255,6 +255,20 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn('refreshCatalogDropdown(\n            recipeDropdown,', self.source)
         self.assertIn('refreshCatalogDropdown(\n            potionDropdown,', self.source)
 
+    def test_best_diagnostic_is_bounded_passive_and_copies_real_shapes(self):
+        report = self.source[
+            self.source.index("    local function alchemyBestDiagnosticReport()") :
+            self.source.index("    local function alchemyState(")
+        ]
+        self.assertIn("playerBag()", report)
+        self.assertIn("alchemyRecipeCatalog(alchemy)", report)
+        self.assertIn("isAlchemyRecipeCraftable(", report)
+        self.assertIn("index > 40", report)
+        self.assertIn("#report > 30000", report)
+        self.assertNotIn("invokeAction", report)
+        self.assertNotIn("sendAction", report)
+        self.assertIn('Text = "Copy Best diagnostic"', self.source)
+
     def test_legacy_unlimited_rebirth_setting_migrates_to_magic_limit(self):
         self.assertIn('decoded.RebirthLimit = 41', self.source)
 

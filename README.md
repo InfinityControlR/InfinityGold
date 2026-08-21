@@ -101,7 +101,9 @@ the InfinityGold dashboard.
   guessed recipe IDs. The game has one brewing slot,
   so a live
   `brewing (one potion at a time)` state is an intentional wait for the current
-  potion rather than a recipe-search delay.
+  potion rather than a recipe-search delay. `Copy Best diagnostic` copies a
+  bounded, passive snapshot of the real recipe rows, material Bag rows and local
+  predicate results; it sends no game action.
   Pickup prepares each real prompt with zero hold duration and expands its
   activation distance to the configured pickup range before firing it.
 - **Broom**: offers stages 4, 8, 13, 18, 23 and 28, sends only the
