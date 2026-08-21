@@ -240,6 +240,7 @@ return function(locomotionFactory, Library, Common)
         FarmHeight = 20,
         OrbitRadius = 25,
         OrbitSpeed = 1.5,
+        RunningDistance = 12,
         EnterDelay = 0,
         AttackRange = 120,
         AutoReturnFull = true,
@@ -255,10 +256,13 @@ return function(locomotionFactory, Library, Common)
         PickupFilterRarity = false,
         PickupTiers = {},
         AutoSell = false,
+        AutoSellSpecific = false,
+        SellItems = {},
         -- Progress
         AutoRebirth = false,
-        RebirthLimit = 0,
+        RebirthLimit = 41,
         AutoTrain = false,
+        TrainGround = "Best available",
         -- Broom (installed by the locomotion module)
         AutoBroom = false,
         BroomStage = "4",
@@ -267,6 +271,7 @@ return function(locomotionFactory, Library, Common)
         AutoBrew = false,
         BrewRecipe = "Best craftable",
         AutoDrinkPotion = false,
+        DrinkPotions = {},
         AutoPickupPotion = true,
         -- Rewards
         AutoClaimIndex = false,
@@ -274,6 +279,12 @@ return function(locomotionFactory, Library, Common)
         -- Gear
         AutoBuyBest = false,
         AutoEquipBest = false,
+        AutoBuyWand = false,
+        AutoEquipWand = false,
+        AutoBuyArmor = false,
+        AutoEquipArmor = false,
+        -- Utility
+        AntiAfk = true,
     }
 
     local function parsePickupMinimumValue(value)
@@ -585,6 +596,59 @@ return function(locomotionFactory, Library, Common)
         return nil, "Bag data unavailable"
     end
 
+    local function configByName(name)
+        local cfgFind = resolveRuntimeModule("CfgFind")
+        if cfgFind ~= nil and type(cfgFind.GetCfgByName) == "function" then
+            local ok, result = pcall(cfgFind.GetCfgByName, name)
+            if ok and type(result) == "table" then return result end
+        end
+
+        local data = resolveGetData()
+        if data ~= nil and type(data.GetCfgByName) == "function" then
+            local ok, result = pcall(data.GetCfgByName, name)
+            if ok and type(result) == "table" then return result end
+        end
+        return nil
+    end
+
+    local function translatedConfigName(raw, id, fallbackPrefix)
+        local name = type(raw) == "table"
+            and (raw.ZhName or raw.name)
+            or nil
+        if name ~= nil then
+            local translation = resolveRuntimeModule("TranslationHelper")
+            if translation ~= nil
+                and type(translation.TranslateByKey) == "function"
+            then
+                local ok, value = pcall(translation.TranslateByKey, name)
+                if ok and type(value) == "string" and value ~= "" then
+                    name = value
+                end
+            end
+        end
+        if type(name) ~= "string" or name == "" then
+            name = tostring(fallbackPrefix or "Item") .. " " .. tostring(id)
+        end
+        return "#" .. tostring(id) .. " " .. name
+    end
+
+    local function catalogByName(name, itemType)
+        return Common.catalogEntries(configByName(name), itemType)
+    end
+
+    local function catalogDropdownValues(name, fallbackPrefix, firstValue)
+        local values = {}
+        if firstValue ~= nil then table.insert(values, firstValue) end
+        for _, entry in ipairs(catalogByName(name)) do
+            table.insert(values, translatedConfigName(
+                entry.raw,
+                entry.id,
+                fallbackPrefix
+            ))
+        end
+        return values
+    end
+
     local onlineClaimTelemetry = {
         available = 0,
         attempts = 0,
@@ -672,6 +736,74 @@ return function(locomotionFactory, Library, Common)
         return claimed, onlineClaimTelemetry.lastError
     end
 
+    local indexViewModule = nil
+
+    local function resolveIndexView()
+        if indexViewModule ~= nil then return indexViewModule end
+        local ok, moduleScript = pcall(function()
+            return ReplicatedStorage
+                :WaitForChild("ClientSideCode")
+                :WaitForChild("GuiScripts")
+                :WaitForChild("ModuleScript")
+                :WaitForChild("Index")
+                :WaitForChild("IndexView")
+        end)
+        if not ok or moduleScript == nil then return nil end
+
+        local previousIdentity = nil
+        if type(getthreadidentity) == "function" then
+            pcall(function() previousIdentity = getthreadidentity() end)
+        end
+        if type(setthreadidentity) == "function" then
+            pcall(setthreadidentity, 2)
+        end
+        local requireOk, result = pcall(require, moduleScript)
+        if previousIdentity ~= nil and type(setthreadidentity) == "function" then
+            pcall(setthreadidentity, previousIdentity)
+        end
+        if requireOk and type(result) == "table" then
+            indexViewModule = result
+            return result
+        end
+        return nil
+    end
+
+    local function claimIndexRewards()
+        local indexData = resolveRuntimeModule("Index")
+        local indexView = resolveIndexView()
+        if indexData == nil
+            or indexView == nil
+            or type(indexView.buildAllTabSnapshots) ~= "function"
+        then
+            return 0, "IndexView snapshot API unavailable"
+        end
+
+        local ok, snapshots = pcall(
+            indexView.buildAllTabSnapshots,
+            indexData
+        )
+        if not ok or type(snapshots) ~= "table" then
+            return 0, "index snapshot failed"
+        end
+
+        local claimed = 0
+        for tag, snapshot in pairs(snapshots) do
+            if not sessionAlive or not cfg.AutoClaimIndex then break end
+            if type(snapshot) == "table"
+                and snapshot.canClaim == true
+                and snapshot.targetProgress ~= nil
+            then
+                local sent = invokeAction("INDEX_CLAIM_REWARD", {
+                    tag = tag,
+                    progress = snapshot.targetProgress,
+                })
+                if sent then claimed += 1 end
+                task.wait(0.3)
+            end
+        end
+        return claimed
+    end
+
     local function isProtectedAlchemyMaterial(itemId)
         local data = resolveGetData()
         if data == nil
@@ -696,13 +828,22 @@ return function(locomotionFactory, Library, Common)
         lastError = nil,
     }
 
-    local function sellAllMaterials(beforeSend)
+    local function autoSellEnabled()
+        return cfg.AutoSell == true or cfg.AutoSellSpecific == true
+    end
+
+    local function automaticSellSelection()
+        if cfg.AutoSell == true then return nil end
+        return Common.parseIdSelection(cfg.SellItems)
+    end
+
+    local function sellAllMaterials(selectedIds, beforeSend)
         local bag, bagError = playerBag()
         if bag == nil then return false, 0, bagError or "inventory unavailable" end
         local ok, onlyIds = pcall(
             Common.sellOnlyIds,
             bag,
-            nil,
+            selectedIds,
             isProtectedAlchemyMaterial
         )
         if not ok or type(onlyIds) ~= "table" then
@@ -831,6 +972,7 @@ return function(locomotionFactory, Library, Common)
     local function isOverFootprint(part, point)
         local localPoint = part.CFrame:PointToObjectSpace(point)
         return math.abs(localPoint.X) <= part.Size.X * 0.5
+            and math.abs(localPoint.Y) <= part.Size.Y * 0.5
             and math.abs(localPoint.Z) <= part.Size.Z * 0.5
     end
 
@@ -1052,7 +1194,7 @@ return function(locomotionFactory, Library, Common)
             alchemyInventoryTransfer.deadline = now
                 + ALCHEMY_TRANSFER_TIMEOUT_SECONDS
             alchemyInventoryTransfer.pending = configReady
-                and (cfg.AutoBrew or cfg.AutoSell)
+                and (cfg.AutoBrew or autoSellEnabled())
             alchemyInventoryTransfer.refreshed = false
             alchemyTelemetry.transferStatus = alchemyInventoryTransfer.pending
                 and "waiting for temporary bag transfer"
@@ -1066,7 +1208,7 @@ return function(locomotionFactory, Library, Common)
         alchemyInvokeLease.inventoryStageActive = false
 
         if not alchemyInventoryTransfer.pending then return end
-        if not configReady or (not cfg.AutoBrew and not cfg.AutoSell) then
+        if not configReady or (not cfg.AutoBrew and not autoSellEnabled()) then
             finishAlchemyInventoryTransfer("transfer wait cancelled")
             return
         end
@@ -2253,7 +2395,7 @@ return function(locomotionFactory, Library, Common)
     local function autoSellBaseGate()
         if not sessionAlive then return false, "session closed", nil end
         if not configReady then return false, "waiting for config", nil end
-        if not cfg.AutoSell then return false, "disabled", nil end
+        if not autoSellEnabled() then return false, "disabled", nil end
         local challenge = playerNumber("InDungeonChallenge")
         if challenge == nil then
             return false, "waiting for dungeon state", nil
@@ -2305,7 +2447,7 @@ return function(locomotionFactory, Library, Common)
 
         sellTelemetry.attempts += 1
         sellTelemetry.status = "selling"
-        local sold, count, err = sellAllMaterials(function()
+        local sold, count, err = sellAllMaterials(automaticSellSelection(), function()
             local brewStateValidated = confirmedActionThisCycle == "brew"
             if cfg.AutoBrew and confirmedActionThisCycle ~= "brew" then
                 -- A detached sell scan can overlap pickup/the next brew.
@@ -2629,10 +2771,15 @@ return function(locomotionFactory, Library, Common)
 
     local lastFarmMode = nil
 
+    local DEFAULT_RUNNING_DISTANCE = 12
+    local MIN_RUNNING_DISTANCE = 4
+    local MAX_RUNNING_DISTANCE = 50
+    local RUNNING_ORBIT_STEP = math.rad(45)
+
     local running = {
         targets = {},
-        lastEmit = 0,
-        lastJump = 0,
+        lastEmit = -math.huge,
+        lastJump = -math.huge,
         lastPosition = nil,
         lastProgress = 0,
         retryUntil = 0,
@@ -2640,6 +2787,11 @@ return function(locomotionFactory, Library, Common)
         active = false,
         humanoid = nil,
         root = nil,
+        stage = nil,
+        orbitAngle = 0,
+        orbitRadius = DEFAULT_RUNNING_DISTANCE,
+        orbitCenter = nil,
+        orbitDestination = nil,
     }
 
     local function shouldWaitForPhysicalStage(mode, stage, challenge)
@@ -2686,6 +2838,11 @@ return function(locomotionFactory, Library, Common)
         running.lastPosition = nil
         running.lastProgress = 0
         running.retryUntil = 0
+        running.lastEmit = -math.huge
+        running.lastJump = -math.huge
+        running.stage = nil
+        running.orbitCenter = nil
+        running.orbitDestination = nil
         if humanoid ~= nil and root ~= nil then
             pcall(function() humanoid:MoveTo(root.Position) end)
             pcall(function() humanoid:Move(Vector3.new(0, 0, 0), false) end)
@@ -2720,7 +2877,7 @@ return function(locomotionFactory, Library, Common)
             and (alchemyInventoryTransferPending()
                 or (alchemyInvokeLease.inventoryStageActive
                     and configReady
-                    and (cfg.AutoBrew or cfg.AutoSell)))
+                    and (cfg.AutoBrew or autoSellEnabled())))
         then
             -- Auto Return has reached base, but the temporary LimitBag has not
             -- yet been observed in the permanent Bag. This is a short base
@@ -2881,35 +3038,133 @@ return function(locomotionFactory, Library, Common)
         return fallback
     end
 
+    local function isOverHorizontalFootprint(part, point)
+        local localPoint = part.CFrame:PointToObjectSpace(point)
+        return math.abs(localPoint.X) <= part.Size.X * 0.5
+            and math.abs(localPoint.Z) <= part.Size.Z * 0.5
+    end
+
+    local function runningOrbitPoint(stagePartInstance, center, angle, radius)
+        local offsetX, offsetZ = Common.runningOrbitOffset(angle, radius)
+        local worldOffset = stagePartInstance.CFrame:VectorToWorldSpace(
+            Vector3.new(offsetX, 0, offsetZ)
+        )
+        return center + Vector3.new(worldOffset.X, 0, worldOffset.Z)
+    end
+
+    local function resetRunningOrbit(stage)
+        running.stage = stage
+        running.orbitAngle = 0
+        running.orbitRadius = math.clamp(
+            tonumber(cfg.RunningDistance) or DEFAULT_RUNNING_DISTANCE,
+            MIN_RUNNING_DISTANCE,
+            MAX_RUNNING_DISTANCE
+        )
+        running.orbitCenter = nil
+        running.orbitDestination = nil
+        running.arrived = false
+        running.lastEmit = -math.huge
+        running.lastJump = -math.huge
+    end
+
+    local function updateRunningOrbit(stagePartInstance, root, center)
+        local changed = false
+        local radius = math.clamp(
+            tonumber(cfg.RunningDistance) or DEFAULT_RUNNING_DISTANCE,
+            MIN_RUNNING_DISTANCE,
+            MAX_RUNNING_DISTANCE
+        )
+        local centerChanged = running.orbitCenter == nil
+            or (running.orbitCenter - center).Magnitude > 0.05
+
+        if running.orbitDestination == nil then
+            local localRoot = stagePartInstance.CFrame:PointToObjectSpace(root.Position)
+            local planarMagnitude = Vector3.new(localRoot.X, 0, localRoot.Z).Magnitude
+            local entryAngle = planarMagnitude >= 1
+                and math.atan2(localRoot.Z, localRoot.X)
+                or 0
+            running.orbitAngle = entryAngle + RUNNING_ORBIT_STEP
+            changed = true
+        elseif math.abs(radius - running.orbitRadius) > 0.05 or centerChanged then
+            changed = true
+        end
+
+        running.orbitRadius = radius
+        running.orbitCenter = center
+        if changed then
+            running.orbitDestination = runningOrbitPoint(
+                stagePartInstance,
+                center,
+                running.orbitAngle,
+                radius
+            )
+        end
+
+        local delta = running.orbitDestination - root.Position
+        local distance = Vector3.new(delta.X, 0, delta.Z).Magnitude
+        if distance <= 4 then
+            running.orbitAngle += RUNNING_ORBIT_STEP
+            running.orbitDestination = runningOrbitPoint(
+                stagePartInstance,
+                center,
+                running.orbitAngle,
+                radius
+            )
+            changed = true
+            delta = running.orbitDestination - root.Position
+            distance = Vector3.new(delta.X, 0, delta.Z).Magnitude
+        end
+        return running.orbitDestination, distance, changed
+    end
+
     local function updateRunning(stage, stagePartInstance, parts, destination)
         local now = os.clock()
         local humanoid = parts.humanoid
         local root = parts.root
 
-        local runningDestination = running.targets[stage]
-        if runningDestination == nil then
-            runningDestination = destination
+        if running.stage ~= stage then
+            resetRunningOrbit(stage)
         end
 
-        local delta = runningDestination - root.Position
-        local planar = Vector3.new(delta.X, 0, delta.Z)
-        if planar.Magnitude <= 4 then
-            running.active = false
+        local center = running.targets[stage] or destination
+        if not running.arrived
+            and isOverHorizontalFootprint(stagePartInstance, root.Position)
+        then
             running.arrived = true
-            return string.format("stage %d running arrived", stage)
         end
 
         running.active = true
-        running.arrived = false
         running.humanoid = humanoid
         running.root = root
 
+        local movementTarget = center
+        local targetChanged = false
+        local distanceFromCenter = nil
+        if running.arrived then
+            local waypointDistance
+            movementTarget, waypointDistance, targetChanged = updateRunningOrbit(
+                stagePartInstance,
+                root,
+                center
+            )
+            local centerDelta = center - root.Position
+            distanceFromCenter = Vector3.new(
+                centerDelta.X,
+                0,
+                centerDelta.Z
+            ).Magnitude
+        end
+
+        local delta = movementTarget - root.Position
+        local planar = Vector3.new(delta.X, 0, delta.Z)
+
         if now >= running.retryUntil then
-            if now - running.lastEmit >= 3.5 then
-                pcall(function() humanoid:MoveTo(runningDestination) end)
+            if targetChanged or now - running.lastEmit >= 3.5 then
+                pcall(function() humanoid:MoveTo(movementTarget) end)
                 running.lastEmit = now
             end
-            if now - running.lastJump >= 0.9
+            if running.arrived
+                and now - running.lastJump >= 0.9
                 and humanoid.FloorMaterial ~= Enum.Material.Air
             then
                 pcall(function() humanoid.Jump = true end)
@@ -2929,11 +3184,15 @@ return function(locomotionFactory, Library, Common)
             end
         end
 
-        return string.format(
-            "stage %d running %.1f studs",
-            stage,
-            planar.Magnitude
-        )
+        if running.arrived then
+            return string.format(
+                "stage %d running %.1f studs from center; waypoint %.1f studs",
+                stage,
+                distanceFromCenter or 0,
+                planar.Magnitude
+            )
+        end
+        return string.format("stage %d running entry %.1f studs", stage, planar.Magnitude)
     end
 
     local function updateMovement()
@@ -2947,6 +3206,9 @@ return function(locomotionFactory, Library, Common)
             running.lastPosition = nil
             running.lastProgress = os.clock()
             running.arrived = false
+            running.stage = nil
+            running.orbitCenter = nil
+            running.orbitDestination = nil
         end
 
         local full = bagFull()
@@ -3020,6 +3282,10 @@ return function(locomotionFactory, Library, Common)
         end
 
         if mode == "Running" then
+            if not applyEnterDelay(stage) then
+                stopMovementModes()
+                return
+            end
             local status = updateRunning(stage, stagePartInstance, parts, groundPoint(stagePartInstance))
             setMovementStatus(status)
             return
@@ -3046,6 +3312,7 @@ return function(locomotionFactory, Library, Common)
         end
 
         if mode == "Orbit" then
+            if not applyEnterDelay(stage) then return end
             local center = nearestMonsterPosition(tonumber(cfg.AttackRange) or 120, groundPoint(stagePartInstance))
             local height = tonumber(cfg.FarmHeight) or 20
             local radius = tonumber(cfg.OrbitRadius) or 25
@@ -3252,52 +3519,212 @@ return function(locomotionFactory, Library, Common)
 
     -- Progress workers -----------------------------------------------------------------
 
+    local function canEnterTrainGround(trainId)
+        local data = resolveGetData()
+        local train = data and data.Train
+        if type(train) ~= "table"
+            or type(train.CanEnterTrainGround) ~= "function"
+        then
+            return false
+        end
+        local ok, result = pcall(
+            train.CanEnterTrainGround,
+            player,
+            trainId
+        )
+        if not ok then return false end
+        if type(result) == "table" then return result.ok == true end
+        return result == true
+    end
+
+    local function selectedTrainGroundId()
+        local selected = tostring(cfg.TrainGround or "Best available")
+        local explicit = tonumber(selected)
+            or tonumber(string.match(selected, "^#?(%d+)"))
+        if explicit ~= nil then
+            explicit = math.floor(explicit)
+            return canEnterTrainGround(explicit) and explicit or nil
+        end
+
+        local ids = {}
+        for _, entry in ipairs(catalogByName("trainConf")) do
+            table.insert(ids, entry.id)
+        end
+        table.sort(ids, function(left, right) return left > right end)
+        for _, trainId in ipairs(ids) do
+            if canEnterTrainGround(trainId) then return trainId end
+        end
+        return nil
+    end
+
+    local function trainGroundPart(trainId)
+        local data = resolveGetData()
+        local candidates = {}
+        for _, candidate in pairs({
+            data and data.Train,
+            resolveRuntimeModule("Train"),
+            resolveRuntimeModule("CfgFind"),
+        }) do
+            if candidate ~= nil then table.insert(candidates, candidate) end
+        end
+        for _, candidate in ipairs(candidates) do
+            if type(candidate) == "table"
+                and type(candidate.FindZonePartByTrainId) == "function"
+            then
+                local ok, part = pcall(
+                    candidate.FindZonePartByTrainId,
+                    trainId
+                )
+                if (not ok or part == nil) and data ~= nil then
+                    ok, part = pcall(
+                        candidate.FindZonePartByTrainId,
+                        player,
+                        trainId
+                    )
+                end
+                if ok and typeof(part) == "Instance" then
+                    if part:IsA("BasePart") then return part end
+                    local nested = part:FindFirstChildWhichIsA("BasePart", true)
+                    if nested ~= nil then return nested end
+                end
+            end
+        end
+        return nil
+    end
+
+    local potionDrinkCooldown = {}
+
+    local function drinkSelectedPotions()
+        local selectedIds = Common.parseIdSelection(cfg.DrinkPotions)
+        if next(selectedIds) == nil then return 0, "no potions selected" end
+        local bag, bagError = playerBag()
+        if bag == nil then return 0, bagError end
+        local onlyIds = Common.selectedOnlyIds(bag, selectedIds)
+        local sentCount = 0
+        for _, onlyId in ipairs(onlyIds) do
+            if not sessionAlive or not cfg.AutoDrinkPotion then break end
+            local now = os.clock()
+            if now - (potionDrinkCooldown[onlyId] or 0) >= 1.5 then
+                potionDrinkCooldown[onlyId] = now
+                local sent = invokeAction("DRINK_POTION", { onlyID = onlyId })
+                if sent then sentCount += 1 end
+                task.wait(0.6)
+            end
+        end
+        return sentCount
+    end
+
+    local gearKinds = {
+        {
+            config = "weaponConf",
+            itemType = 9,
+            equippedKey = "Weapon",
+            buyToggle = "AutoBuyWand",
+            equipToggle = "AutoEquipWand",
+        },
+        {
+            config = "armorConf",
+            itemType = 13,
+            equippedKey = "Armor",
+            buyToggle = "AutoBuyArmor",
+            equipToggle = "AutoEquipArmor",
+        },
+    }
+
+    local function runGearKind(kind)
+        local entries = catalogByName(kind.config, kind.itemType)
+        if #entries == 0 then return false end
+        local bag = playerBag()
+        if type(bag) ~= "table" then return false end
+        local owned = Common.ownedItemIds(bag, kind.itemType)
+        local gold = playerGold() or 0
+        local buyEnabled = cfg.AutoBuyBest or cfg[kind.buyToggle]
+        local equipEnabled = cfg.AutoEquipBest or cfg[kind.equipToggle]
+
+        if buyEnabled then
+            for _, entry in ipairs(entries) do
+                if entry.price > 0
+                    and entry.price <= gold
+                    and owned[entry.id] ~= true
+                then
+                    invokeAction("EQUIP_SHOP_BUY", {
+                        equipID = entry.id,
+                        itemType = kind.itemType,
+                    })
+                    task.wait(0.4)
+                    break
+                end
+            end
+        end
+
+        if equipEnabled then
+            bag = playerBag()
+            owned = Common.ownedItemIds(bag, kind.itemType)
+            local current = math.floor(
+                tonumber(playerNumber(kind.equippedKey)) or 0
+            )
+            for _, entry in ipairs(entries) do
+                if owned[entry.id] == true then
+                    if current ~= entry.id then
+                        invokeAction("EQUIP_SHOP_EQUIP", {
+                            equipID = entry.id,
+                            itemType = kind.itemType,
+                        })
+                        task.wait(0.4)
+                    end
+                    break
+                end
+            end
+        end
+        return true
+    end
+
     task.spawn(function() -- rebirth
         while sessionAlive do
             if cfg.AutoRebirth then
                 local rebirths = playerNumber("Rebirths") or 0
-                local limit = tonumber(cfg.RebirthLimit) or 0
-                if limit <= 0 or rebirths < limit then
-                    sendAction("PLAYER_REBIRTH")
+                local limit = math.floor(tonumber(cfg.RebirthLimit) or 41)
+                if rebirths < limit then
+                    invokeAction("PLAYER_REBIRTH")
                 end
             end
-            task.wait(2)
+            task.wait(3)
         end
     end)
 
     task.spawn(function() -- train
         while sessionAlive do
             if cfg.AutoTrain then
-                local trainId = playerNumber("TrainGroundId")
+                local trainId = selectedTrainGroundId()
                 if trainId ~= nil and trainId > 0 then
-                    local data = resolveGetData()
-                    local allowed = true
-                    if data ~= nil
-                        and type(data.Train) == "table"
-                        and type(data.Train.CanEnterTrainGround) == "function"
+                    local ground = trainGroundPart(trainId)
+                    local parts = characterParts()
+                    if ground ~= nil and parts ~= nil
+                        and not isOverFootprint(ground, parts.root.Position)
                     then
-                        local ok, result = pcall(data.Train.CanEnterTrainGround, trainId)
-                        if ok and result == false then
-                            allowed = false
-                        end
+                        parts.root.CFrame = CFrame.new(
+                            ground.Position
+                                + Vector3.new(0, ground.Size.Y * 0.5 + 3, 0)
+                        )
+                        task.wait(0.3)
                     end
-                    if allowed then
-                        if sendAction("TRAIN_ZONE_UPDATE", { trainId = trainId }) then
-                            task.wait(0.2)
-                        end
+                    if playerNumber("TrainGroundId") ~= trainId then
+                        sendAction("TRAIN_ZONE_UPDATE", { trainId = trainId })
+                        task.wait(0.2)
                     end
+                    invokeAction("TRAIN_MANUAL_CLICK", {})
                 end
             end
-            task.wait(1)
+            task.wait(0.2)
         end
     end)
 
     task.spawn(function() -- index claims
         while sessionAlive do
             if cfg.AutoClaimIndex then
-                sendAction("INDEX_CLAIM_REWARD")
+                claimIndexRewards()
             end
-            task.wait(5)
+            task.wait(4)
         end
     end)
 
@@ -3313,9 +3740,9 @@ return function(locomotionFactory, Library, Common)
     task.spawn(function() -- potions
         while sessionAlive do
             if cfg.AutoDrinkPotion then
-                sendAction("DRINK_POTION")
+                drinkSelectedPotions()
             end
-            task.wait(3)
+            task.wait(1)
         end
     end)
 
@@ -3360,7 +3787,7 @@ return function(locomotionFactory, Library, Common)
                     -- A newer craft was confirmed while this request ran.
                     nextAutoSellAt = 0
                 else
-                    nextAutoSellAt = configReady and cfg.AutoSell
+                    nextAutoSellAt = configReady and autoSellEnabled()
                         and (os.clock() + 2)
                         or 0
                 end
@@ -3403,7 +3830,7 @@ return function(locomotionFactory, Library, Common)
 
             if confirmedActionThisCycle == "brew"
                 and configReady
-                and cfg.AutoSell
+                and autoSellEnabled()
             then
                 -- A sell request from the previous tick may still be in
                 -- flight. Preserve this one-shot ordering permission until a
@@ -3411,7 +3838,7 @@ return function(locomotionFactory, Library, Common)
                 queuedCraftSellAuthorization = true
                 queuedCraftSellGeneration += 1
                 if not autoSellCyclePending then nextAutoSellAt = 0 end
-            elseif not configReady or not cfg.AutoSell then
+            elseif not configReady or not autoSellEnabled() then
                 clearQueuedCraftSellAuthorization()
             end
 
@@ -3435,7 +3862,7 @@ return function(locomotionFactory, Library, Common)
                 sellTelemetry.status = "waiting for config"
                 sellTelemetry.lastError = nil
                 nextAutoSellAt = 0
-            elseif not cfg.AutoSell then
+            elseif not autoSellEnabled() then
                 -- Do not spawn a detached no-op sell task on every fast
                 -- Alchemy stage poll merely to publish the disabled status.
                 sellTelemetry.status = "disabled"
@@ -3467,49 +3894,40 @@ return function(locomotionFactory, Library, Common)
 
     task.spawn(function() -- gear
         while sessionAlive do
-            if cfg.AutoBuyBest or cfg.AutoEquipBest then
-                local data = resolveGetData()
-                if data ~= nil and type(data.GetCfgByName) == "function" then
-                    local gold = playerGold() or 0
-                    for _, confName in ipairs({ "weaponConf", "armorConf" }) do
-                        local ok, entries = pcall(data.GetCfgByName, confName)
-                        if ok and type(entries) == "table" then
-                            local best = nil
-                            for _, entry in ipairs(entries) do
-                                if type(entry) == "table"
-                                    and entry.id ~= nil
-                                    and tonumber(entry.price or 0) <= gold
-                                    and (best == nil
-                                        or tonumber(entry.price or 0) > tonumber(best.price or 0))
-                                then
-                                    best = entry
-                                end
-                            end
-                            if best ~= nil then
-                                if cfg.AutoBuyBest then
-                                    sendAction("EQUIP_SHOP_BUY", { id = best.id })
-                                end
-                                if cfg.AutoEquipBest then
-                                    sendAction("EQUIP_SHOP_EQUIP", { id = best.id })
-                                end
-                            end
-                        end
-                    end
-                end
+            local enabled = cfg.AutoBuyBest
+                or cfg.AutoEquipBest
+                or cfg.AutoBuyWand
+                or cfg.AutoEquipWand
+                or cfg.AutoBuyArmor
+                or cfg.AutoEquipArmor
+            if enabled then
+                for _, kind in ipairs(gearKinds) do runGearKind(kind) end
             end
 
-            task.wait(5)
+            task.wait(2)
         end
     end)
 
     -- Anti-AFK -----------------------------------------------------------------------
 
+    local idleConnections = {}
+    local function setAntiAfk(enabled)
+        for _, connection in ipairs(idleConnections) do
+            pcall(function()
+                if enabled then
+                    connection:Disable()
+                elseif type(connection.Enable) == "function" then
+                    connection:Enable()
+                end
+            end)
+        end
+    end
     pcall(function()
-        local connections = getconnections(player.Idled)
-        for _, connection in ipairs(connections) do
-            connection:Disable()
+        if type(getconnections) == "function" then
+            idleConnections = getconnections(player.Idled)
         end
     end)
+    setAntiAfk(cfg.AntiAfk)
 
     -- Dashboard -----------------------------------------------------------------------
 
@@ -3565,7 +3983,12 @@ return function(locomotionFactory, Library, Common)
                 local element = section:AddToggle({
                     Text = options.Text or name,
                     Default = cfg[name] == true,
-                    Callback = function(value) cfg[name] = value end,
+                    Callback = function(value)
+                        cfg[name] = value
+                        if type(options.Callback) == "function" then
+                            options.Callback(value)
+                        end
+                    end,
                 })
                 return bind(name, element)
             end,
@@ -3576,6 +3999,7 @@ return function(locomotionFactory, Library, Common)
                     Values = options.Values or {},
                     Default = options.Default,
                     Multi = options.Multi,
+                    MaxVisible = options.MaxVisible,
                     Callback = function(value) cfg[name] = value end,
                 })
                 return bind(name, element)
@@ -3627,14 +4051,114 @@ return function(locomotionFactory, Library, Common)
         }
     end
 
+    local function setRegisteredToggle(name, value)
+        cfg[name] = value == true
+        local element = registry[name]
+        if element ~= nil then
+            pcall(function() element:Set(value == true) end)
+        end
+    end
+
+    local function catalogLabelId(value)
+        return tonumber(value)
+            or tonumber(string.match(tostring(value or ""), "^#(%d+)"))
+    end
+
+    local function sameArray(left, right)
+        if type(left) ~= "table" or #left ~= #right then return false end
+        for index, value in ipairs(right) do
+            if tostring(left[index]) ~= tostring(value) then return false end
+        end
+        return true
+    end
+
+    -- Config modules can appear after the hub UI. Keep every catalog-backed
+    -- dropdown live and preserve saved selections by stable numeric ID when a
+    -- translated label changes or the catalog arrives late.
+    local function refreshCatalogDropdown(
+        element,
+        configName,
+        initialValues,
+        valuesBuilder,
+        multi,
+        fallback
+    )
+        task.spawn(function()
+            local fingerprint = table.concat(initialValues or {}, "\30")
+            while sessionAlive do
+                task.wait(2)
+                local refreshed = valuesBuilder()
+                local minimumCount = fallback ~= nil and 1 or 0
+                if #refreshed > minimumCount then
+                    local refreshedFingerprint = table.concat(refreshed, "\30")
+                    local previous = cfg[configName]
+                    local desired
+
+                    if multi then
+                        local selectedIds = Common.parseIdSelection(previous)
+                        desired = {}
+                        for _, label in ipairs(refreshed) do
+                            local id = catalogLabelId(label)
+                            if id ~= nil and selectedIds[math.floor(id)] == true then
+                                table.insert(desired, label)
+                            end
+                        end
+                    else
+                        local previousText = tostring(previous or fallback or "")
+                        local previousId = catalogLabelId(previousText)
+                        desired = fallback
+                        for _, label in ipairs(refreshed) do
+                            if label == previousText
+                                or (previousId ~= nil
+                                    and catalogLabelId(label) == previousId)
+                            then
+                                desired = label
+                                break
+                            end
+                        end
+                    end
+
+                    local selectionChanged = multi
+                        and not sameArray(previous, desired)
+                        or (not multi and tostring(previous or "") ~= tostring(desired or ""))
+                    if refreshedFingerprint ~= fingerprint or selectionChanged then
+                        pcall(function()
+                            if refreshedFingerprint ~= fingerprint then
+                                element:SetValues(refreshed)
+                            end
+                            element:Set(desired)
+                        end)
+                        cfg[configName] = desired
+                        fingerprint = refreshedFingerprint
+                    end
+                end
+            end
+        end)
+    end
+
     -- Farm tab
     do
         local tab = window:CreateTab({ Name = "Farm", Icon = ">" })
         local group = bindGroup(tab:CreateSection("Auto Farm"))
-        group:AddToggle("AutoFarm", { Text = "Auto Farm", Default = false })
+        group:AddToggle("AutoFarm", {
+            Text = "Auto Farm",
+            Default = false,
+            Callback = function(value)
+                if value then
+                    setRegisteredToggle("AutoFarmSpecific", false)
+                    setRegisteredToggle("AutoTrain", false)
+                end
+            end,
+        })
         group:AddToggle("AutoFarmSpecific", {
             Text = "Farm specific stage only",
             Default = false,
+            Callback = function(value)
+                if value then
+                    setRegisteredToggle("AutoFarm", false)
+                    setRegisteredToggle("AutoTrain", false)
+                end
+            end,
         })
         local stageValues = {}
         for stage = 1, MAX_FARM_STAGE do
@@ -3663,6 +4187,13 @@ return function(locomotionFactory, Library, Common)
         group:AddSlider("OrbitSpeed", {
             Text = "Orbit speed",
             Default = 1.5, Min = 0.2, Max = 6, Rounding = 1,
+        })
+        group:AddSlider("RunningDistance", {
+            Text = "Running distance from center",
+            Default = DEFAULT_RUNNING_DISTANCE,
+            Min = MIN_RUNNING_DISTANCE,
+            Max = MAX_RUNNING_DISTANCE,
+            Rounding = 0,
         })
         group:AddSlider("EnterDelay", {
             Text = "Enter delay (s)",
@@ -3870,11 +4401,38 @@ return function(locomotionFactory, Library, Common)
 
         local sellSection = tab:CreateSection("Selling")
         local sellGroup = bindGroup(sellSection)
-        sellGroup:AddToggle("AutoSell", { Text = "Auto Sell (all)", Default = false })
+        sellGroup:AddToggle("AutoSell", {
+            Text = "Auto Sell (all)",
+            Default = false,
+            Callback = function(value)
+                if value then setRegisteredToggle("AutoSellSpecific", false) end
+            end,
+        })
+        sellGroup:AddToggle("AutoSellSpecific", {
+            Text = "Auto Sell Specific Items",
+            Default = false,
+            Callback = function(value)
+                if value then setRegisteredToggle("AutoSell", false) end
+            end,
+        })
+        local sellItemValues = catalogDropdownValues("materialConf", "Material")
+        local sellItemsDropdown = sellGroup:AddDropdown("SellItems", {
+            Text = "Items",
+            Values = sellItemValues,
+            Default = {},
+            Multi = true,
+        })
+        refreshCatalogDropdown(
+            sellItemsDropdown,
+            "SellItems",
+            sellItemValues,
+            function() return catalogDropdownValues("materialConf", "Material") end,
+            true
+        )
         sellGroup:AddButton({
             Text = "Sell All Now",
             Callback = function()
-                local sold, count, err = sellAllMaterials()
+                local sold, count, err = sellAllMaterials(nil)
                 if sold then
                     notify("Sell request sent for " .. tostring(count) .. " items")
                 else
@@ -3913,10 +4471,44 @@ return function(locomotionFactory, Library, Common)
         local group = bindGroup(tab:CreateSection("Advancement"))
         group:AddToggle("AutoRebirth", { Text = "Auto Rebirth", Default = false })
         group:AddSlider("RebirthLimit", {
-            Text = "Stop at rebirths (0 = unlimited)",
-            Default = 0, Min = 0, Max = 100, Rounding = 0,
+            Text = "Stop at rebirths",
+            Default = 41, Min = 1, Max = 41, Rounding = 0,
         })
-        group:AddToggle("AutoTrain", { Text = "Auto Train (current zone)", Default = false })
+        group:AddToggle("AutoTrain", {
+            Text = "Auto Train",
+            Default = false,
+            Callback = function(value)
+                if value then
+                    setRegisteredToggle("AutoFarm", false)
+                    setRegisteredToggle("AutoFarmSpecific", false)
+                end
+            end,
+        })
+        local trainGroundValues = catalogDropdownValues(
+            "trainConf",
+            "Training ground",
+            "Best available"
+        )
+        local trainGroundDropdown = group:AddDropdown("TrainGround", {
+            Text = "Training ground",
+            Values = trainGroundValues,
+            Default = "Best available",
+            Multi = false,
+        })
+        refreshCatalogDropdown(
+            trainGroundDropdown,
+            "TrainGround",
+            trainGroundValues,
+            function()
+                return catalogDropdownValues(
+                    "trainConf",
+                    "Training ground",
+                    "Best available"
+                )
+            end,
+            false,
+            "Best available"
+        )
 
         if loco ~= nil then
             local broomGroup = bindGroup(tab:CreateSection("Broom"))
@@ -3989,6 +4581,20 @@ return function(locomotionFactory, Library, Common)
             end
         end)
         group:AddToggle("AutoDrinkPotion", { Text = "Auto Drink Potion", Default = false })
+        local potionValues = catalogDropdownValues("potionConf", "Potion")
+        local potionDropdown = group:AddDropdown("DrinkPotions", {
+            Text = "Potions",
+            Values = potionValues,
+            Default = {},
+            Multi = true,
+        })
+        refreshCatalogDropdown(
+            potionDropdown,
+            "DrinkPotions",
+            potionValues,
+            function() return catalogDropdownValues("potionConf", "Potion") end,
+            true
+        )
         group:AddToggle("AutoPickupPotion", { Text = "Auto Pickup Brewed Potion", Default = true })
         local alchemyStatus = group:AddLabel("Alchemy: waiting...")
         task.spawn(function()
@@ -4074,9 +4680,24 @@ return function(locomotionFactory, Library, Common)
     -- Gear tab
     do
         local tab = window:CreateTab({ Name = "Gear", Icon = "+" })
-        local group = bindGroup(tab:CreateSection("Shop"))
-        group:AddToggle("AutoBuyBest", { Text = "Auto Buy Best Affordable", Default = false })
-        group:AddToggle("AutoEquipBest", { Text = "Auto Equip Best Owned", Default = false })
+        local wand = bindGroup(tab:CreateSection("Wand"))
+        wand:AddToggle("AutoBuyWand", {
+            Text = "Auto Buy Best Affordable Wand",
+            Default = false,
+        })
+        wand:AddToggle("AutoEquipWand", {
+            Text = "Auto Equip Best Owned Wand",
+            Default = false,
+        })
+        local armor = bindGroup(tab:CreateSection("Armor"))
+        armor:AddToggle("AutoBuyArmor", {
+            Text = "Auto Buy Best Affordable Armor",
+            Default = false,
+        })
+        armor:AddToggle("AutoEquipArmor", {
+            Text = "Auto Equip Best Owned Armor",
+            Default = false,
+        })
         tab:CreateSection("Notes"):AddParagraph({
             Title = "Fail-open",
             Text = "Gear automation reads the game's shop configs; if they "
@@ -4088,6 +4709,11 @@ return function(locomotionFactory, Library, Common)
     do
         local tab = window:CreateTab({ Name = "Info", Icon = "i" })
         local group = bindGroup(tab:CreateSection("Session"))
+        group:AddToggle("AntiAfk", {
+            Text = "Anti AFK",
+            Default = true,
+            Callback = setAntiAfk,
+        })
         local info = tab:CreateSection("Game"):AddLabel("loading...")
         task.spawn(function()
             while sessionAlive do
@@ -4190,6 +4816,22 @@ return function(locomotionFactory, Library, Common)
             local ok, decoded = pcall(HttpService.JSONDecode, HttpService, text)
             if not ok or type(decoded) ~= "table" then
                 return false, "saved config is invalid"
+            end
+
+            -- Migrate the former combined Gear switches to Magic's separate
+            -- Wand/Armor controls without overriding an explicit new value.
+            if decoded.AutoBuyBest == true then
+                if decoded.AutoBuyWand == nil then decoded.AutoBuyWand = true end
+                if decoded.AutoBuyArmor == nil then decoded.AutoBuyArmor = true end
+            end
+            if decoded.AutoEquipBest == true then
+                if decoded.AutoEquipWand == nil then decoded.AutoEquipWand = true end
+                if decoded.AutoEquipArmor == nil then decoded.AutoEquipArmor = true end
+            end
+            if tonumber(decoded.RebirthLimit) ~= nil
+                and tonumber(decoded.RebirthLimit) < 1
+            then
+                decoded.RebirthLimit = 41
             end
 
             for name, element in pairs(registry) do

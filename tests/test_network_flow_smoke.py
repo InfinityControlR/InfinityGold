@@ -101,6 +101,11 @@ local modules = {{
         CLAIM_ONLINE_AWARD = invokeRemote,
         ALCHEMY_CRAFT_RECIPE = invokeRemote,
         ALCHEMY_PICKUP_FINISH_POTION = invokeRemote,
+        DRINK_POTION = invokeRemote,
+        PLAYER_REBIRTH = invokeRemote,
+        INDEX_CLAIM_REWARD = invokeRemote,
+        EQUIP_SHOP_BUY = invokeRemote,
+        EQUIP_SHOP_EQUIP = invokeRemote,
         DUNGEON_RETURN_TOWN = fireRemote,
         SHOW_LOCAL_UI = fireRemote,
     }},
@@ -219,6 +224,41 @@ invoked, result, invokeError = invokeAction("ALCHEMY_PICKUP_FINISH_POTION")
 assert(invoked, "Alchemy pickup InvokeServer failed: " .. tostring(invokeError))
 assert(#invokeCalls == 6 and invokeCalls[6] == "empty",
     "Alchemy pickup did not send only its descriptor")
+
+invoked, result, invokeError = invokeAction("DRINK_POTION", {{ onlyID = 901 }})
+assert(invoked and #invokeCalls == 7 and invokeCalls[7].onlyID == 901,
+    "potion drink did not preserve the inventory onlyID")
+
+invoked, result, invokeError = invokeAction("PLAYER_REBIRTH")
+assert(invoked and #invokeCalls == 8 and invokeCalls[8] == "empty",
+    "rebirth did not use a payload-free InvokeServer call")
+
+invoked, result, invokeError = invokeAction(
+    "INDEX_CLAIM_REWARD",
+    {{ tag = "Monster", progress = 25 }}
+)
+assert(invoked and #invokeCalls == 9
+    and invokeCalls[9].tag == "Monster"
+    and invokeCalls[9].progress == 25,
+    "index claim payload changed")
+
+invoked, result, invokeError = invokeAction(
+    "EQUIP_SHOP_BUY",
+    {{ equipID = 44, itemType = 9 }}
+)
+assert(invoked and #invokeCalls == 10
+    and invokeCalls[10].equipID == 44
+    and invokeCalls[10].itemType == 9,
+    "gear buy payload changed")
+
+invoked, result, invokeError = invokeAction(
+    "EQUIP_SHOP_EQUIP",
+    {{ equipID = 77, itemType = 13 }}
+)
+assert(invoked and #invokeCalls == 11
+    and invokeCalls[11].equipID == 77
+    and invokeCalls[11].itemType == 13,
+    "gear equip payload changed")
 
 sent, sendError = fireBindableAction(
     "SHOW_LOCAL_UI",

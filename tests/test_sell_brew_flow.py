@@ -36,11 +36,15 @@ def run_luau(source: str) -> subprocess.CompletedProcess:
         path.unlink(missing_ok=True)
 
 
-SELL_COORDINATION = core_slice(
+AUTO_SELL_OPTIONS = core_slice(
+    "    local function autoSellEnabled()",
+    "    local function sellAllMaterials(",
+)
+SELL_COORDINATION = AUTO_SELL_OPTIONS + core_slice(
     "    local function autoSellBaseGate()",
     "    -- Attack -----------------------------------------------------------------",
 )
-ALCHEMY_WORKER = core_slice(
+ALCHEMY_WORKER = AUTO_SELL_OPTIONS + core_slice(
     "    task.spawn(function() -- alchemy",
     "    task.spawn(function() -- gear",
 )
@@ -384,7 +388,8 @@ local function alchemyState(actualAlchemy, methodName)
     progressReadHook()
     return inProgress
 end
-local function sellAllMaterials(beforeSend)
+local function sellAllMaterials(selectedIds, beforeSend)
+    assert(selectedIds == nil, "Sell All unexpectedly applied a specific-item filter")
     scans += 1
     scanHook()
     if type(beforeSend) == "function" then
@@ -612,7 +617,7 @@ print("sell_brew_flow_smoke=ok")
         self.assertNotIn("sellAllMaterials()", source[source.index("-- online claims") : source.index("-- potions")])
 
         sell_builder = core_slice(
-            "    local function sellAllMaterials(beforeSend)",
+            "    local function sellAllMaterials(selectedIds, beforeSend)",
             "    local function playerGold()",
         )
         self.assertIn(

@@ -108,6 +108,15 @@ function Common.farmStageTarget(cleared, selected, specific, maxStage)
     return math.clamp(math.max(clearedNext, startStage), 1, ceiling)
 end
 
+-- Local-space offset for Running's circular waypoints. Keeping the trigonometry
+-- pure makes the orbit contract testable without Roblox services.
+function Common.runningOrbitOffset(angle, radius)
+    local numericAngle = tonumber(angle) or 0
+    local numericRadius = math.max(0, tonumber(radius) or 0)
+    return math.cos(numericAngle) * numericRadius,
+        math.sin(numericAngle) * numericRadius
+end
+
 -- Parse a tier selection (strings from the UI) into a numeric lookup set.
 function Common.parseTierSelection(values)
     local tiers = {}
@@ -120,6 +129,103 @@ function Common.parseTierSelection(values)
         end
     end
     return tiers
+end
+
+-- Parse the multi-select values used by Magic's material/potion dropdowns.
+-- Values are stored as labels ("#123 Name") by the UI, while older configs
+-- may contain numeric keys, numeric values, or a boolean lookup table.
+function Common.parseIdSelection(values)
+    local ids = {}
+    if type(values) ~= "table" then return ids end
+    for key, value in pairs(values) do
+        local numericKeyLookup = type(key) == "number" and value == true
+        local candidate = numericKeyLookup and key
+            or (type(key) == "number" and value or key)
+        local selected = numericKeyLookup
+            or (type(key) == "number" and value ~= false)
+            or value == true
+        if selected then
+            local id = tonumber(candidate)
+                or tonumber(string.match(tostring(candidate), "^#?(%d+)"))
+            if id ~= nil and id > 0 then
+                ids[math.floor(id)] = true
+            end
+        end
+    end
+    return ids
+end
+
+-- Normalize the game's config maps into the descriptor order used by Magic's
+-- shop and selector workers. Configs can be arrays or dictionaries, and live
+-- builds have used both Price/price spellings.
+function Common.catalogEntries(raw, itemType)
+    local entries = {}
+    if type(raw) ~= "table" then return entries end
+
+    for key, value in pairs(raw) do
+        if type(value) == "table" then
+            local id = tonumber(value.id) or tonumber(key)
+            if id ~= nil and id > 0 then
+                table.insert(entries, {
+                    id = math.floor(id),
+                    itemType = tonumber(value.itemType)
+                        or tonumber(value.tp)
+                        or itemType,
+                    price = tonumber(value.Price)
+                        or tonumber(value.price)
+                        or 0,
+                    name = value.ZhName or value.name,
+                    raw = value,
+                })
+            end
+        end
+    end
+
+    table.sort(entries, function(left, right)
+        if left.price ~= right.price then return left.price > right.price end
+        return left.id > right.id
+    end)
+    return entries
+end
+
+function Common.ownedItemIds(bag, itemType)
+    local owned = {}
+    if type(bag) ~= "table" then return owned end
+    for _, item in pairs(bag) do
+        if type(item) == "table" then
+            local id = tonumber(item.id)
+            local tp = tonumber(item.tp)
+            if id ~= nil and (itemType == nil or tp == tonumber(itemType)) then
+                owned[math.floor(id)] = true
+            end
+        end
+    end
+    return owned
+end
+
+-- Return the unique inventory object IDs for selected config IDs. This is the
+-- exact identity shape needed by DRINK_POTION; config IDs are never sent in
+-- place of the per-item onlyID.
+function Common.selectedOnlyIds(bag, selectedIds)
+    local onlyIds = {}
+    if type(bag) ~= "table" or type(selectedIds) ~= "table" then
+        return onlyIds
+    end
+    for _, item in pairs(bag) do
+        if type(item) == "table" then
+            local id = tonumber(item.id)
+            local onlyId = tonumber(item.onlyID)
+            local locked = item.lock == true or tonumber(item.lock) == 1
+            if id ~= nil
+                and onlyId ~= nil
+                and selectedIds[math.floor(id)] == true
+                and not locked
+            then
+                table.insert(onlyIds, onlyId)
+            end
+        end
+    end
+    return onlyIds
 end
 
 -- Build the SELL_MATERIAL onlyIDList from the player's Bag. Magic Loot keeps

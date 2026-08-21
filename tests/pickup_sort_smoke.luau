@@ -114,6 +114,13 @@ check("farm: clamp specific", Common.farmStageTarget(10, 99, true, 32) == 32)
 check("farm: default ceiling is 32", Common.farmStageTarget(40, 1, false) == 32)
 check("farm: nil cleared uses selected", Common.farmStageTarget(nil, 3, false, 32) == 3)
 
+local orbitX, orbitZ = Common.runningOrbitOffset(0, 12)
+check("running orbit: zero angle", math.abs(orbitX - 12) < 0.001
+    and math.abs(orbitZ) < 0.001)
+orbitX, orbitZ = Common.runningOrbitOffset(math.pi * 0.5, 20)
+check("running orbit: quarter turn", math.abs(orbitX) < 0.001
+    and math.abs(orbitZ - 20) < 0.001)
+
 -- parseTierSelection
 local tiers = Common.parseTierSelection({ "1", "3", "x", 4 })
 check("tiers: 1,3,4 selected", tiers[1] and tiers[3] and tiers[4] and not tiers[2])
@@ -122,6 +129,39 @@ check("tiers: multi-select map", tierMap[2] and tierMap[5] and not tierMap[8])
 local highTiers = Common.parseTierSelection({ "9", "10" })
 check("tiers: 9 and 10", highTiers[9] and highTiers[10])
 check("tiers: non-table", next(Common.parseTierSelection(nil)) == nil)
+
+-- parseIdSelection: Magic dropdown labels and persisted table shapes.
+local selectedIds = Common.parseIdSelection({ "#21 Ember", "34 Stone" })
+check("ids: label selection", selectedIds[21] and selectedIds[34])
+local selectedIdMap = Common.parseIdSelection({ ["#55 Potion"] = true, ["66"] = false })
+check("ids: multiselect map", selectedIdMap[55] and not selectedIdMap[66])
+local selectedNumericIdMap = Common.parseIdSelection({ [77] = true, [88] = false })
+check("ids: numeric lookup map", selectedNumericIdMap[77] and not selectedNumericIdMap[88])
+
+-- catalogEntries: live configs use Price while older fixtures use price.
+local catalog = Common.catalogEntries({
+    [4] = { ZhName = "Starter", Price = 10 },
+    [8] = { id = 8, name = "Best", price = 500 },
+    bad = { Price = 999 },
+}, 9)
+check("catalog: normalized and sorted", #catalog == 2
+    and catalog[1].id == 8
+    and catalog[1].price == 500
+    and catalog[2].itemType == 9)
+
+local owned = Common.ownedItemIds({
+    { id = 4, tp = 9 },
+    { id = 8, tp = 13 },
+}, 9)
+check("catalog: owned item type", owned[4] and not owned[8])
+
+local potionOnlyIds = Common.selectedOnlyIds({
+    { id = 21, onlyID = 901, lock = false },
+    { id = 22, onlyID = 902, lock = true },
+    { id = 23, onlyID = 903, lock = 0 },
+}, { [21] = true, [22] = true })
+check("potions: selected onlyID and lock gate",
+    #potionOnlyIds == 1 and potionOnlyIds[1] == 901)
 
 -- sellOnlyIds: send unique inventory IDs for unlocked tp=2 materials only.
 local sellIds = Common.sellOnlyIds({

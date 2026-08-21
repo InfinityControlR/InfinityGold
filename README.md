@@ -34,7 +34,7 @@ the InfinityGold dashboard.
 | --- | --- |
 | `loader.lua` | Executor/game guards, downloads pinned modules + core, protected factory injection |
 | `ui/InfinityUI.lua` | Original dashboard library (window, tabs, toggles, sliders, dropdowns, toasts) |
-| `games/magicloot_common.lua` | Pure, Roblox-free helpers: drop sorting/gating, farm stage selection |
+| `games/magicloot_common.lua` | Pure, Roblox-free helpers: drop sorting/gating, catalog and inventory selection, farm stage selection |
 | `games/magicloot_locomotion.lua` | Walking locomotion, EnterDelay, stuck reset, Auto Broom |
 | `games/magicloot.lua` | Core script: farm modes, combat, pickup, progress, dashboard |
 | `diagnostics/click_action_inspector.lua` | Passive real-click, remote and numeric-delta inspector |
@@ -52,6 +52,11 @@ the InfinityGold dashboard.
   and its centre; EnterDelay applies per stage change, 20-second stuck
   detection performs a single bounded character reset per stage, and stage
   entry releases the attack block (`enteredStage` latch).
+- **Running**: enters with native `Humanoid:MoveTo`, then immediately follows
+  45-degree waypoints around the stage centre instead of stopping there. It
+  jumps every 0.9 seconds only while grounded and rereads the configurable
+  4–50 stud `RunningDistance` on every movement update; no CFrame teleport or
+  speed/jump-power mutation is used.
 - **Combat**: Auto Attack (0.2 s cadence) and Auto Click
   (`1 / max(1, ClickRate)`), sharing one attack block fed by the locomotion
   bridge. Auto Click continuously sends the confirmed `TRAIN_MANUAL_CLICK`
@@ -63,10 +68,12 @@ the InfinityGold dashboard.
   selector exposes tiers 1–10 in a compact scrolling list. Its minimum gold
   value is a full-width manual numeric input with no slider ceiling. Event drops
   (numeric `GoldValue` exactly equal to 0) bypass minimum value and rarity filters
-  and are collected first. Auto Sell and Sell All Now enumerate the player's
-  Bag and send the eligible materials' unique `onlyID` values, excluding
-  locked items and materials reserved for Alchemy recipes. Automatic selling
-  runs only at base. When Auto Brew is enabled, the base-economy worker runs
+  and are collected first. Auto Sell All, Auto Sell Specific and Sell All Now
+  enumerate the player's Bag and send the eligible materials' unique `onlyID`
+  values, excluding locked items and materials reserved for Alchemy recipes.
+  The All/Specific switches are mutually exclusive and their catalog refreshes
+  after late game-module initialization without losing selections. Automatic
+  selling runs only at base. When Auto Brew is enabled, the base-economy worker runs
   Alchemy first and sells only after a craft was confirmed or while a potion is
   already brewing; a pickup confirmation alone never unlocks selling. Dungeon
   drops live in the small temporary `LimitBag` while farming and move into the
@@ -86,11 +93,20 @@ the InfinityGold dashboard.
   `InDungeonChallenge` transition. Startup waits until config restoration has
   finished; an unconfirmed request is retried at most three times, five seconds
   apart, and room entry cancels every pending retry immediately.
-- **Progress**: Auto Rebirth (with limit), Auto Train (current zone via
-  `TRAIN_ZONE_UPDATE`), Auto Return when the bag is full and index/online
-  claims. Online rewards are filtered through the live `OnlineBox` state and
-  claimed individually by numeric award ID. Potion brewing/drinking and
-  best-affordable shop automation remain fail-open.
+- **Progress**: Auto Rebirth uses the payload-free invoke contract and stops at
+  the selected value from 1–41. Auto Train can use a selected ground or the
+  highest unlocked ground, moves to its zone, updates `TRAIN_ZONE_UPDATE` and
+  invokes `TRAIN_MANUAL_CLICK`; farming and training switches exclude one
+  another. Auto Return still handles the full temporary bag. Index claims are
+  built from live `IndexView` snapshots and online rewards are filtered through
+  `OnlineBox` before individual claims.
+- **Potions and gear**: Auto Drink sends each selected potion inventory
+  `onlyID`; its selector also refreshes when the catalog arrives late. Wand and
+  armor buying/equipping are separate, choose the best affordable/unowned or
+  best owned entry, and use Magic's item types 9 and 13. All integrations stay
+  fail-open when a required game module is unavailable.
+- **Utility**: Anti AFK is enabled by default and can restore the original idle
+  connections when switched off.
 - **Dashboard**: InfinityUI — obsidian-black surface, gold accents, draggable
   window, Right Shift toggles visibility, toasts with progress bars, session
   info, config save/load, rejoin, unload.
@@ -143,9 +159,13 @@ These surfaces need confirmation inside Roblox (fail-open until then):
   `GetData.GetItemCountByID(LocalPlayer, 5)` and usage is
   `LocalPlayer.LimitBagUsed`. The Farm tab shows both live values and the
   capacity source so this can be verified without another diagnostic script.
-- `PLAYER_REBIRTH`, `INDEX_CLAIM_REWARD` and `DRINK_POTION` payload shapes
-  (currently sent without arguments).
-- `GetData.GetCfgByName("weaponConf"|"armorConf")` shape for shop automation.
+- The statically recovered Magic contracts are now reproduced: payload-free
+  `PLAYER_REBIRTH`; `INDEX_CLAIM_REWARD` with snapshot `tag` and
+  `targetProgress`; `DRINK_POTION` with the selected Bag item's `onlyID`;
+  shop buy/equip with `equipID` plus item type 9/13; and training through
+  `CanEnterTrainGround`, `FindZonePartByTrainId`, zone update and manual click.
+  Their live server acceptance and current catalog contents still require an
+  in-client confirmation.
 - Alchemy resolves `GetData.Alchemy` and sends only one locally selected Best
   recipe, never a server-side ID walk. It distinguishes the temporary LimitBag
   from the permanent 999-slot Bag, reserves the short return window until a

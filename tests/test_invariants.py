@@ -57,12 +57,27 @@ class LocomotionInvariantTests(unittest.TestCase):
         self.assertIn("state.finalDestination = finalDestination", self.source)
         self.assertIn("state.destination = finalDestination", self.source)
 
-    def test_running_still_targets_the_stage_center(self):
+    def test_running_orbits_the_stage_center_with_live_radius(self):
         core = read("games/magicloot.lua")
-        self.assertIn(
-            "updateRunning(stage, stagePartInstance, parts, groundPoint(stagePartInstance))",
-            core,
-        )
+        self.assertIn("RunningDistance = 12", core)
+        self.assertIn("local RUNNING_ORBIT_STEP = math.rad(45)", core)
+        self.assertIn("Common.runningOrbitOffset(angle, radius)", core)
+        self.assertIn("running.orbitAngle += RUNNING_ORBIT_STEP", core)
+        self.assertIn('group:AddSlider("RunningDistance"', core)
+        running = core[
+            core.index("    local function updateRunning(stage") :
+            core.index("    local function updateMovement()")
+        ]
+        self.assertIn("isOverHorizontalFootprint", running)
+        self.assertIn("humanoid:MoveTo(movementTarget)", running)
+        self.assertIn("humanoid.FloorMaterial ~= Enum.Material.Air", running)
+        self.assertNotIn("CFrame =", running)
+        movement_start = core.index("    local function updateMovement()")
+        movement = core[
+            movement_start : core.index("    -- Combat", movement_start)
+        ]
+        running_branch = movement[movement.index('        if mode == "Running" then') :]
+        self.assertIn("if not applyEnterDelay(stage) then", running_branch)
 
     def test_reset_flow_is_gated_and_bounded(self):
         self.assertIn("Enum.HumanoidStateType.Dead", self.source)
@@ -163,6 +178,89 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn(
             'sendAction("TRAIN_ZONE_UPDATE", { trainId = trainId })', self.source
         )
+
+    def test_magic_progress_remote_contracts(self):
+        self.assertIn('RebirthLimit = 41', self.source)
+        self.assertIn('Default = 41, Min = 1, Max = 41', self.source)
+        self.assertIn('invokeAction("PLAYER_REBIRTH")', self.source)
+        self.assertNotIn('sendAction("PLAYER_REBIRTH")', self.source)
+        self.assertIn('indexView.buildAllTabSnapshots,', self.source)
+        self.assertIn('invokeAction("INDEX_CLAIM_REWARD", {', self.source)
+        self.assertIn('tag = tag,', self.source)
+        self.assertIn('progress = snapshot.targetProgress,', self.source)
+        self.assertNotIn('sendAction("INDEX_CLAIM_REWARD")', self.source)
+
+    def test_magic_train_selection_and_click_contract(self):
+        self.assertIn('TrainGround = "Best available"', self.source)
+        self.assertIn('train.CanEnterTrainGround,\n            player,\n            trainId', self.source)
+        self.assertIn('candidate.FindZonePartByTrainId,', self.source)
+        self.assertIn('invokeAction("TRAIN_MANUAL_CLICK", {})', self.source)
+        self.assertIn('AddDropdown("TrainGround"', self.source)
+        self.assertIn('setRegisteredToggle("AutoFarm", false)', self.source)
+        self.assertIn('setRegisteredToggle("AutoFarmSpecific", false)', self.source)
+        self.assertIn('setRegisteredToggle("AutoTrain", false)', self.source)
+
+    def test_magic_potion_contract_uses_selected_inventory_only_id(self):
+        self.assertIn('Common.parseIdSelection(cfg.DrinkPotions)', self.source)
+        self.assertIn('Common.selectedOnlyIds(bag, selectedIds)', self.source)
+        self.assertIn(
+            'invokeAction("DRINK_POTION", { onlyID = onlyId })', self.source
+        )
+        self.assertNotIn('sendAction("DRINK_POTION")', self.source)
+        self.assertIn('AddDropdown("DrinkPotions"', self.source)
+
+    def test_magic_gear_contract_uses_equip_id_and_item_type(self):
+        self.assertIn('itemType = 9,', self.source)
+        self.assertIn('itemType = 13,', self.source)
+        self.assertIn('invokeAction("EQUIP_SHOP_BUY", {', self.source)
+        self.assertIn('invokeAction("EQUIP_SHOP_EQUIP", {', self.source)
+        self.assertIn('equipID = entry.id,', self.source)
+        self.assertIn('itemType = kind.itemType,', self.source)
+        self.assertNotIn('sendAction("EQUIP_SHOP_BUY"', self.source)
+        self.assertNotIn('sendAction("EQUIP_SHOP_EQUIP"', self.source)
+        self.assertIn('wand:AddToggle("AutoBuyWand"', self.source)
+        self.assertIn('wand:AddToggle("AutoEquipWand"', self.source)
+        self.assertIn('armor:AddToggle("AutoBuyArmor"', self.source)
+        self.assertIn('armor:AddToggle("AutoEquipArmor"', self.source)
+
+    def test_magic_selective_sell_contract(self):
+        self.assertIn('AutoSellSpecific = false', self.source)
+        self.assertIn('SellItems = {}', self.source)
+        self.assertIn('Common.parseIdSelection(cfg.SellItems)', self.source)
+        self.assertIn('sellAllMaterials(automaticSellSelection(), function()', self.source)
+        self.assertIn('AddDropdown("SellItems"', self.source)
+        self.assertIn('setRegisteredToggle("AutoSellSpecific", false)', self.source)
+        self.assertIn('setRegisteredToggle("AutoSell", false)', self.source)
+
+    def test_catalog_dropdowns_refresh_late_data_and_preserve_ids(self):
+        self.assertIn('local function refreshCatalogDropdown(', self.source)
+        self.assertIn('local selectedIds = Common.parseIdSelection(previous)', self.source)
+        self.assertIn('element:SetValues(refreshed)', self.source)
+        self.assertIn('refreshCatalogDropdown(\n            sellItemsDropdown,', self.source)
+        self.assertIn('refreshCatalogDropdown(\n            trainGroundDropdown,', self.source)
+        self.assertIn('refreshCatalogDropdown(\n            potionDropdown,', self.source)
+
+    def test_legacy_unlimited_rebirth_setting_migrates_to_magic_limit(self):
+        self.assertIn('decoded.RebirthLimit = 41', self.source)
+
+    def test_magic_anti_afk_control_can_disable_and_restore_connections(self):
+        self.assertIn('AntiAfk = true', self.source)
+        self.assertIn('local function setAntiAfk(enabled)', self.source)
+        self.assertIn('connection:Disable()', self.source)
+        self.assertIn('connection:Enable()', self.source)
+        self.assertIn('group:AddToggle("AntiAfk"', self.source)
+
+    def test_magic_ground_volume_and_orbit_delay(self):
+        footprint = self.source[
+            self.source.index('    local function isOverFootprint') :
+            self.source.index('    -- Character', self.source.index('    local function isOverFootprint'))
+        ]
+        self.assertIn('math.abs(localPoint.Y) <= part.Size.Y * 0.5', footprint)
+        orbit = self.source[
+            self.source.index('        if mode == "Orbit" then') :
+            self.source.index('        setMovementStatus("unknown farm mode', self.source.index('        if mode == "Orbit" then'))
+        ]
+        self.assertIn('if not applyEnterDelay(stage) then return end', orbit)
 
     def test_shared_attack_block(self):
         self.assertIn("local function blocksAttack()", self.source)
