@@ -13,8 +13,8 @@ class EventClaimStateInspectorTests(unittest.TestCase):
         self.source = SOURCE.read_text(encoding="utf-8")
 
     def test_inspector_is_bounded_and_passive(self):
-        self.assertIn("MAX_GC_OBJECTS = 20000", self.source)
-        self.assertIn("MAX_MATCHES = 80", self.source)
+        self.assertIn("MAX_GC_OBJECTS = 50000", self.source)
+        self.assertIn("MAX_MATCHES = 100", self.source)
         self.assertIn("MAX_REPORT_CHARACTERS = 60000", self.source)
         self.assertIn("getloadedmodules", self.source)
         self.assertIn("loadedModules[utilsScript]", self.source)
@@ -24,8 +24,18 @@ class EventClaimStateInspectorTests(unittest.TestCase):
         self.assertNotIn("GetPlrDataByKey", self.source)
 
     def test_inspector_targets_dynamic_event_vocabulary(self):
-        for token in ("活动", "任务", "限时", "每日", "event", "quest", "claim"):
+        for token in (
+            "活动",
+            "任务",
+            "限时",
+            "每日",
+            "限时击杀任意怪",
+            "活动在线3分钟",
+            "每日击杀指定怪物",
+        ):
             self.assertIn(f'"{token}"', self.source)
+        for noisy in ('"event"', '"activity"', '"task"'):
+            self.assertNotIn(noisy, self.source)
 
 
 if __name__ == "__main__":

@@ -7,8 +7,8 @@
 
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
 
-local MAX_GC_OBJECTS = 20000
-local MAX_MATCHES = 80
+local MAX_GC_OBJECTS = 50000
+local MAX_MATCHES = 100
 local MAX_TABLE_ITEMS = 48
 local MAX_DEPTH = 4
 local MAX_REPORT_CHARACTERS = 60000
@@ -18,11 +18,9 @@ local tokens = {
     "任务",
     "限时",
     "每日",
-    "event",
-    "quest",
-    "activity",
-    "claim",
-    "reward",
+    "限时击杀任意怪",
+    "活动在线3分钟",
+    "每日击杀指定怪物",
 }
 
 local function clean(value, limit)
