@@ -135,7 +135,10 @@ the InfinityGold dashboard.
   `InDungeonChallenge` transition. Startup waits until config restoration has
   finished. Alchemy and Sell gate every request while their phases are active.
   Unconfirmed requests run in cycles of three attempts separated by five seconds;
-  a new cycle starts automatically until room entry confirms success. A transient
+  a new cycle starts automatically until room entry confirms success. The selected
+  stage remains latched independently of that cycle counter, so confirmation
+  after the third-attempt reset still releases the configured Farm mode with no
+  Enter Delay. A transient
   nil during AutoReturn cannot leave `waitingForBase` latched.
 - **Progress**: Auto Rebirth uses the payload-free invoke contract, stops at
   the selected value from 1–41, and waits until `leaderstats.Level` reaches the

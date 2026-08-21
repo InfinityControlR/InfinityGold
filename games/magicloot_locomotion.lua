@@ -84,6 +84,7 @@ function Module.create(context)
         lastAttemptAt = -math.huge,
         lastActivatedAt = -math.huge,
         requestAttempts = 0,
+        requestedStage = nil,
         activations = 0,
         status = "broom disabled",
     }
@@ -197,6 +198,7 @@ function Module.create(context)
         broom.delayDuration = 0
         broom.reason = nil
         broom.requestAttempts = 0
+        broom.requestedStage = nil
     end
 
     local function scheduleBroomDelay(now, delay)
@@ -219,6 +221,7 @@ function Module.create(context)
         broom.armed = true
         broom.reason = reason
         broom.requestAttempts = 0
+        broom.requestedStage = nil
         local delay = 0
         if reason == "inventory return" then
             delay = broomReturnDelay()
@@ -308,19 +311,20 @@ function Module.create(context)
             return
         end
         if challenge > 0 then
-            local attempts = broom.requestAttempts
+            local requestedStage = broom.requestedStage
             local reason = broom.reason
             if reason == "inventory return" then broom.returnEpisode = false end
             disarmBroom()
-            if attempts > 0 then
+            if requestedStage == selected then
                 -- Broom has now been accepted by replicated dungeon state.
                 -- Hand the selected stage to the core so its configured Farm
-                -- mode starts continuously without an EnterDelay pause.
+                -- mode starts continuously without an EnterDelay pause. This
+                -- latch is independent from requestAttempts because the retry
+                -- counter intentionally returns to zero after every third send.
                 notifyBroomStageEntered(selected)
                 broom.status = string.format(
-                    "broom stage %d confirmed after %d request(s)",
-                    selected,
-                    attempts
+                    "broom stage %d confirmed; farm route released",
+                    selected
                 )
             else
                 broom.status = string.format(
@@ -388,6 +392,7 @@ function Module.create(context)
             end
             return
         end
+        broom.requestedStage = selected
         broom.activations = broom.activations + 1
         broom.lastActivatedAt = os.clock()
         if broom.requestAttempts >= MAX_BROOM_REQUEST_ATTEMPTS then
@@ -986,6 +991,7 @@ function Module.create(context)
             lastChallenge = broom.lastChallenge,
             configReady = broom.configReady,
             requestAttempts = broom.requestAttempts,
+            requestedStage = broom.requestedStage,
             activationCount = broom.activations,
             message = broom.status,
         }

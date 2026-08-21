@@ -218,6 +218,25 @@ updateBroom()
 assert(#calls == 7 and calls[7].at == 85,
     "Alchemy/Sell time consumed the configured Broom Return Delay")
 
+-- The retry counter is cycle-local and resets after the third send. Entry
+-- confirmation must still hand the Broom stage to Farm through the independent
+-- requested-stage latch, otherwise Running/Walking consume Enter Delay.
+now = 90
+updateBroom()
+now = 95
+updateBroom()
+assert(#calls == 9 and broom.requestAttempts == 0
+    and broom.requestedStage == 28,
+    "third Broom send discarded the pending stage latch")
+challenge = 1
+now = 95.1
+updateBroom()
+assert(#enteredStages == 2 and enteredStages[2].stage == 28
+    and enteredStages[2].at == 95.1,
+    "entry after retry-counter reset did not bypass Enter Delay")
+assert(broom.requestedStage == nil and broom.armed == false,
+    "confirmed Broom entry did not consume its pending stage latch")
+
 print("broom_startup_flow=ok")
 '''
 
