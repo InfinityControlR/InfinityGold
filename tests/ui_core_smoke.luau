@@ -689,10 +689,10 @@ do
 
     local actionButton = windowFrame and findActionButton(
         windowFrame,
-        "Capture current position (current stage)"
+        "Send test click now"
     )
     if actionButton == nil then
-        fail("running capture action button was not constructed")
+        fail("combat test action button was not constructed")
     elseif actionButton:FindFirstChildOfClass("UIGradient") ~= nil then
         fail("action button gradient darkens its own text")
     elseif actionButton.BackgroundColor3 == nil
@@ -704,7 +704,13 @@ do
         or actionButton.TextColor3.G ~= 220
         or actionButton.TextColor3.B ~= 113
     then
-        fail("running capture action button does not use the high-contrast palette")
+        fail("combat test action button does not use the high-contrast palette")
+    end
+
+    if findActionButton(windowFrame, "Capture current position (current stage)") ~= nil
+        or findActionButton(windowFrame, "Clear running points") ~= nil
+    then
+        fail("obsolete custom Running point controls are still visible")
     end
 
     local dropdown = windowFrame and findDropdownByCaption(windowFrame, "Stage")

@@ -69,60 +69,25 @@ print("physical_stage_gate_smoke=ok")
         )
         self.assertIn("physical_stage_gate_smoke=ok", completed.stdout)
 
-    def test_stopping_running_cancels_the_existing_moveto(self):
+    def test_stopping_physical_mode_delegates_to_locomotion_module(self):
         helper = core_slice(
             "    local function stopMovementModes()",
             "    -- Return episode",
         )
         fixture = f"""
 local stopWalkingCalls = 0
-local moveToCalls = 0
-local moveCalls = 0
-local rootPosition = {{ X = 10, Y = 3, Z = 20 }}
-local root = {{ Position = rootPosition }}
-local humanoid = {{}}
-function humanoid:MoveTo(position)
-    assert(position == rootPosition, "MoveTo was not cancelled at the current root")
-    moveToCalls += 1
-end
-function humanoid:Move(direction, relative)
-    assert(direction.X == 0 and direction.Y == 0 and direction.Z == 0)
-    assert(relative == false)
-    moveCalls += 1
-end
-local Vector3 = {{
-    new = function(x, y, z) return {{ X = x, Y = y, Z = z }} end,
-}}
 local loco = {{
     StopWalking = function()
         stopWalkingCalls += 1
     end,
-}}
-local running = {{
-    -- updateRunning can mark arrival before Roblox has fully discarded the
-    -- last MoveTo.  The stored handles must still cancel that residual order.
-    active = false,
-    arrived = true,
-    humanoid = humanoid,
-    root = root,
-    lastPosition = rootPosition,
-    lastProgress = 12,
-    retryUntil = 99,
 }}
 
 {helper}
 
 stopMovementModes()
 assert(stopWalkingCalls == 1)
-assert(moveToCalls == 1 and moveCalls == 1, "residual MoveTo was not cancelled")
-assert(running.active == false and running.arrived == false)
-assert(running.humanoid == nil and running.root == nil)
-assert(running.lastPosition == nil and running.lastProgress == 0)
-assert(running.retryUntil == 0)
-
 stopMovementModes()
 assert(stopWalkingCalls == 2)
-assert(moveToCalls == 1 and moveCalls == 1, "cleared Running was cancelled twice")
 print("running_stop_smoke=ok")
 """
         completed = run_luau(fixture)
@@ -138,8 +103,7 @@ print("running_stop_smoke=ok")
         movement = core_slice("    local function updateMovement()", "    -- Combat")
         gate = movement.index("if shouldWaitForPhysicalStage(mode, stage, challenge) then")
         self.assertLess(gate, movement.index("local stagePartInstance = stagePart(stage)"))
-        self.assertLess(gate, movement.index('loco:Update("Walking"'))
-        self.assertLess(gate, movement.index("updateRunning(stage"))
+        self.assertLess(gate, movement.index("return loco:Update("))
         self.assertIn('setMovementStatus("stage " .. stage .. " waiting for dungeon entry")', movement)
 
     def test_waiting_at_base_does_not_block_background_autoclick(self):
@@ -153,8 +117,8 @@ local cfg = {{
     AutoFarmSpecific = false,
     FarmMode = "Running",
 }}
-local running = {{ active = false, arrived = false }}
-local loco = nil
+local locomotionBlocked = false
+local loco = {{ BlocksAttack = function() return locomotionBlocked end }}
 local stageEntryWaiting = true
 
 {helper}
@@ -164,16 +128,16 @@ local stageEntryWaiting = true
 assert(blocksPhysicalTransit() == false, "base waiting incorrectly blocked AutoClick")
 assert(blocksAttack() == true, "base waiting did not block AutoAttack")
 
-running.active = true
+locomotionBlocked = true
 assert(blocksPhysicalTransit() == true, "active Running did not block AutoClick")
 assert(blocksAttack() == true, "active Running did not block AutoAttack")
-running.arrived = true
+locomotionBlocked = false
 stageEntryWaiting = false
 assert(blocksPhysicalTransit() == false, "arrived Running kept AutoClick blocked")
 assert(blocksAttack() == false, "arrived Running kept AutoAttack blocked")
 
 cfg.FarmMode = "Walking"
-loco = {{ BlocksAttack = function() return true end }}
+loco.BlocksAttack = function() return true end
 assert(blocksPhysicalTransit() == true, "Walking entry gate was bypassed")
 assert(blocksAttack() == true, "Walking did not block AutoAttack")
 loco.BlocksAttack = function() return false end

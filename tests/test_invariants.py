@@ -2,8 +2,8 @@
 
 These checks encode the project rules that must never regress:
 
-  * Walking never teleports, never changes speed, drives humanoid:Move from a
-    render-step binding, and is the only place allowed to request a reset.
+  * Walking and Running never teleport or change speed, drive humanoid:Move
+    from a render-step binding, and are the only place allowed to reset.
   * Broom sends only the selected-stage request and never toggles/equips it.
   * The core keeps the documented worker cadences and the shared attack block.
 """
@@ -60,24 +60,28 @@ class LocomotionInvariantTests(unittest.TestCase):
     def test_running_orbits_the_stage_center_with_live_radius(self):
         core = read("games/magicloot.lua")
         self.assertIn("RunningDistance = 12", core)
-        self.assertIn("local RUNNING_ORBIT_STEP = math.rad(45)", core)
-        self.assertIn("Common.runningOrbitOffset(angle, radius)", core)
-        self.assertIn("running.orbitAngle += RUNNING_ORBIT_STEP", core)
+        self.assertIn("local RUNNING_ORBIT_STEP = math.rad(45)", self.source)
+        self.assertIn("local RUNNING_JUMP_INTERVAL = 0.9", self.source)
+        self.assertIn("local function runningOrbitPoint", self.source)
+        self.assertIn("local function startRunningOrbit", self.source)
+        self.assertIn("local function updateRunningOrbit", self.source)
+        self.assertIn("state.orbitAngle = state.orbitAngle + RUNNING_ORBIT_STEP", self.source)
+        self.assertIn('context.option,\n            "RunningDistance"', self.source)
+        self.assertIn('return { "Walking", "Running" }', self.source)
+        self.assertIn('return mode == "Walking" or mode == "Running"', self.source)
+        self.assertIn('state.mode == "Running" and state.enteredStage', self.source)
+        self.assertIn("jumpWhileRunning(humanoid, os.clock())", self.source)
+        self.assertIn("humanoid:ChangeState(Enum.HumanoidStateType.Jumping)", self.source)
         self.assertIn('group:AddSlider("RunningDistance"', core)
-        running = core[
-            core.index("    local function updateRunning(stage") :
-            core.index("    local function updateMovement()")
-        ]
-        self.assertIn("isOverHorizontalFootprint", running)
-        self.assertIn("humanoid:MoveTo(movementTarget)", running)
-        self.assertIn("humanoid.FloorMaterial ~= Enum.Material.Air", running)
-        self.assertNotIn("CFrame =", running)
+        self.assertNotIn("local function updateRunning", core)
+        self.assertNotIn("humanoid:MoveTo(movementTarget)", core)
+        self.assertNotIn('CreateSection("Running points")', core)
         movement_start = core.index("    local function updateMovement()")
         movement = core[
             movement_start : core.index("    -- Combat", movement_start)
         ]
-        running_branch = movement[movement.index('        if mode == "Running" then') :]
-        self.assertIn("if not applyEnterDelay(stage) then", running_branch)
+        self.assertIn('if mode == "Walking" or mode == "Running" then', movement)
+        self.assertIn("return loco:Update(\n                    mode,", movement)
 
     def test_reset_flow_is_gated_and_bounded(self):
         self.assertIn("Enum.HumanoidStateType.Dead", self.source)
@@ -400,9 +404,10 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn("numeric == math.huge", parser)
         self.assertIn("return math.max(0, math.floor(numeric))", parser)
 
-    def test_walking_mode_dispatch(self):
-        self.assertIn('cfg.FarmMode == "Walking"', self.source)
-        self.assertIn('loco:Update("Walking"', self.source)
+    def test_physical_modes_dispatch_through_locomotion_module(self):
+        self.assertIn('cfg.FarmMode == "Walking" or cfg.FarmMode == "Running"', self.source)
+        self.assertIn('if mode == "Walking" or mode == "Running" then', self.source)
+        self.assertIn("return loco:Update(\n                    mode,", self.source)
 
     def test_no_loadstring_in_core(self):
         self.assertNotIn("loadstring", self.source)

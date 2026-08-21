@@ -52,10 +52,11 @@ the InfinityGold dashboard.
   and its centre; EnterDelay applies per stage change, 20-second stuck
   detection performs a single bounded character reset per stage, and stage
   entry releases the attack block (`enteredStage` latch).
-- **Running**: enters with native `Humanoid:MoveTo`, then immediately follows
-  45-degree waypoints around the stage centre instead of stopping there. It
-  jumps every 0.9 seconds only while grounded and rereads the configurable
-  4–50 stud `RunningDistance` on every movement update; no CFrame teleport or
+- **Running**: uses the Magic locomotion contract: `humanoid:Move` runs every
+  render step after the normal character controller, follows 45-degree
+  waypoints around the stage centre, and requests a grounded jump every 0.9
+  seconds from that same callback. It rereads the configurable 4–50 stud
+  `RunningDistance` live; no `MoveTo`, CFrame teleport, captured points, or
   speed/jump-power mutation is used.
 - **Combat**: Auto Attack (0.2 s cadence) and Auto Click
   (`1 / max(1, ClickRate)`), sharing one attack block fed by the locomotion

@@ -2820,29 +2820,6 @@ return function(locomotionFactory, Library, Common)
 
     local lastFarmMode = nil
 
-    local DEFAULT_RUNNING_DISTANCE = 12
-    local MIN_RUNNING_DISTANCE = 4
-    local MAX_RUNNING_DISTANCE = 50
-    local RUNNING_ORBIT_STEP = math.rad(45)
-
-    local running = {
-        targets = {},
-        lastEmit = -math.huge,
-        lastJump = -math.huge,
-        lastPosition = nil,
-        lastProgress = 0,
-        retryUntil = 0,
-        arrived = false,
-        active = false,
-        humanoid = nil,
-        root = nil,
-        stage = nil,
-        orbitAngle = 0,
-        orbitRadius = DEFAULT_RUNNING_DISTANCE,
-        orbitCenter = nil,
-        orbitDestination = nil,
-    }
-
     local function shouldWaitForPhysicalStage(mode, stage, challenge)
         local physical = mode == "Walking" or mode == "Running"
         local challengeNumber = tonumber(challenge)
@@ -2854,12 +2831,11 @@ return function(locomotionFactory, Library, Common)
     local stageEntryWaiting = false
 
     local function blocksPhysicalTransit()
-        if loco ~= nil and cfg.FarmMode == "Walking" then
+        if loco ~= nil
+            and (cfg.FarmMode == "Walking" or cfg.FarmMode == "Running")
+        then
             local ok, blocked = pcall(function() return loco:BlocksAttack() end)
             if ok and blocked then return true end
-        end
-        if cfg.FarmMode == "Running" and running.active and not running.arrived then
-            return true
         end
         return false
     end
@@ -2877,24 +2853,6 @@ return function(locomotionFactory, Library, Common)
     local function stopMovementModes()
         if loco ~= nil then
             pcall(function() loco:StopWalking() end)
-        end
-        local humanoid = running.humanoid
-        local root = running.root
-        running.active = false
-        running.arrived = false
-        running.humanoid = nil
-        running.root = nil
-        running.lastPosition = nil
-        running.lastProgress = 0
-        running.retryUntil = 0
-        running.lastEmit = -math.huge
-        running.lastJump = -math.huge
-        running.stage = nil
-        running.orbitCenter = nil
-        running.orbitDestination = nil
-        if humanoid ~= nil and root ~= nil then
-            pcall(function() humanoid:MoveTo(root.Position) end)
-            pcall(function() humanoid:Move(Vector3.new(0, 0, 0), false) end)
         end
     end
 
@@ -3087,163 +3045,6 @@ return function(locomotionFactory, Library, Common)
         return fallback
     end
 
-    local function isOverHorizontalFootprint(part, point)
-        local localPoint = part.CFrame:PointToObjectSpace(point)
-        return math.abs(localPoint.X) <= part.Size.X * 0.5
-            and math.abs(localPoint.Z) <= part.Size.Z * 0.5
-    end
-
-    local function runningOrbitPoint(stagePartInstance, center, angle, radius)
-        local offsetX, offsetZ = Common.runningOrbitOffset(angle, radius)
-        local worldOffset = stagePartInstance.CFrame:VectorToWorldSpace(
-            Vector3.new(offsetX, 0, offsetZ)
-        )
-        return center + Vector3.new(worldOffset.X, 0, worldOffset.Z)
-    end
-
-    local function resetRunningOrbit(stage)
-        running.stage = stage
-        running.orbitAngle = 0
-        running.orbitRadius = math.clamp(
-            tonumber(cfg.RunningDistance) or DEFAULT_RUNNING_DISTANCE,
-            MIN_RUNNING_DISTANCE,
-            MAX_RUNNING_DISTANCE
-        )
-        running.orbitCenter = nil
-        running.orbitDestination = nil
-        running.arrived = false
-        running.lastEmit = -math.huge
-        running.lastJump = -math.huge
-    end
-
-    local function updateRunningOrbit(stagePartInstance, root, center)
-        local changed = false
-        local radius = math.clamp(
-            tonumber(cfg.RunningDistance) or DEFAULT_RUNNING_DISTANCE,
-            MIN_RUNNING_DISTANCE,
-            MAX_RUNNING_DISTANCE
-        )
-        local centerChanged = running.orbitCenter == nil
-            or (running.orbitCenter - center).Magnitude > 0.05
-
-        if running.orbitDestination == nil then
-            local localRoot = stagePartInstance.CFrame:PointToObjectSpace(root.Position)
-            local planarMagnitude = Vector3.new(localRoot.X, 0, localRoot.Z).Magnitude
-            local entryAngle = planarMagnitude >= 1
-                and math.atan2(localRoot.Z, localRoot.X)
-                or 0
-            running.orbitAngle = entryAngle + RUNNING_ORBIT_STEP
-            changed = true
-        elseif math.abs(radius - running.orbitRadius) > 0.05 or centerChanged then
-            changed = true
-        end
-
-        running.orbitRadius = radius
-        running.orbitCenter = center
-        if changed then
-            running.orbitDestination = runningOrbitPoint(
-                stagePartInstance,
-                center,
-                running.orbitAngle,
-                radius
-            )
-        end
-
-        local delta = running.orbitDestination - root.Position
-        local distance = Vector3.new(delta.X, 0, delta.Z).Magnitude
-        if distance <= 4 then
-            running.orbitAngle += RUNNING_ORBIT_STEP
-            running.orbitDestination = runningOrbitPoint(
-                stagePartInstance,
-                center,
-                running.orbitAngle,
-                radius
-            )
-            changed = true
-            delta = running.orbitDestination - root.Position
-            distance = Vector3.new(delta.X, 0, delta.Z).Magnitude
-        end
-        return running.orbitDestination, distance, changed
-    end
-
-    local function updateRunning(stage, stagePartInstance, parts, destination)
-        local now = os.clock()
-        local humanoid = parts.humanoid
-        local root = parts.root
-
-        if running.stage ~= stage then
-            resetRunningOrbit(stage)
-        end
-
-        local center = running.targets[stage] or destination
-        if not running.arrived
-            and isOverHorizontalFootprint(stagePartInstance, root.Position)
-        then
-            running.arrived = true
-        end
-
-        running.active = true
-        running.humanoid = humanoid
-        running.root = root
-
-        local movementTarget = center
-        local targetChanged = false
-        local distanceFromCenter = nil
-        if running.arrived then
-            local waypointDistance
-            movementTarget, waypointDistance, targetChanged = updateRunningOrbit(
-                stagePartInstance,
-                root,
-                center
-            )
-            local centerDelta = center - root.Position
-            distanceFromCenter = Vector3.new(
-                centerDelta.X,
-                0,
-                centerDelta.Z
-            ).Magnitude
-        end
-
-        local delta = movementTarget - root.Position
-        local planar = Vector3.new(delta.X, 0, delta.Z)
-
-        if now >= running.retryUntil then
-            if targetChanged or now - running.lastEmit >= 3.5 then
-                pcall(function() humanoid:MoveTo(movementTarget) end)
-                running.lastEmit = now
-            end
-            if running.arrived
-                and now - running.lastJump >= 0.9
-                and humanoid.FloorMaterial ~= Enum.Material.Air
-            then
-                pcall(function() humanoid.Jump = true end)
-                running.lastJump = now
-            end
-            local moved = running.lastPosition ~= nil
-                and (root.Position - running.lastPosition).Magnitude >= 1
-            if moved then
-                running.lastPosition = root.Position
-                running.lastProgress = now
-            elseif running.lastPosition ~= nil and now - running.lastProgress >= 6 then
-                running.retryUntil = now + 5
-                running.lastProgress = now
-            elseif running.lastPosition == nil then
-                running.lastPosition = root.Position
-                running.lastProgress = now
-            end
-        end
-
-        if running.arrived then
-            return string.format(
-                "stage %d running %.1f studs from center; waypoint %.1f studs",
-                stage,
-                distanceFromCenter or 0,
-                planar.Magnitude
-            )
-        end
-        return string.format("stage %d running entry %.1f studs", stage, planar.Magnitude)
-    end
-
     local function updateMovement()
         if cfg.FarmMode ~= lastFarmMode then
             if lastFarmMode == "Walking" or lastFarmMode == "Running" then
@@ -3252,12 +3053,6 @@ return function(locomotionFactory, Library, Common)
             stageEntryWaiting = false
             lastFarmMode = cfg.FarmMode
             enterDelay.stage = nil
-            running.lastPosition = nil
-            running.lastProgress = os.clock()
-            running.arrived = false
-            running.stage = nil
-            running.orbitCenter = nil
-            running.orbitDestination = nil
         end
 
         local full = bagFull()
@@ -3307,36 +3102,32 @@ return function(locomotionFactory, Library, Common)
 
         local parts = characterParts()
         if parts == nil then
-            if cfg.FarmMode == "Walking" then
+            if mode == "Walking" or mode == "Running" then
                 stopMovementModes()
             end
             setMovementStatus("waiting for character")
             return
         end
 
-        if mode == "Walking" then
+        if mode == "Walking" or mode == "Running" then
             if loco == nil then
-                setMovementStatus("Walking module unavailable")
+                setMovementStatus(mode .. " module unavailable")
                 return
             end
             local ok, status = pcall(function()
-                return loco:Update("Walking", stage, stagePartInstance, parts.root, groundPoint(stagePartInstance))
+                return loco:Update(
+                    mode,
+                    stage,
+                    stagePartInstance,
+                    parts.root,
+                    groundPoint(stagePartInstance)
+                )
             end)
             if ok then
-                setMovementStatus(status or "walking")
+                setMovementStatus(status or string.lower(mode))
             else
-                setMovementStatus("walking error: " .. tostring(status))
+                setMovementStatus(string.lower(mode) .. " error: " .. tostring(status))
             end
-            return
-        end
-
-        if mode == "Running" then
-            if not applyEnterDelay(stage) then
-                stopMovementModes()
-                return
-            end
-            local status = updateRunning(stage, stagePartInstance, parts, groundPoint(stagePartInstance))
-            setMovementStatus(status)
             return
         end
 
@@ -4335,30 +4126,6 @@ return function(locomotionFactory, Library, Common)
             end
         end)
 
-        local runningGroup = bindGroup(tab:CreateSection("Running points"))
-        runningGroup:AddButton({
-            Text = "Capture current position (current stage)",
-            Callback = function()
-                local parts = characterParts()
-                if parts == nil then
-                    notify("No character available to capture")
-                    return
-                end
-                local cleared = playerNumber("DungeonRunMaxClear") or 0
-                local stage = Common.farmStageTarget(
-                    cleared, cfg.FarmStage, cfg.AutoFarmSpecific == true, MAX_FARM_STAGE
-                )
-                running.targets[stage] = parts.root.Position
-                notify("Running point captured for stage " .. stage)
-            end,
-        })
-        runningGroup:AddButton({
-            Text = "Clear running points",
-            Callback = function()
-                running.targets = {}
-                notify("Running points cleared")
-            end,
-        })
     end
 
     -- Combat tab
