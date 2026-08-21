@@ -93,7 +93,9 @@ the InfinityGold dashboard.
   handoff, refreshes the local Alchemy facade and sends the highest recipe whose
   material predicate is positive in the first base cycle. A stale rebirth hint
   is diagnostic rather than a veto because the server still validates the one
-  selected ID. It never walks guessed recipe IDs. The game has one brewing slot,
+  selected ID. When every material predicate is false, a missing/stale rebirth
+  helper cannot hide the resulting `alchemy-empty` outcome. It never walks
+  guessed recipe IDs. The game has one brewing slot,
   so a live
   `brewing (one potion at a time)` state is an intentional wait for the current
   potion rather than a recipe-search delay.

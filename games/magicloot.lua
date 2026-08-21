@@ -1437,7 +1437,13 @@ return function(locomotionFactory, Library, Common)
         if not craftOk then return false, tostring(canCraft), "materials-error" end
         if not canCraft then
             if not rebirthOk then
-                return false, tostring(meetsRebirth), "materials-rebirth-error"
+                -- CanCraftRecipe=false is already authoritative evidence that
+                -- this recipe lacks materials. A stale/missing rebirth helper
+                -- must not turn an empty inventory into an unknown state and
+                -- retain Alchemy forever.
+                return false,
+                    tostring(meetsRebirth),
+                    "materials-rebirth-advisory"
             end
             return false, nil, meetsRebirth and "materials" or "materials-rebirth"
         end
@@ -1609,7 +1615,6 @@ return function(locomotionFactory, Library, Common)
             alchemyTelemetry.craftable += 1
         end
         if reason == "craftable-rebirth-error"
-            or reason == "materials-rebirth-error"
             or reason == "materials-error"
             or reason == "api"
         then

@@ -351,6 +351,7 @@ local readyNilReads = 0
 local readyReadHook = function() end
 local recipeListReads = 0
 local craftPredicateReads = 0
+local rebirthCheckMode = "ok"
 local potionConfReads = 0
 local potionFindCalls = 0
 local translationCalls = 0
@@ -390,6 +391,9 @@ local alchemy = {{
     end,
     CanMeetRecipeRebirth = function(actualPlayer, raw)
         assert(actualPlayer == player, "rebirth check received the wrong player")
+        if rebirthCheckMode == "error" then
+            error("rebirth facade unavailable")
+        end
         return raw.Rebirth <= 2
     end,
     CanCraftRecipe = function(actualPlayer, raw)
@@ -798,6 +802,7 @@ inProgress = false
 recipes[1].craftable = false
 recipes[2].craftable = false
 cfg.BrewRecipe = "Best craftable"
+rebirthCheckMode = "error"
 resetAlchemyRecovery()
 alchemyInvokeLease.inventoryEpoch = 0
 remoteMode = "accept-one"
@@ -807,8 +812,10 @@ assert(sent == false
     and string.find(craftError, "waiting for the game", 1, true) ~= nil
     and #calls == callsBeforeStaleMaterials
     and alchemyTelemetry.craftable == 0
+    and alchemyTelemetry.predicateErrors == 0
+    and alchemyPriorityOutcome() == "alchemy-empty"
     and alchemyRecovery.key == nil,
-    "Best emitted a fallback remote while every local recipe was false")
+    "rebirth helper failure hid the authoritative zero-material outcome")
 
 -- A return with no permanent material delta must never strand Broom/farming
 -- at base. The handoff waits only for its bounded deadline, sends no guessed
@@ -837,8 +844,11 @@ sent, craftError = runAlchemyCycle()
 assert(sent == false
     and string.find(craftError, "waiting for the game", 1, true) ~= nil
     and not alchemyInventoryTransferPending()
+    and alchemyTelemetry.predicateErrors == 0
+    and alchemyPriorityOutcome() == "alchemy-empty"
     and #calls == callsBeforeEmptyTransfer,
     "empty transfer remained trapped at base or guessed a recipe id")
+rebirthCheckMode = "ok"
 
 -- Stage-13 regression: recipe #17 becomes locally craftable while loot is
 -- arriving in the Bag, then the same predicate is stale/false at base. The
