@@ -803,28 +803,52 @@ assert(sent == true and craftError == nil
     and calls[#calls].payload.recipeId == 1,
     "Best craftable did not retry the same locally proven recipe")
 
--- Magic never invokes a recipe whose local predicates are all false. In
--- particular, Best must not turn an unavailable local snapshot into a remote
--- walk through guessed ids.
+-- Live evidence: CanCraftRecipe returned false for every row even though the
+-- raw MID/NeedCount schema and permanent Bag proved recipes were available.
+-- Best must aggregate duplicate Bag rows, choose the highest locally satisfied
+-- recipe and emit exactly one request without server-side walking.
 fakeClock = 15
+inProgress = false
+cfg.BrewRecipe = "Best craftable"
+resetAlchemyRecovery()
+alchemyInvokeLease.inventoryEpoch = 0
+local recipesBeforeDirectMaterials = recipes
+local bagBeforeDirectMaterials = bag
+recipes = {{
+    {{ recipeId = 1, PID = 101, Rebirth = 0, craftable = false,
+        MID = {{ 2010001, 2010002 }}, NeedCount = {{ 1, 1 }} }},
+    {{ recipeId = 4, PID = 104, Rebirth = 1, craftable = false,
+        MID = {{ 2010006, 2010007 }}, NeedCount = {{ 1, 1 }} }},
+    {{ recipeId = 7, PID = 107, Rebirth = 1, craftable = false,
+        MID = {{ 2020003, 2020004 }}, NeedCount = {{ 1, 1 }} }},
+}}
+bag = {{
+    {{ id = 2010001, onlyID = 1, tp = 2, count = 1 }},
+    {{ id = 2010001, onlyID = 2, tp = 2, count = 1 }},
+    {{ id = 2010002, onlyID = 3, tp = 2, count = 1 }},
+    {{ id = 2010006, onlyID = 4, tp = 2, count = 1 }},
+    {{ id = 2010007, onlyID = 5, tp = 2, count = 1 }},
+}}
+remoteMode = "accept-id"
+remoteAcceptedRecipeId = 4
+local callsBeforeDirectMaterials = #calls
+sent, craftError = runAlchemyCycle()
+assert(sent == true and craftError == nil
+    and #calls == callsBeforeDirectMaterials + 1
+    and calls[#calls].payload.recipeId == 4
+    and alchemyTelemetry.craftable == 0
+    and alchemyTelemetry.directCraftable == 2
+    and alchemyTelemetry.predicateErrors == 0
+    and alchemyTelemetry.chosenId == 4,
+    "Best did not use MID/NeedCount to send one highest available recipe")
+recipes = recipesBeforeDirectMaterials
+bag = bagBeforeDirectMaterials
 inProgress = false
 recipes[1].craftable = false
 recipes[2].craftable = false
-cfg.BrewRecipe = "Best craftable"
 rebirthCheckMode = "error"
 resetAlchemyRecovery()
-alchemyInvokeLease.inventoryEpoch = 0
 remoteMode = "accept-one"
-local callsBeforeStaleMaterials = #calls
-sent, craftError = runAlchemyCycle()
-assert(sent == false
-    and string.find(craftError, "waiting for the game", 1, true) ~= nil
-    and #calls == callsBeforeStaleMaterials
-    and alchemyTelemetry.craftable == 0
-    and alchemyTelemetry.predicateErrors == 0
-    and alchemyPriorityOutcome() == "alchemy-empty"
-    and alchemyRecovery.key == nil,
-    "rebirth helper failure hid the authoritative zero-material outcome")
 
 -- A return with no permanent material delta must never strand Broom/farming
 -- at base. The handoff waits only for its bounded deadline, sends no guessed
@@ -1258,12 +1282,12 @@ cfg.AutoBrew = true
 local toggleInterleaveReads = 0
 bagReadHook = function()
     toggleInterleaveReads += 1
-    if toggleInterleaveReads == 2 then cfg.AutoBrew = false end
+    if alchemyInvokeLease.pending then cfg.AutoBrew = false end
 end
 sent, craftError = runAlchemyCycle()
 bagReadHook = function() end
 assert(sent == false and craftError == "brew cancelled before request"
-    and toggleInterleaveReads == 2
+    and toggleInterleaveReads >= 1
     and cfg.AutoBrew == false
     and #calls == callsBeforeYieldGuards,
     "beforeInvoke used AutoBrew captured before the yielding Bag getter")
@@ -1600,7 +1624,7 @@ print("alchemy_flow_smoke=ok")
         self.assertIn("best = best or advisoryBest", ALCHEMY_HELPERS)
         self.assertIn("table.insert(prioritizedIds, best.id)", ALCHEMY_HELPERS)
         self.assertNotIn("fallbackIds", ALCHEMY_HELPERS)
-        self.assertIn('local recoveryPrefix = "magic-best-v1|"', ALCHEMY_HELPERS)
+        self.assertIn('local recoveryPrefix = "infinity-best-v2|"', ALCHEMY_HELPERS)
         self.assertNotIn("fallbackMode", ALCHEMY_HELPERS)
         self.assertNotIn('GetCfgByName, "potionConf"', ALCHEMY_HELPERS)
         recipe_ui = core_slice(

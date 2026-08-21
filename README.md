@@ -90,15 +90,16 @@ the InfinityGold dashboard.
   never chains another brew before Sell/Broom receive their turns. Dungeon
   drops live in the small temporary `LimitBag` while farming and move into the
   visible 999-slot `PlayerData.Bag` only at base. Best Craftable watches that
-  handoff, refreshes the local Alchemy facade and sends the highest recipe whose
-  material predicate is positive in the first base cycle. If `LimitBagUsed`
+  handoff, aggregates duplicate material rows, compares each raw recipe's
+  `MID` and `NeedCount`, and sends exactly the highest locally available recipe
+  in the first base cycle. If `LimitBagUsed`
   clears before the permanent Bag changes, the later material fingerprint rearms
   that refresh and is ranked immediately instead of reusing the stale facade.
   A stale rebirth hint
   is diagnostic rather than a veto because the server still validates the one
-  selected ID. When every material predicate is false, a missing/stale rebirth
-  helper cannot hide the resulting `alchemy-empty` outcome. It never walks
-  guessed recipe IDs. The game has one brewing slot,
+  selected ID. The observed `CanCraftRecipe` result remains diagnostic because
+  it can report all false despite a positive MID/NeedCount calculation. It never
+  walks recipe IDs. The game has one brewing slot,
   so a live
   `brewing (one potion at a time)` state is an intentional wait for the current
   potion rather than a recipe-search delay. `Copy Best diagnostic` copies a

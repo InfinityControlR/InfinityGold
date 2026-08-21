@@ -1053,6 +1053,8 @@ return function(locomotionFactory, Library, Common)
         rebirthPassed = 0,
         materialChecks = 0,
         craftable = 0,
+        directCraftable = 0,
+        directSchemaErrors = 0,
         predicateErrors = 0,
         chosenId = nil,
         remoteResult = nil,
@@ -1461,6 +1463,52 @@ return function(locomotionFactory, Library, Common)
         return true, nil, "craftable"
     end
 
+    local function alchemyMaterialCounts()
+        local bag, bagError = playerBag()
+        if bag == nil then return nil, bagError end
+        local counts = {}
+        for _, item in pairs(bag) do
+            if type(item) == "table" and tonumber(item.tp) == 2 then
+                local itemId = math.floor(tonumber(item.id) or 0)
+                if itemId > 0 then
+                    local amount = tonumber(
+                        item.count
+                        or item.Count
+                        or item.amount
+                        or item.Amount
+                        or item.num
+                        or item.Num
+                        or item.stack
+                        or item.Stack
+                    ) or 1
+                    counts[itemId] = (counts[itemId] or 0) + math.max(0, amount)
+                end
+            end
+        end
+        return counts
+    end
+
+    local function recipeAvailableFromMaterialCounts(recipe, counts)
+        local raw = type(recipe) == "table" and recipe.recipe or nil
+        local materialIds = type(raw) == "table" and raw.MID or nil
+        local requiredCounts = type(raw) == "table" and raw.NeedCount or nil
+        if type(materialIds) ~= "table" or type(requiredCounts) ~= "table" then
+            return nil, "recipe MID/NeedCount unavailable"
+        end
+        local checked = 0
+        for index, materialIdValue in pairs(materialIds) do
+            local materialId = math.floor(tonumber(materialIdValue) or 0)
+            local required = math.floor(tonumber(requiredCounts[index]) or 0)
+            if materialId <= 0 or required <= 0 then
+                return nil, "invalid recipe material row"
+            end
+            checked += 1
+            if (counts[materialId] or 0) < required then return false end
+        end
+        if checked == 0 then return nil, "empty recipe material list" end
+        return true
+    end
+
     alchemyBagFingerprint = function()
         local bag, bagError = playerBag()
         if bag == nil then return nil, bagError end
@@ -1629,7 +1677,7 @@ return function(locomotionFactory, Library, Common)
 
     local function selectAlchemyRecipe(alchemy, selection, stagedRecipeId)
         selection = tostring(selection or "Best craftable")
-        local recoveryPrefix = "magic-best-v1|" .. selection .. "|"
+        local recoveryPrefix = "infinity-best-v2|" .. selection .. "|"
 
         local catalog, err = alchemyRecipeCatalog(alchemy)
         if catalog == nil then return nil, err end
@@ -1638,43 +1686,63 @@ return function(locomotionFactory, Library, Common)
         alchemyTelemetry.rebirthPassed = 0
         alchemyTelemetry.materialChecks = 0
         alchemyTelemetry.craftable = 0
+        alchemyTelemetry.directCraftable = 0
+        alchemyTelemetry.directSchemaErrors = 0
         alchemyTelemetry.predicateErrors = 0
         alchemyTelemetry.chosenId = nil
         local candidateById = {}
         local membershipIds = {}
         local prioritizedIds = {}
         if selection == "Best craftable" then
-            -- Match Magic's original selector exactly: scan the ascending
-            -- catalog, remember the last recipe whose two local predicates are
-            -- true, and send only that id. Do not freeze an early false snapshot
-            -- or walk server candidates; those retries were the source of the
-            -- multi-minute delay after returning from a dungeon.
+            -- CanCraftRecipe is false for every recipe in the observed live
+            -- client, even when Bag + MID/NeedCount prove materials exist.
+            -- Aggregate the permanent Bag once, evaluate every recipe locally,
+            -- and retain only the highest available id for one server request.
             local best = nil
             local advisoryBest = nil
+            local sawDirectSchema = false
+            local stagedFallback = nil
             stagedRecipeId = math.floor(tonumber(stagedRecipeId) or 0)
             if stagedRecipeId > 0 then
                 for _, recipe in ipairs(catalog) do
                     if recipe.id == stagedRecipeId then
-                        best = recipe
+                        stagedFallback = recipe
                         break
                     end
                 end
             end
-            if best == nil then
-                for _, recipe in ipairs(catalog) do
-                    local craftable, _, reason = isAlchemyRecipeCraftable(
-                        alchemy,
-                        recipe
-                    )
-                    noteAlchemyRecipeCheck(reason)
-                    if craftable then
-                        if reason == "craftable" then
-                            best = recipe
-                        else
-                            advisoryBest = recipe
-                        end
+            local materialCounts, materialCountError = alchemyMaterialCounts()
+            if materialCounts == nil then return nil, materialCountError end
+            for _, recipe in ipairs(catalog) do
+                local craftable, _, reason = isAlchemyRecipeCraftable(
+                    alchemy,
+                    recipe
+                )
+                noteAlchemyRecipeCheck(reason)
+                local directAvailable, directError =
+                    recipeAvailableFromMaterialCounts(recipe, materialCounts)
+                local available = directAvailable
+                if directAvailable == nil then
+                    alchemyTelemetry.directSchemaErrors += 1
+                    available = craftable
+                elseif directAvailable then
+                    sawDirectSchema = true
+                    alchemyTelemetry.directCraftable += 1
+                else
+                    sawDirectSchema = true
+                end
+                if available then
+                    if reason == "craftable"
+                        or reason == "materials"
+                    then
+                        best = recipe
+                    elseif reason ~= "materials-error" and reason ~= "api" then
+                        advisoryBest = recipe
                     end
                 end
+            end
+            if not sawDirectSchema and stagedFallback ~= nil then
+                best = stagedFallback
             end
             best = best or advisoryBest
             if best ~= nil then
@@ -4553,7 +4621,8 @@ return function(locomotionFactory, Library, Common)
                             .. "Inventory: temporary %s • transfer %s\n"
                             .. "Checks: use %s • brewing %s • ready %s • "
                             .. "rebirth %d/%d • materials %d • craftable %d • "
-                            .. "errors %d • chosen %s • remote %s • travel %s • confirmed %s",
+                            .. "direct %d • schema errors %d • errors %d • "
+                            .. "chosen %s • remote %s • travel %s • confirmed %s",
                         alchemyTelemetry.status,
                         alchemyTelemetry.recipes,
                         alchemyTelemetry.craftAttempts,
@@ -4569,6 +4638,8 @@ return function(locomotionFactory, Library, Common)
                         alchemyTelemetry.checkTotal,
                         alchemyTelemetry.materialChecks,
                         alchemyTelemetry.craftable,
+                        alchemyTelemetry.directCraftable,
+                        alchemyTelemetry.directSchemaErrors,
                         alchemyTelemetry.predicateErrors,
                         chosen,
                         tostring(remoteResult),
@@ -4584,8 +4655,9 @@ return function(locomotionFactory, Library, Common)
             Text = "Alchemy runs remotely only while the player is at base. "
                 .. "Dungeon drops first live in the small temporary bag. On return, "
                 .. "Best waits only until those materials appear in the permanent "
-                .. "999-slot Bag, then sends the highest material-positive recipe in "
-                .. "that first base cycle. It never probes guessed recipe IDs one by "
+                .. "999-slot Bag, aggregates duplicate material rows and compares "
+                .. "MID/NeedCount for all recipes locally. It sends one highest "
+                .. "available recipe in that first base cycle, never recipe IDs one by "
                 .. "one. Confirmed pickup releases Sell, then Broom. Craft and pickup "
                 .. "are remote-only and never move the character; only one potion can "
                 .. "brew at a time.",
