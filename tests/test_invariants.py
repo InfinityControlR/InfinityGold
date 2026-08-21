@@ -139,6 +139,10 @@ class LocomotionInvariantTests(unittest.TestCase):
             "        local requestRemote, locateError = locateBroomRequestRemote()"
         )
         self.assertLess(challenge_guard, request_lookup)
+        self.assertIn("local function broomPriorityGate()", self.source)
+        self.assertIn("local priorityAllowed, priorityStatus", self.source)
+        self.assertIn("broom.armed = true", self.source)
+        self.assertIn("retry cycle in %.0fs", self.source)
 
 
 class CoreInvariantTests(unittest.TestCase):

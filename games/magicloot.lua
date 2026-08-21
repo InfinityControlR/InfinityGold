@@ -1063,6 +1063,31 @@ return function(locomotionFactory, Library, Common)
         temporaryBagUsed = nil,
         transferStatus = "idle",
     }
+    local basePriority = {
+        phase = "alchemy",
+        generation = 0,
+        reason = "initial base check",
+        alchemyOutcome = nil,
+    }
+
+    local function setBasePriorityPhase(phase, reason)
+        basePriority.phase = phase
+        basePriority.reason = tostring(reason or phase)
+    end
+
+    local function resetBasePriority(reason)
+        basePriority.generation += 1
+        basePriority.alchemyOutcome = nil
+        setBasePriorityPhase("alchemy", reason)
+    end
+
+    local function broomEconomyGate()
+        if not configReady then return false, "broom waiting for config" end
+        local challenge = playerNumber("InDungeonChallenge")
+        if challenge == nil then return false, "broom waiting for dungeon state" end
+        if challenge > 0 or basePriority.phase == "broom" then return true end
+        return false, "broom waiting for " .. basePriority.phase
+    end
     local alchemyRecovery = {
         key = nil,
         candidateIds = {},
@@ -2466,6 +2491,42 @@ return function(locomotionFactory, Library, Common)
         return false, confirmation
     end
 
+    local function alchemyPriorityOutcome()
+        if alchemyTelemetry.confirmedAction == "brew" then return "brew" end
+        if alchemyTelemetry.inProgress == true
+            and alchemyTelemetry.status == "brewing (one potion at a time)"
+        then
+            return "brew"
+        end
+        if alchemyTelemetry.status == "potion ready for pickup"
+            and cfg.AutoPickupPotion ~= true
+        then
+            return "potion-ready"
+        end
+        if alchemyTelemetry.status == "no recipe candidate"
+            and alchemyTelemetry.checkTotal > 0
+            and alchemyTelemetry.craftable == 0
+            and alchemyTelemetry.predicateErrors == 0
+            and not alchemyInventoryTransferPending()
+        then
+            return "alchemy-empty"
+        end
+        if not cfg.AutoBrew and not cfg.AutoPickupPotion then
+            return "alchemy-disabled"
+        end
+        if not cfg.AutoBrew
+            and cfg.AutoPickupPotion
+            and alchemyTelemetry.status == "waiting for brewed potion"
+            and alchemyTelemetry.ready == false
+        then
+            return "alchemy-empty"
+        end
+        if alchemyTelemetry.confirmedAction == "pickup" and not cfg.AutoBrew then
+            return "pickup"
+        end
+        return nil
+    end
+
     local function autoSellBaseGate()
         if not sessionAlive then return false, "session closed", nil end
         if not configReady then return false, "waiting for config", nil end
@@ -2487,9 +2548,12 @@ return function(locomotionFactory, Library, Common)
             return false, 0
         end
 
+        local alchemySettled = confirmedActionThisCycle == "brew"
+            or confirmedActionThisCycle == "alchemy-empty"
+            or confirmedActionThisCycle == "potion-ready"
         sellTelemetry.brewInProgress = nil
         sellTelemetry.authorization = cfg.AutoBrew and nil or "Auto Brew off"
-        if cfg.AutoBrew and confirmedActionThisCycle ~= "brew" then
+        if cfg.AutoBrew and not alchemySettled then
             local alchemy, resolveError = resolveAlchemy()
             if alchemy == nil then
                 sellTelemetry.status = "waiting for Alchemy"
@@ -2516,14 +2580,14 @@ return function(locomotionFactory, Library, Common)
             -- directly from idle to ready. A typed confirmation from THIS
             -- worker tick still proves its ingredients were consumed. Pickup
             -- confirmations never set this permission.
-            sellTelemetry.authorization = "craft confirmed"
+            sellTelemetry.authorization = confirmedActionThisCycle
         end
 
         sellTelemetry.attempts += 1
         sellTelemetry.status = "selling"
         local sold, count, err = sellAllMaterials(automaticSellSelection(), function()
-            local brewStateValidated = confirmedActionThisCycle == "brew"
-            if cfg.AutoBrew and confirmedActionThisCycle ~= "brew" then
+            local brewStateValidated = alchemySettled
+            if cfg.AutoBrew and not alchemySettled then
                 -- A detached sell scan can overlap pickup/the next brew.
                 -- Re-read the authoritative state immediately before SELL so
                 -- a stale "already brewing" grant cannot sell ingredients in
@@ -2811,6 +2875,7 @@ return function(locomotionFactory, Library, Common)
             alive = function()
                 return sessionAlive
             end,
+            broomGate = broomEconomyGate,
         })
         if ok and type(module) == "table" then
             loco = module
@@ -3533,19 +3598,26 @@ return function(locomotionFactory, Library, Common)
         local nextAutoSellAt = 0
         local autoSellCyclePending = false
         local autoSellCycleGeneration = 0
-        local queuedCraftSellAuthorization = false
-        local queuedCraftSellGeneration = 0
-        local function clearQueuedCraftSellAuthorization()
-            if queuedCraftSellAuthorization then
-                queuedCraftSellGeneration += 1
-            end
-            queuedCraftSellAuthorization = false
+        local lastObservedChallenge = nil
+        local lastPriorityConfig = nil
+
+        local function priorityConfigKey()
+            return table.concat({
+                tostring(cfg.AutoBrew),
+                tostring(cfg.AutoPickupPotion),
+                tostring(cfg.BrewRecipe),
+                tostring(cfg.AutoSell),
+                tostring(cfg.AutoSellSpecific),
+                tostring(cfg.SellItems),
+            }, "|")
         end
-        local function startAutoSellCycle(confirmedAction, authorizationGeneration)
+
+        local function startAutoSellCycle(confirmedAction, priorityGeneration)
             if autoSellCyclePending then return false end
             autoSellCyclePending = true
             autoSellCycleGeneration += 1
             local token = autoSellCycleGeneration
+            local priorityConfig = priorityConfigKey()
             local started, spawnError = pcall(task.spawn, function()
                 local ok, sold, _, err = pcall(
                     runAutoSellCycle,
@@ -3553,26 +3625,28 @@ return function(locomotionFactory, Library, Common)
                 )
                 if autoSellCycleGeneration ~= token then return end
                 autoSellCyclePending = false
+                if basePriority.generation ~= priorityGeneration
+                    or basePriority.phase ~= "sell"
+                    or priorityConfigKey() ~= priorityConfig
+                then
+                    return
+                end
                 if not ok and sessionAlive then
                     sellTelemetry.status = "sell error"
                     sellTelemetry.lastError = tostring(sold)
-                elseif confirmedAction == "brew"
-                    and authorizationGeneration == queuedCraftSellGeneration
-                    and (sold == true or err == "nothing to sell")
-                then
-                    queuedCraftSellAuthorization = false
-                end
-
-                if queuedCraftSellAuthorization
-                    and (confirmedAction ~= "brew"
-                        or authorizationGeneration ~= queuedCraftSellGeneration)
-                then
-                    -- A newer craft was confirmed while this request ran.
+                    nextAutoSellAt = os.clock() + 2
+                elseif not autoSellEnabled() then
+                    setBasePriorityPhase("broom", "sell disabled")
+                    nextAutoSellAt = 0
+                elseif err == "nothing to sell" then
+                    -- A post-sale rescan is the confirmation: Broom is released
+                    -- only when no currently selected item remains sellable.
+                    setBasePriorityPhase("broom", "nothing left to sell")
                     nextAutoSellAt = 0
                 else
-                    nextAutoSellAt = configReady and autoSellEnabled()
-                        and (os.clock() + 2)
-                        or 0
+                    -- A successful transport is not inventory confirmation.
+                    -- Wait for replication, then scan again before Broom.
+                    nextAutoSellAt = os.clock() + 2
                 end
             end)
             if not started and autoSellCycleGeneration == token then
@@ -3584,7 +3658,6 @@ return function(locomotionFactory, Library, Common)
             return started
         end
         while sessionAlive do
-            local confirmedActionThisCycle = nil
             -- Keep the inventory epoch current even while both Alchemy
             -- toggles are off. A late request must never resurrect a frozen
             -- pre-dungeon recipe order after the player collects new items.
@@ -3592,80 +3665,75 @@ return function(locomotionFactory, Library, Common)
             if observedChallenge ~= nil then
                 observeAlchemyLocation(observedChallenge)
                 if observedChallenge > 0 then
+                    if lastObservedChallenge == nil or lastObservedChallenge <= 0 then
+                        resetBasePriority("dungeon active")
+                        nextAutoSellAt = 0
+                    end
                     resetAlchemyRecovery()
-                    clearQueuedCraftSellAuthorization()
+                elseif lastObservedChallenge ~= nil and lastObservedChallenge > 0 then
+                    resetBasePriority("returned to base")
+                    nextAutoSellAt = 0
                 end
+                lastObservedChallenge = observedChallenge
             end
+
+            local currentPriorityConfig = priorityConfigKey()
+            if configReady
+                and lastPriorityConfig ~= nil
+                and currentPriorityConfig ~= lastPriorityConfig
+            then
+                resetBasePriority("economy config changed")
+                nextAutoSellAt = 0
+            end
+            lastPriorityConfig = currentPriorityConfig
+
             if configReady and not cfg.AutoBrew then
                 clearAlchemyStageCandidate()
             end
-            if configReady then
-                if cfg.AutoBrew or cfg.AutoPickupPotion then
-                    local ok, err = pcall(runAlchemyCycle)
-                    if not ok then
-                        alchemyTelemetry.status = "alchemy error"
-                        alchemyTelemetry.lastError = tostring(err)
-                    else
-                        confirmedActionThisCycle = alchemyTelemetry.confirmedAction
-                    end
-                end
-            end
 
-            if confirmedActionThisCycle == "brew"
-                and configReady
-                and autoSellEnabled()
-            then
-                -- A sell request from the previous tick may still be in
-                -- flight. Preserve this one-shot ordering permission until a
-                -- new sell task actually accepts it; never confuse pickup.
-                queuedCraftSellAuthorization = true
-                queuedCraftSellGeneration += 1
-                if not autoSellCyclePending then nextAutoSellAt = 0 end
-            elseif not configReady or not autoSellEnabled() then
-                clearQueuedCraftSellAuthorization()
-            end
-
-            -- Poll Alchemy quickly so enabling it or reaching base starts a
-            -- locally selected recipe within half a second. Automatic selling
-            -- keeps its two-second cadence, except that a newly confirmed brew
-            -- authorizes the ordered sale immediately in this same cycle.
-            local now = os.clock()
-            local queuedAuthorizationReady = queuedCraftSellAuthorization
-                and observedChallenge ~= nil
-                and observedChallenge <= 0
-                and now >= nextAutoSellAt
-            local sellAuthorization = queuedAuthorizationReady
-                and "brew"
-                or (not queuedCraftSellAuthorization and confirmedActionThisCycle)
-            local shouldCheckSell = queuedCraftSellAuthorization
-                and queuedAuthorizationReady
-                or not queuedCraftSellAuthorization
-                    and now >= nextAutoSellAt
             if not configReady then
+                setBasePriorityPhase("alchemy", "waiting for config")
                 sellTelemetry.status = "waiting for config"
                 sellTelemetry.lastError = nil
                 nextAutoSellAt = 0
-            elseif not autoSellEnabled() then
-                -- Do not spawn a detached no-op sell task on every fast
-                -- Alchemy stage poll merely to publish the disabled status.
-                sellTelemetry.status = "disabled"
-                sellTelemetry.lastError = nil
-                nextAutoSellAt = 0
-            elseif shouldCheckSell then
-                startAutoSellCycle(
-                    sellAuthorization,
-                    queuedCraftSellGeneration
-                )
+            elseif observedChallenge == nil then
+                setBasePriorityPhase("alchemy", "waiting for dungeon state")
+            elseif observedChallenge > 0 then
+                setBasePriorityPhase("alchemy", "collecting in dungeon")
+            elseif basePriority.phase == "alchemy" then
+                local ok, err = pcall(runAlchemyCycle)
+                if not ok then
+                    alchemyTelemetry.status = "alchemy error"
+                    alchemyTelemetry.lastError = tostring(err)
+                else
+                    local outcome = alchemyPriorityOutcome()
+                    if outcome ~= nil then
+                        basePriority.alchemyOutcome = outcome
+                        setBasePriorityPhase("sell", "Alchemy settled: " .. outcome)
+                        nextAutoSellAt = 0
+                    end
+                end
+            elseif basePriority.phase == "sell" then
+                if not autoSellEnabled() then
+                    sellTelemetry.status = "disabled"
+                    sellTelemetry.lastError = nil
+                    setBasePriorityPhase("broom", "sell disabled")
+                    nextAutoSellAt = 0
+                elseif not autoSellCyclePending and os.clock() >= nextAutoSellAt then
+                    startAutoSellCycle(
+                        basePriority.alchemyOutcome,
+                        basePriority.generation
+                    )
+                end
             end
-            -- While Auto Brew is farming, watch both sides of the two-bag
-            -- handoff quickly. The stage owns the small LimitBag; base owns the
-            -- permanent Bag used by CanCraftRecipe. Poll the bounded handoff
-            -- quickly; Magic's Broom remains independent of this state.
+
+            -- Alchemy owns the fastest cadence. Sell and Broom cannot advance
+            -- until the preceding phase has produced a terminal outcome.
             if configReady
-                and cfg.AutoBrew
                 and observedChallenge ~= nil
                 and (observedChallenge > 0
                     or alchemyInventoryTransferPending()
+                    or (basePriority.phase == "alchemy" and cfg.AutoBrew)
                     or alchemyTelemetry.status == "syncing dungeon materials")
             then
                 task.wait(0.1)
@@ -4233,9 +4301,10 @@ return function(locomotionFactory, Library, Common)
         })
         sellSection:AddParagraph({
             Title = "Automatic order",
-            Text = "Auto Sell runs only at base. With Auto Brew enabled it waits "
-                .. "until a potion is already brewing, or until a new craft is "
-                .. "confirmed. Sell All Now remains a manual override.",
+            Text = "Base priority is Alchemy > Sell > Broom. Sell waits for a "
+                .. "confirmed/in-progress potion or a verified empty recipe scan. "
+                .. "Broom waits until a follow-up Sell scan finds nothing eligible. "
+                .. "Sell All Now remains a manual override.",
         })
 
         local stats = tab:CreateSection("Session"):AddLabel("drops: 0 • picked: 0")

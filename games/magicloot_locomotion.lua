@@ -125,6 +125,14 @@ function Module.create(context)
         end
     end
 
+    local function broomPriorityGate()
+        if type(context.broomGate) ~= "function" then return true end
+        local ok, allowed, detail = pcall(context.broomGate)
+        if not ok then return false, "broom waiting for priority gate" end
+        if allowed == true then return true end
+        return false, tostring(detail or "broom waiting for base economy")
+    end
+
     local function inDungeonChallenge()
         local player = players.LocalPlayer
         if player == nil then return nil end
@@ -256,6 +264,16 @@ function Module.create(context)
             invalidateBroomTransaction()
             broom.returnEpisode = true
             armBroom("inventory return", now)
+        elseif broom.waitingForBase
+            and challenge ~= nil
+            and challenge <= 0
+            and broom.sawDungeon
+        then
+            -- AutoReturn proved that this episode started inside a dungeon.
+            -- Recover even if replication exposed nil between >0 and 0.
+            invalidateBroomTransaction()
+            broom.returnEpisode = true
+            armBroom("inventory return", now)
         elseif broom.waitingForBase then
             broom.status = "broom waiting for InDungeonChallenge >0 -> 0"
             return
@@ -283,6 +301,11 @@ function Module.create(context)
             end
             return
         end
+        local priorityAllowed, priorityStatus = broomPriorityGate()
+        if not priorityAllowed then
+            broom.status = priorityStatus
+            return
+        end
         if broom.transactionActive then return end
         if not broom.armed then return end
         if now < broom.readyAt then
@@ -304,12 +327,15 @@ function Module.create(context)
         if not requested then
             if broom.requestAttempts >= MAX_BROOM_REQUEST_ATTEMPTS then
                 local attempts = broom.requestAttempts
-                if reason == "inventory return" then broom.returnEpisode = false end
-                disarmBroom()
+                broom.requestAttempts = 0
+                broom.armed = true
+                broom.reason = reason
+                broom.readyAt = now + BROOM_CONFIRM_TIMEOUT
                 broom.status = string.format(
-                    "broom stage %d paused after %d failed request(s): %s",
+                    "broom stage %d failed %d time(s); retry cycle in %.0fs: %s",
                     selected,
                     attempts,
+                    BROOM_CONFIRM_TIMEOUT,
                     tostring(detail)
                 )
                 broomNotify(broom.status)
@@ -329,12 +355,15 @@ function Module.create(context)
         broom.lastActivatedAt = os.clock()
         if broom.requestAttempts >= MAX_BROOM_REQUEST_ATTEMPTS then
             local attempts = broom.requestAttempts
-            if reason == "inventory return" then broom.returnEpisode = false end
-            disarmBroom()
+            broom.requestAttempts = 0
+            broom.armed = true
+            broom.reason = reason
+            broom.readyAt = now + BROOM_CONFIRM_TIMEOUT
             broom.status = string.format(
-                "broom stage %d sent %d time(s); no dungeon confirmation",
+                "broom stage %d sent %d time(s); retry cycle in %.0fs",
                 selected,
-                attempts
+                attempts,
+                BROOM_CONFIRM_TIMEOUT
             )
             broomNotify(broom.status)
             return
@@ -897,7 +926,9 @@ function Module.create(context)
         broom.returnEpisode = true
         broom.returnToken = broom.returnToken + 1
         broom.waitingForBase = true
-        broom.sawDungeon = current ~= nil and current > 0
+        -- The core calls this only after it has read InDungeonChallenge > 0.
+        -- Preserve that proof if this module sees a transient nil during return.
+        broom.sawDungeon = true
         disarmBroom()
         broom.status = "broom return token armed before DUNGEON_RETURN_TOWN"
         return true

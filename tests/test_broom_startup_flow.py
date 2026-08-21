@@ -32,13 +32,13 @@ def broom_source() -> str:
     state_left = source.index("    local broomStages =")
     state_right = source.index("    local function startBroomWorker()", state_left)
     api_left = source.index("    function api:OnConfigLoaded()", state_right)
-    api_right = source.index("    function api:OnAutoReturnFull()", api_left)
+    api_right = source.index("    function api:GetBroomStatus()", api_left)
     state = source[state_left:state_right].replace("os.clock()", "clockNow()")
     return state + "\nlocal api = {}\n" + source[api_left:api_right]
 
 
 class BroomStartupFlowTests(unittest.TestCase):
-    def test_config_gate_retry_confirmation_reload_and_limit(self) -> None:
+    def test_config_priority_retry_confirmation_and_rearm(self) -> None:
         runner = luau_binary()
         if runner is None:
             self.skipTest("Luau runner is unavailable")
@@ -49,6 +49,7 @@ local enabled = true
 local selected = "28"
 local challenge = 0
 local calls = {{}}
+local priorityAllowed = false
 
 local function clockNow()
     return now
@@ -62,6 +63,9 @@ function context.option(name, fallback)
 end
 function context.toggle(name)
     return name == "AutoBroom" and enabled
+end
+function context.broomGate()
+    return priorityAllowed, "broom waiting for alchemy"
 end
 function context.notify() end
 
@@ -121,6 +125,10 @@ updateBroom()
 assert(#calls == 0)
 now = 1
 updateBroom()
+assert(#calls == 0 and broom.status == "broom waiting for alchemy",
+    "Broom ignored the Alchemy/Sell priority gate")
+priorityAllowed = true
+updateBroom()
 assert(#calls == 1 and calls[1].action == "关卡跳关请求" and calls[1].stage == 28)
 
 -- A request with no room confirmation remains armed and retries after five
@@ -148,8 +156,8 @@ assert(api:OnConfigLoaded())
 updateBroom()
 assert(#calls == 2 and broom.armed == false)
 
--- Loading that same enabled config at base creates a fresh edge.  If the game
--- ignores every request, the episode is bounded to three attempts.
+-- Loading that same enabled config at base creates a fresh edge. Three
+-- unconfirmed requests end one retry cycle, never the whole AutoBroom session.
 challenge = 0
 now = 60
 assert(api:OnConfigLoaded())
@@ -161,10 +169,26 @@ now = 66
 updateBroom()
 now = 71
 updateBroom()
-assert(#calls == 5 and broom.armed == false and broom.requestAttempts == 0)
-now = 100
+assert(#calls == 5 and broom.armed == true and broom.requestAttempts == 0)
+now = 75.99
 updateBroom()
 assert(#calls == 5)
+now = 76
+updateBroom()
+assert(#calls == 6 and broom.requestAttempts == 1,
+    "Broom did not automatically start a new retry cycle")
+
+-- A transient nil during AutoReturn must not leave waitingForBase latched.
+challenge = nil
+assert(api:OnAutoReturnFull())
+broom.lastChallenge = nil
+challenge = 0
+priorityAllowed = false
+now = 80
+updateBroom()
+assert(broom.waitingForBase == false and broom.armed == true
+    and broom.status == "broom waiting for alchemy",
+    "missed >0 -> 0 replication transition stranded Broom")
 
 print("broom_startup_flow=ok")
 '''

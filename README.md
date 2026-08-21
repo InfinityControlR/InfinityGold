@@ -80,9 +80,12 @@ the InfinityGold dashboard.
   material IDs without a hub update or losing existing selections. Catalog
   lists show names only while retaining stable numeric IDs internally, including
   migration of old saved `#ID name` selections. Automatic
-  selling runs only at base. When Auto Brew is enabled, the base-economy worker runs
-  Alchemy first and sells only after a craft was confirmed or while a potion is
-  already brewing; a pickup confirmation alone never unlocks selling. Dungeon
+  selling runs only at base through a strict `Alchemy -> Sell -> Broom` state
+  machine. Alchemy releases Sell only after a brew is confirmed/already brewing,
+  a finished potion occupies the slot, or a non-empty valid recipe catalog proves
+  that no recipe is craftable. Sell releases Broom only after a follow-up inventory
+  scan reports that no configured item remains sellable; transport success alone
+  is not confirmation. A pickup confirmation alone never unlocks selling. Dungeon
   drops live in the small temporary `LimitBag` while farming and move into the
   visible 999-slot `PlayerData.Bag` only at base. Best Craftable watches that
   handoff, refreshes the local Alchemy facade and sends the highest recipe whose
@@ -100,8 +103,10 @@ the InfinityGold dashboard.
   toggles/equips the broom. It keeps single-flight epoch tokens, invalidation
   on toggle/stage/return changes, and base detection through the numeric
   `InDungeonChallenge` transition. Startup waits until config restoration has
-  finished; an unconfirmed request is retried at most three times, five seconds
-  apart, and room entry cancels every pending retry immediately.
+  finished. Alchemy and Sell gate every request while their phases are active.
+  Unconfirmed requests run in cycles of three attempts separated by five seconds;
+  a new cycle starts automatically until room entry confirms success. A transient
+  nil during AutoReturn cannot leave `waitingForBase` latched.
 - **Progress**: Auto Rebirth uses the payload-free invoke contract, stops at
   the selected value from 1–41, and waits until `leaderstats.Level` reaches the
   next `rebirthConf.LvNeed`. Auto Train can use a selected ground or the
@@ -194,4 +199,5 @@ These surfaces need confirmation inside Roblox (fail-open until then):
   `InDungeonChallenge <= 0`. Immediately before each request they visit Magic's
   `ResolveBrewActorCFrame` or `ResolveFinishSpawnCFrame` destination plus three
   studs vertically; a missing resolver remains a fail-open remote fallback.
-  Automatic selling still waits for a confirmed brew.
+  Automatic selling waits for a terminal Alchemy outcome; Broom waits for the
+  subsequent empty Sell rescan.
