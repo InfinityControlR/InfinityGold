@@ -59,6 +59,45 @@ ALCHEMY_WORKER = AUTO_SELL_OPTIONS + BASE_PRIORITY + core_slice(
 
 
 class SellBrewFlowTests(unittest.TestCase):
+    def test_broom_and_farm_have_separate_sequential_gates(self):
+        fixture = f"""
+local cfg = {{ AutoBroom = true }}
+local configReady = true
+local challenge = 0
+local function playerNumber(name)
+    assert(name == "InDungeonChallenge")
+    return challenge
+end
+
+{BASE_PRIORITY}
+
+assert(broomEconomyGate() == false and farmObjectiveGate() == false,
+    "Alchemy did not block Broom and Farm")
+setBasePriorityPhase("sell", "test")
+assert(broomEconomyGate() == false and farmObjectiveGate() == false,
+    "Sell did not block Broom and Farm")
+setBasePriorityPhase("broom", "test")
+assert(broomEconomyGate() == true,
+    "settled Sell did not release Broom")
+assert(farmObjectiveGate() == false,
+    "Farm started alongside an enabled Broom")
+cfg.AutoBroom = false
+assert(farmObjectiveGate() == true,
+    "disabled Broom did not release Farm")
+cfg.AutoBroom = true
+challenge = 28
+assert(farmObjectiveGate() == true,
+    "confirmed Broom stage did not release Farm")
+print("sequential_objective_gates_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"sequential gate smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("sequential_objective_gates_smoke=ok", completed.stdout)
+
     def test_valid_zero_craftable_round_releases_sell_and_broom(self):
         fixture = f"""
 local sessionAlive = true
@@ -341,7 +380,7 @@ print("terminal_sell_authorization_smoke=ok")
         self.assertIn("local priorityAllowed, priorityStatus", locomotion)
         movement = core_slice("    local function updateMovement()", "    -- Combat")
         self.assertLess(
-            movement.index("broomEconomyGate()"),
+            movement.index("farmObjectiveGate()"),
             movement.index("Common.farmStageTarget"),
         )
         self.assertIn("enterDelay.stage = nil", movement)
@@ -349,7 +388,7 @@ print("terminal_sell_authorization_smoke=ok")
             "    task.spawn(function() -- train",
             "    task.spawn(function() -- alchemy",
         )
-        self.assertIn("local trainPriorityAllowed = broomEconomyGate()", train_worker)
+        self.assertIn("local trainPriorityAllowed = farmObjectiveGate()", train_worker)
         self.assertIn("cfg.AutoTrain and trainPriorityAllowed", train_worker)
         broom_update = locomotion[
             locomotion.index("    local function updateBroom()") :

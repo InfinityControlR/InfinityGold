@@ -107,10 +107,11 @@ the InfinityGold dashboard.
   `brewing (one potion at a time)` state is an intentional wait for the current
   potion rather than a recipe-search delay. `Copy Best diagnostic` copies a
   bounded, passive snapshot of the real recipe rows, material Bag rows and local
-  predicate results; it sends no game action. Enter Delay, Broom Return Delay
-  and Broom retry timers do not run while Alchemy/Sell own the base priority:
-  each full configured interval starts only after that gate releases
-  farm/training/Broom.
+  predicate results; it sends no game action. Objective timing is strictly
+  sequential: `Alchemy -> Sell -> Broom -> Farm`. Broom Return Delay and retry
+  timers start only after Sell settles. Farm/Train stays blocked until Broom
+  enters a stage, or is skipped because Auto Broom is disabled; only then does
+  the full Enter Delay begin.
   A game update is incorporated by re-running the loader, which captures the
   new recipe configuration before the next Best calculation.
   Pickup prepares each real prompt with zero hold duration and expands its
