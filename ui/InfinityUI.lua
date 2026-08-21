@@ -1248,21 +1248,71 @@ function Library:CreateWindow(options)
             dropdownOptions = type(dropdownOptions) == "table" and dropdownOptions or {}
             local multi = dropdownOptions.Multi == true
             local values = {}
-            for _, entry in ipairs(dropdownOptions.Values or {}) do
-                table.insert(values, tostring(entry))
+            local valueLabels = {}
+            local labelValues = {}
+            local ambiguousLabels = {}
+
+            local function rebuildValues(newValues)
+                values = {}
+                valueLabels = {}
+                labelValues = {}
+                ambiguousLabels = {}
+                for _, entry in ipairs(newValues or {}) do
+                    local rawValue = entry
+                    local rawLabel = entry
+                    if type(entry) == "table" then
+                        rawValue = entry.Value or entry.value
+                        rawLabel = entry.Text or entry.text
+                            or entry.Label or entry.label
+                            or rawValue
+                    end
+                    if rawValue ~= nil then
+                        local value = tostring(rawValue)
+                        local display = tostring(rawLabel or rawValue)
+                        table.insert(values, value)
+                        valueLabels[value] = display
+                        if labelValues[display] == nil and not ambiguousLabels[display] then
+                            labelValues[display] = value
+                        elseif labelValues[display] ~= value then
+                            labelValues[display] = nil
+                            ambiguousLabels[display] = true
+                        end
+                    end
+                end
             end
+
+            local function resolveValue(entry)
+                if type(entry) == "table" then
+                    entry = entry.Value or entry.value
+                end
+                if entry == nil then return nil end
+                local candidate = tostring(entry)
+                if valueLabels[candidate] ~= nil then return candidate end
+
+                -- Old InfinityGold configs stored "#ID translated name".
+                -- Resolve those labels to the new stable ID-only value.
+                local legacyId = string.match(candidate, "^#?(%d+)%s+")
+                if legacyId ~= nil and valueLabels[legacyId] ~= nil then
+                    return legacyId
+                end
+                return labelValues[candidate] or candidate
+            end
+
+            rebuildValues(dropdownOptions.Values)
 
             local selected = {}
             if multi then
                 if type(dropdownOptions.Default) == "table" then
                     for _, entry in ipairs(dropdownOptions.Default) do
-                        selected[tostring(entry)] = true
+                        local value = resolveValue(entry)
+                        if value ~= nil then selected[value] = true end
                     end
                 end
             else
                 local default = dropdownOptions.Default
                 if default ~= nil then
-                    selected[tostring(default)] = true
+                    local value = resolveValue(default)
+                    if value ~= nil then selected[value] = true end
                 elseif values[1] then
                     selected[values[1]] = true
                 end
@@ -1372,7 +1422,7 @@ function Library:CreateWindow(options)
                 local parts = {}
                 for _, entry in ipairs(values) do
                     if selected[entry] then
-                        table.insert(parts, entry)
+                        table.insert(parts, valueLabels[entry] or entry)
                     end
                 end
                 if #parts == 0 then
@@ -1499,7 +1549,7 @@ function Library:CreateWindow(options)
                     corner(selectionMark, 2)
 
                     label(optionButton, {
-                        Text = entry,
+                        Text = valueLabels[entry] or entry,
                         Font = selected[entry] and Enum.Font.GothamMedium or Enum.Font.Gotham,
                         TextSize = 12,
                         TextColor3 = selected[entry] and Library.Theme.GoldBright
@@ -1565,20 +1615,19 @@ function Library:CreateWindow(options)
                 selected = {}
                 if multi and type(newValue) == "table" then
                     for _, entry in ipairs(newValue) do
-                        selected[tostring(entry)] = true
+                        local value = resolveValue(entry)
+                        if value ~= nil then selected[value] = true end
                     end
                 elseif newValue ~= nil then
-                    selected[tostring(newValue)] = true
+                    local value = resolveValue(newValue)
+                    if value ~= nil then selected[value] = true end
                 end
                 emit()
                 rebuildList()
             end
 
             function element.SetValues(_, newValues)
-                values = {}
-                for _, entry in ipairs(newValues or {}) do
-                    table.insert(values, tostring(entry))
-                end
+                rebuildValues(newValues)
                 selected = {}
                 emit()
                 rebuildList()

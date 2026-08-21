@@ -572,17 +572,20 @@ assert(#loadingValues == 1 and loadingValues[1] == "Best craftable",
     "loading recipe data should remain retryable")
 recipesReady = true
 local fallbackValues = alchemyDropdownValues()
-assert(fallbackValues[2] == "#1 Recipe 1"
-    and fallbackValues[3] == "#4 Recipe 4"
-    and fallbackValues[4] == "#7 Recipe 7",
+assert(fallbackValues[2].Value == "1" and fallbackValues[2].Text == "Recipe"
+    and fallbackValues[3].Value == "4" and fallbackValues[3].Text == "Recipe"
+    and fallbackValues[4].Value == "7" and fallbackValues[4].Text == "Recipe",
     "untranslated Chinese keys leaked into the dropdown")
 translationsReady = true
 local recipeValues = alchemyDropdownValues()
 assert(#recipeValues == 4, "recipe dropdown did not discover GetRecipeList rows")
 assert(recipeValues[1] == "Best craftable"
-    and recipeValues[2] == "#1 Localized 药水键101"
-    and recipeValues[3] == "#4 Localized 药水键104"
-    and recipeValues[4] == "#7 Localized 药水键107",
+    and recipeValues[2].Value == "1"
+    and recipeValues[2].Text == "Localized 药水键101"
+    and recipeValues[3].Value == "4"
+    and recipeValues[3].Text == "Localized 药水键104"
+    and recipeValues[4].Value == "7"
+    and recipeValues[4].Text == "Localized 药水键107",
     "recipe dropdown did not use the game's translator")
 
 local legacyRecipe = selectAlchemyRecipe(alchemy, "#4 old-language label")
@@ -1637,7 +1640,9 @@ print("alchemy_flow_smoke=ok")
         )
         self.assertNotIn("if #recipeValues == 1 then", recipe_ui)
         self.assertNotIn("fingerprint = refreshedFingerprint\n                    break", recipe_ui)
-        self.assertIn('table.concat(recipeValues, "\\30")', recipe_ui)
+        self.assertIn('refreshCatalogDropdown(', recipe_ui)
+        self.assertIn('"BrewRecipe"', recipe_ui)
+        self.assertIn('alchemyDropdownValues,', recipe_ui)
         cycle = core_slice(
             "    local function runAlchemyCycle()",
             "    -- Attack -----------------------------------------------------------------",

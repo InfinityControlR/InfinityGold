@@ -43,12 +43,12 @@ class PickupBatchFlowTests(unittest.TestCase):
             "    local function collectDrops()",
         )
         fixture = f"""
-local cfg = {{ PickupFilterRarity = true }}
+local cfg = {{ PickupFilterItems = true }}
 local Common = {{}}
 function Common.gateDrop(entry, options)
     assert(options.minValue == 10)
-    assert(options.filterRarity == true)
-    assert(options.tiers[8] == true)
+    assert(options.filterItems == true)
+    assert(options.itemIds[77] == true)
     return entry.allowed
 end
 
@@ -72,7 +72,7 @@ local sorted = {{
     {{ allowed = true, primaryPart = {{ prompt = {{ id = "failed", succeeds = false }} }} }},
     {{ allowed = true, primaryPart = {{ prompt = {{ id = "gold-20" }} }} }},
 }}
-local count = activateSortedDrops(sorted, 10, {{ [8] = true }})
+local count = activateSortedDrops(sorted, 10, {{ [77] = true }})
 assert(count == 3, "the scan stopped before activating every valid drop")
 assert(table.concat(activated, ",") == "event,gold-100,failed,gold-20",
     "pickup priority/order changed: " .. table.concat(activated, ","))
@@ -91,7 +91,7 @@ print("pickup_batch_smoke=ok")
         collect = core_slice("    local function collectDrops()", "    -- Progress workers")
         self.assertLess(
             collect.index("Common.sortDrops(candidates)"),
-            collect.index("activateSortedDrops(sorted, minValue, tierSet)"),
+            collect.index("activateSortedDrops(sorted, minValue, selectedItemIds)"),
         )
         batch = core_slice(
             "    local function activateSortedDrops",

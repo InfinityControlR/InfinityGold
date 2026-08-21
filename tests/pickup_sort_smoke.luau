@@ -46,7 +46,13 @@ local stable = Common.sortDrops({
 check("sort: stable on full tie", stable[1].order == 1 and stable[3].order == 3)
 
 -- gateDrop: physical gates always apply
-local base = { hasPrimaryPart = true, landed = true, inRange = true, gold = 25, tier = 2 }
+local base = {
+    hasPrimaryPart = true,
+    landed = true,
+    inRange = true,
+    gold = 25,
+    itemId = 21,
+}
 check("gate: passes plain drop", Common.gateDrop(base, { minValue = 0 }))
 check("gate: no primary part", not Common.gateDrop(
     { hasPrimaryPart = false, landed = true, inRange = true, gold = 25 },
@@ -61,12 +67,19 @@ check("gate: out of range", not Common.gateDrop(
     { minValue = 0 }
 ))
 
--- gateDrop: event drops bypass value and rarity filters
-local eventDrop = { hasPrimaryPart = true, landed = true, inRange = true, gold = 0, isEvent = true, tier = 9 }
+-- gateDrop: event drops bypass value and item filters
+local eventDrop = {
+    hasPrimaryPart = true,
+    landed = true,
+    inRange = true,
+    gold = 0,
+    isEvent = true,
+    itemId = 999,
+}
 check("gate: event ignores minimum", Common.gateDrop(eventDrop, { minValue = 1000 }))
-check("gate: event ignores rarity", Common.gateDrop(
+check("gate: event ignores item filter", Common.gateDrop(
     eventDrop,
-    { minValue = 0, filterRarity = true, tiers = { [1] = true } }
+    { minValue = 0, filterItems = true, itemIds = { [1] = true } }
 ))
 check("gate: normal respects minimum", not Common.gateDrop(
     { hasPrimaryPart = true, landed = true, inRange = true, gold = 5, tier = 1 },
@@ -81,27 +94,29 @@ check("gate: rejects a drop below a multi-billion minimum", not Common.gateDrop(
     { minValue = 5000000000000 }
 ))
 
--- gateDrop: rarity filter semantics
-local rareDrop = { hasPrimaryPart = true, landed = true, inRange = true, gold = 50, tier = 3 }
-check("gate: rarity selected", Common.gateDrop(
-    rareDrop,
-    { minValue = 0, filterRarity = true, tiers = { [3] = true } }
+-- gateDrop: item filter semantics
+local selectedDrop = {
+    hasPrimaryPart = true,
+    landed = true,
+    inRange = true,
+    gold = 50,
+    itemId = 103,
+}
+check("gate: item selected", Common.gateDrop(
+    selectedDrop,
+    { minValue = 0, filterItems = true, itemIds = { [103] = true } }
 ))
-check("gate: rarity rejected", not Common.gateDrop(
-    rareDrop,
-    { minValue = 0, filterRarity = true, tiers = { [2] = true } }
+check("gate: item rejected", not Common.gateDrop(
+    selectedDrop,
+    { minValue = 0, filterItems = true, itemIds = { [104] = true } }
 ))
-check("gate: rarity empty set rejects", not Common.gateDrop(
-    rareDrop,
-    { minValue = 0, filterRarity = true, tiers = {} }
+check("gate: item empty set rejects", not Common.gateDrop(
+    selectedDrop,
+    { minValue = 0, filterItems = true, itemIds = {} }
 ))
-check("gate: rarity without tier rejects", not Common.gateDrop(
+check("gate: missing item id rejects", not Common.gateDrop(
     { hasPrimaryPart = true, landed = true, inRange = true, gold = 50 },
-    { minValue = 0, filterRarity = true, tiers = { [3] = true } }
-))
-check("gate: tier 10 selected", Common.gateDrop(
-    { hasPrimaryPart = true, landed = true, inRange = true, gold = 50, tier = 10 },
-    { minValue = 0, filterRarity = true, tiers = { [10] = true } }
+    { minValue = 0, filterItems = true, itemIds = { [103] = true } }
 ))
 
 -- farmStageTarget
@@ -121,22 +136,14 @@ orbitX, orbitZ = Common.runningOrbitOffset(math.pi * 0.5, 20)
 check("running orbit: quarter turn", math.abs(orbitX) < 0.001
     and math.abs(orbitZ - 20) < 0.001)
 
--- parseTierSelection
-local tiers = Common.parseTierSelection({ "1", "3", "x", 4 })
-check("tiers: 1,3,4 selected", tiers[1] and tiers[3] and tiers[4] and not tiers[2])
-local tierMap = Common.parseTierSelection({ ["2"] = true, ["5"] = true, ["8"] = false })
-check("tiers: multi-select map", tierMap[2] and tierMap[5] and not tierMap[8])
-local highTiers = Common.parseTierSelection({ "9", "10" })
-check("tiers: 9 and 10", highTiers[9] and highTiers[10])
-check("tiers: non-table", next(Common.parseTierSelection(nil)) == nil)
-
--- parseIdSelection: Magic dropdown labels and persisted table shapes.
-local selectedIds = Common.parseIdSelection({ "#21 Ember", "34 Stone" })
+-- parseIdSelection: stable IDs, legacy labels and persisted table shapes.
+local selectedIds = Common.parseIdSelection({ "#21 Ember", "34" })
 check("ids: label selection", selectedIds[21] and selectedIds[34])
 local selectedIdMap = Common.parseIdSelection({ ["#55 Potion"] = true, ["66"] = false })
 check("ids: multiselect map", selectedIdMap[55] and not selectedIdMap[66])
 local selectedNumericIdMap = Common.parseIdSelection({ [77] = true, [88] = false })
 check("ids: numeric lookup map", selectedNumericIdMap[77] and not selectedNumericIdMap[88])
+check("ids: non-table", next(Common.parseIdSelection(nil)) == nil)
 
 -- catalogEntries: live configs use Price while older fixtures use price.
 local catalog = Common.catalogEntries({

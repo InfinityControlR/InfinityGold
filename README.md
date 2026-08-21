@@ -64,17 +64,19 @@ the InfinityGold dashboard.
   attack skill against the nearest monster, without injecting mouse input or
   moving the real cursor.
 - **Loot**: Auto Pickup with the modern drop schema (`ItemId` attribute,
-  `DropLanded`, `GoldValue`, `Xyd`) plus legacy `DropItem` models. The rarity
-  selector exposes tiers 1–10 in a compact scrolling list. Its minimum gold
-  value is a full-width manual numeric input with no slider ceiling. Event drops
-  (numeric `GoldValue` exactly equal to 0) bypass minimum value and rarity filters
+  `DropLanded`, `GoldValue`, `Xyd`) plus legacy `DropItem` models. Its optional
+  item filter uses the same live material catalog as Sell. The minimum gold value
+  is a full-width manual numeric input with no slider ceiling. Event drops
+  (numeric `GoldValue` exactly equal to 0) bypass minimum value and item filters
   and are collected first. Auto Sell All, Auto Sell Specific and Sell All Now
   enumerate the player's Bag and send the eligible materials' unique `onlyID`
   values, excluding locked items and materials reserved for Alchemy recipes.
   The All/Specific switches are mutually exclusive and their catalog stays live:
   every two seconds it re-reads both game config facades, accepts array/map and
   shallow wrapped schemas plus common ID/name/price aliases, and adds patch-day
-  material IDs without a hub update or losing existing selections. Automatic
+  material IDs without a hub update or losing existing selections. Catalog
+  lists show names only while retaining stable numeric IDs internally, including
+  migration of old saved `#ID name` selections. Automatic
   selling runs only at base. When Auto Brew is enabled, the base-economy worker runs
   Alchemy first and sells only after a craft was confirmed or while a potion is
   already brewing; a pickup confirmation alone never unlocks selling. Dungeon

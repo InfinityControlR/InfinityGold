@@ -160,7 +160,9 @@ class CoreInvariantTests(unittest.TestCase):
             self.source.index("    -- Pickup worker") :
             self.source.index("    -- Progress workers")
         ]
-        self.assertIn("activateSortedDrops(sorted, minValue, tierSet)", pickup)
+        self.assertIn(
+            "activateSortedDrops(sorted, minValue, selectedItemIds)", pickup
+        )
         self.assertIn("task.wait(0.4)", pickup)
         self.assertNotIn("task.wait(0.5)", pickup)
 
@@ -241,7 +243,9 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn('local count = #Common.catalogEntries(result)', self.source)
         self.assertGreaterEqual(self.source.count('for _, raw in pairs(rawRecipes) do'), 2)
         self.assertIn('refreshCatalogDropdown(\n            sellItemsDropdown,', self.source)
+        self.assertIn('refreshCatalogDropdown(\n            pickupItemsDropdown,', self.source)
         self.assertIn('refreshCatalogDropdown(\n            trainGroundDropdown,', self.source)
+        self.assertIn('refreshCatalogDropdown(\n            recipeDropdown,', self.source)
         self.assertIn('refreshCatalogDropdown(\n            potionDropdown,', self.source)
 
     def test_legacy_unlimited_rebirth_setting_migrates_to_magic_limit(self):
@@ -333,6 +337,7 @@ class CoreInvariantTests(unittest.TestCase):
     def test_drop_schema_supports_itemid(self):
         self.assertIn('model.Name == "DropItem"', self.source)
         self.assertIn('model:GetAttribute("ItemId")', self.source)
+        self.assertIn('itemId = itemId,', self.source)
         self.assertIn('model:GetAttribute("DropLanded")', self.source)
         self.assertIn('model:GetAttribute("GoldValue")', self.source)
         self.assertIn("container:GetDescendants()", self.source)
@@ -345,21 +350,38 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertNotIn('sendAction("DROP_PICKUP", primaryPart)', self.source)
         self.assertIn('model:GetAttribute("Xyd")', self.source)
 
-    def test_pickup_rarity_accepts_multiselect_map(self):
-        self.assertIn('value == true', self.source)
-        self.assertIn('type(key) == "number" and value or key', self.source)
+    def test_pickup_filters_by_dynamic_material_ids(self):
+        loot_start = self.source.index('window:CreateTab({ Name = "Loot"')
+        loot_end = self.source.index('-- Progress tab', loot_start)
+        loot_ui = self.source[loot_start:loot_end]
+        self.assertIn('group:AddToggle("PickupFilterItems"', loot_ui)
+        self.assertIn('group:AddDropdown("PickupItems"', loot_ui)
+        self.assertIn(
+            'catalogDropdownValues("materialConf", "Material")', loot_ui
+        )
+        self.assertIn('MaxVisible = 5', loot_ui)
+        self.assertNotIn("PickupFilterRarity", loot_ui)
+        self.assertNotIn("PickupTiers", loot_ui)
 
-    def test_pickup_rarity_ui_includes_tier_ten(self):
-        self.assertIn("local MAX_PICKUP_TIER = 10", self.source)
-        self.assertIn("for tier = 1, MAX_PICKUP_TIER do", self.source)
-        dropdown_start = self.source.index('group:AddDropdown("PickupTiers"')
-        rarity_dropdown = self.source[
-            dropdown_start :
-            self.source.index('tab:CreateSection("Notes")', dropdown_start)
+        pickup = self.source[
+            self.source.index("    -- Pickup worker") :
+            self.source.index("    -- Progress workers")
         ]
-        self.assertIn("Values = tierValues", rarity_dropdown)
-        self.assertIn("Multi = true", rarity_dropdown)
-        self.assertIn("MaxVisible = 5", rarity_dropdown)
+        self.assertIn('Common.parseIdSelection(cfg.PickupItems)', pickup)
+        self.assertIn('filterItems = cfg.PickupFilterItems == true', pickup)
+        self.assertIn('itemIds = selectedItemIds', pickup)
+
+    def test_zero_value_event_drops_bypass_value_and_item_filters(self):
+        self.assertIn('entry.isEvent = Common.isEventDrop(entry.rawGold)', self.source)
+        common = read("games/magicloot_common.lua")
+        event_gate = common.split("function Common.gateDrop", 1)[1].split(
+            "function Common.farmStageTarget", 1
+        )[0]
+        self.assertLess(
+            event_gate.index("if entry.isEvent == true then"),
+            event_gate.index("local minValue ="),
+        )
+        self.assertIn("if options.filterItems == true then", event_gate)
 
     def test_pickup_minimum_value_is_an_unbounded_numeric_input(self):
         loot_start = self.source.index('window:CreateTab({ Name = "Loot"')
@@ -516,6 +538,14 @@ class DropdownTests(unittest.TestCase):
             "function element.Get", 1
         )[0]
         self.assertIn("rebuildList()", set_values)
+
+    def test_dropdown_separates_stable_value_from_visible_name(self):
+        self.assertIn('rawValue = entry.Value or entry.value', self.source)
+        self.assertIn('rawLabel = entry.Text or entry.text', self.source)
+        self.assertIn('valueLabels[value] = display', self.source)
+        self.assertIn('Text = valueLabels[entry] or entry', self.source)
+        self.assertIn('table.insert(chosen, entry)', self.source)
+        self.assertIn('string.match(candidate, "^#?(%d+)%s+")', self.source)
 
     def test_arrow_sits_inside_the_header(self):
         self.assertIn("Position = UDim2.new(1, -10, 0.5, 0)", self.source)

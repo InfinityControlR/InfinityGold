@@ -533,6 +533,41 @@ do
         return false
     end
 
+    -- Catalog dropdowns expose a stable numeric value to the core while the
+    -- player sees only the translated item name. Legacy #ID labels migrate.
+    local descriptorTab = Library._windows[1]:CreateTab({
+        Name = "Descriptor smoke",
+        Icon = "D",
+    })
+    local descriptorSection = descriptorTab:CreateSection("Descriptors")
+    local descriptorDropdown = descriptorSection:AddDropdown({
+        Text = "Named item",
+        Values = {
+            { Value = "42", Text = "Golden Leaf" },
+            { Value = "77", Text = "Moon Shard" },
+        },
+        Default = "#42 old translated label",
+        Multi = false,
+    })
+    if descriptorDropdown:Get() ~= "42" then
+        fail("descriptor dropdown did not preserve its stable numeric value")
+    end
+    local descriptorFrame = findDropdownByCaption(
+        Library._windows[1].Frame,
+        "Named item"
+    )
+    local descriptorList = descriptorFrame and descriptorFrame:FindFirstChild("List")
+    if descriptorList == nil
+        or not hasVisibleText(descriptorList, "Golden Leaf")
+        or hasVisibleText(descriptorList, "#42 Golden Leaf")
+    then
+        fail("descriptor dropdown exposed an ID instead of the item name")
+    end
+    descriptorDropdown:Set("#77 another old label")
+    if descriptorDropdown:Get() ~= "77" then
+        fail("legacy dropdown selection was not migrated by numeric ID")
+    end
+
     local windowFrame = Library._windows[1] and Library._windows[1].Frame
     local minimumGoldInput = windowFrame and findDescendant(windowFrame, "Input")
     if minimumGoldInput == nil or not minimumGoldInput:IsA("TextBox") then

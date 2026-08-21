@@ -58,14 +58,15 @@ end
 -- Gate a single drop candidate.
 --
 -- entry: { hasPrimaryPart = bool, landed = bool, inRange = bool,
---          gold = number, isEvent = bool, tier = number? }
--- options: { minValue = number, filterRarity = bool,
---            tiers = { [tierNumber] = true } }
+--          gold = number, isEvent = bool, itemId = number? }
+-- options: { minValue = number, filterItems = bool,
+--            itemIds = { [itemId] = true } }
 --
--- Event drops bypass the minimum value and the rarity filter (but never the
--- physical gates: landed, primary part, range). With the rarity filter on and
--- a non-empty tier set, only selected tiers pass; an empty set passes nothing.
+-- Event drops bypass the minimum value and the item filter (but never the
+-- physical gates: landed, primary part, range). With the item filter enabled,
+-- only selected material IDs pass; an empty selection passes nothing.
 function Common.gateDrop(entry, options)
+    options = type(options) == "table" and options or {}
     if entry.hasPrimaryPart ~= true then return false end
     if entry.landed ~= true then return false end
     if entry.inRange ~= true then return false end
@@ -79,12 +80,12 @@ function Common.gateDrop(entry, options)
         return false
     end
 
-    if options.filterRarity == true then
-        local tiers = options.tiers
-        if type(tiers) ~= "table" then return false end
-        local tier = tonumber(entry.tier)
-        if tier == nil then return false end
-        return tiers[tier] == true
+    if options.filterItems == true then
+        local itemIds = options.itemIds
+        if type(itemIds) ~= "table" then return false end
+        local itemId = tonumber(entry.itemId)
+        if itemId == nil then return false end
+        return itemIds[math.floor(itemId)] == true
     end
 
     return true
@@ -117,23 +118,9 @@ function Common.runningOrbitOffset(angle, radius)
         math.sin(numericAngle) * numericRadius
 end
 
--- Parse a tier selection (strings from the UI) into a numeric lookup set.
-function Common.parseTierSelection(values)
-    local tiers = {}
-    if type(values) ~= "table" then return tiers end
-    for key, value in pairs(values) do
-        local selected = type(key) == "number" or value == true
-        local number = tonumber(type(key) == "number" and value or key)
-        if selected and number ~= nil then
-            tiers[math.floor(number)] = true
-        end
-    end
-    return tiers
-end
-
 -- Parse the multi-select values used by Magic's material/potion dropdowns.
--- Values are stored as labels ("#123 Name") by the UI, while older configs
--- may contain numeric keys, numeric values, or a boolean lookup table.
+-- New values are stable numeric ID strings. Older configs may still contain
+-- "#123 Name" labels, numeric keys/values, or a boolean lookup table.
 function Common.parseIdSelection(values)
     local ids = {}
     if type(values) ~= "table" then return ids end

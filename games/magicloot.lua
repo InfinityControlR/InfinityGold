@@ -13,7 +13,6 @@
 
 local BRAND = "InfinityGold"
 local MAX_FARM_STAGE = 32
-local MAX_PICKUP_TIER = 10
 local PLACE_ID = 133188236593503
 local CREATOR_ID = 118455659
 local DISCORD_INVITE = "" -- set to an invite URL to show the invite button
@@ -196,23 +195,45 @@ return function(locomotionFactory, Library, Common)
                 end)
                 return copy
             end,
-            gateDrop = function(entry)
-                return entry.hasPrimaryPart and entry.landed and entry.inRange
+            gateDrop = function(entry, options)
+                options = type(options) == "table" and options or {}
+                if not (entry.hasPrimaryPart and entry.landed and entry.inRange) then
+                    return false
+                end
+                if entry.isEvent == true then return true end
+                if math.floor(tonumber(entry.gold) or 0)
+                    < (tonumber(options.minValue) or 0)
+                then
+                    return false
+                end
+                if options.filterItems == true then
+                    local itemId = tonumber(entry.itemId)
+                    return type(options.itemIds) == "table"
+                        and itemId ~= nil
+                        and options.itemIds[math.floor(itemId)] == true
+                end
+                return true
             end,
             farmStageTarget = function(cleared, selected, specific)
                 if specific then return math.floor(tonumber(selected) or 1) end
                 return math.max((tonumber(cleared) or 0) + 1, math.floor(tonumber(selected) or 1))
             end,
-            parseTierSelection = function(values)
-                local tiers = {}
+            parseIdSelection = function(values)
+                local ids = {}
                 if type(values) == "table" then
                     for key, value in pairs(values) do
-                        local selected = type(key) == "number" or value == true
-                        local number = tonumber(type(key) == "number" and value or key)
-                        if selected and number ~= nil then tiers[math.floor(number)] = true end
+                        local numericKeyLookup = type(key) == "number" and value == true
+                        local candidate = numericKeyLookup and key
+                            or (type(key) == "number" and value or key)
+                        local selected = numericKeyLookup
+                            or (type(key) == "number" and value ~= false)
+                            or value == true
+                        local id = selected and (tonumber(candidate)
+                            or tonumber(string.match(tostring(candidate), "^#?(%d+)")))
+                        if id ~= nil and id > 0 then ids[math.floor(id)] = true end
                     end
                 end
-                return tiers
+                return ids
             end,
         }
     end
@@ -253,8 +274,8 @@ return function(locomotionFactory, Library, Common)
         AutoPickup = false,
         PickupRange = 150,
         PickupMinValue = 0,
-        PickupFilterRarity = false,
-        PickupTiers = {},
+        PickupFilterItems = false,
+        PickupItems = {},
         AutoSell = false,
         AutoSellSpecific = false,
         SellItems = {},
@@ -631,7 +652,11 @@ return function(locomotionFactory, Library, Common)
 
     local function translatedConfigName(raw, id, fallbackPrefix)
         local name = type(raw) == "table"
-            and (raw.ZhName or raw.name)
+            and (raw.ZhName
+                or raw.Name
+                or raw.name
+                or raw.DisplayName
+                or raw.displayName)
             or nil
         if name ~= nil then
             local translation = resolveRuntimeModule("TranslationHelper")
@@ -645,9 +670,9 @@ return function(locomotionFactory, Library, Common)
             end
         end
         if type(name) ~= "string" or name == "" then
-            name = tostring(fallbackPrefix or "Item") .. " " .. tostring(id)
+            name = tostring(fallbackPrefix or "Item")
         end
-        return "#" .. tostring(id) .. " " .. name
+        return name
     end
 
     local function catalogByName(name, itemType)
@@ -658,11 +683,14 @@ return function(locomotionFactory, Library, Common)
         local values = {}
         if firstValue ~= nil then table.insert(values, firstValue) end
         for _, entry in ipairs(catalogByName(name)) do
-            table.insert(values, translatedConfigName(
-                entry.raw,
-                entry.id,
-                fallbackPrefix
-            ))
+            table.insert(values, {
+                Value = tostring(entry.id),
+                Text = translatedConfigName(
+                    entry.raw,
+                    entry.id,
+                    fallbackPrefix
+                ),
+            })
         end
         return values
     end
@@ -1334,7 +1362,7 @@ return function(locomotionFactory, Library, Common)
             return directName
         end
         translated = translate(raw.ZhName)
-        return translated or ("Recipe " .. tostring(id))
+        return translated or "Recipe"
     end
 
     local function alchemyRecipeCatalog(alchemy)
@@ -1352,7 +1380,7 @@ return function(locomotionFactory, Library, Common)
                         id = id,
                         potionId = potionId,
                         rebirth = math.floor(tonumber(raw.Rebirth) or 0),
-                        label = string.format("#%d %s", id, name),
+                        label = name,
                         recipe = raw,
                     })
                 end
@@ -1702,7 +1730,10 @@ return function(locomotionFactory, Library, Common)
         local catalog = alchemyRecipeCatalog(alchemy)
         if catalog == nil then return values end
         for _, recipe in ipairs(catalog) do
-            table.insert(values, recipe.label)
+            table.insert(values, {
+                Value = tostring(recipe.id),
+                Text = recipe.label,
+            })
         end
         return values
     end
@@ -3449,13 +3480,13 @@ return function(locomotionFactory, Library, Common)
     local pickupCount = 0
     local dropsNearby = 0
 
-    local function activateSortedDrops(sorted, minValue, tierSet)
+    local function activateSortedDrops(sorted, minValue, selectedItemIds)
         local activatedCount = 0
         for _, entry in ipairs(sorted) do
             if Common.gateDrop(entry, {
                 minValue = minValue,
-                filterRarity = cfg.PickupFilterRarity == true,
-                tiers = tierSet,
+                filterItems = cfg.PickupFilterItems == true,
+                itemIds = selectedItemIds,
             }) then
                 local prompt = pickupPrompt(entry.primaryPart)
                 if prompt ~= nil and activatePrompt(prompt) then
@@ -3474,7 +3505,7 @@ return function(locomotionFactory, Library, Common)
 
         local range = tonumber(cfg.PickupRange) or 150
         local minValue = tonumber(cfg.PickupMinValue) or 0
-        local tierSet = Common.parseTierSelection(cfg.PickupTiers)
+        local selectedItemIds = Common.parseIdSelection(cfg.PickupItems)
 
         local candidates = {}
         local order = 0
@@ -3496,6 +3527,7 @@ return function(locomotionFactory, Library, Common)
                 return {
                     model = model,
                     primaryPart = primaryPart,
+                    itemId = itemId,
                     rawGold = rawGold,
                     gold = gold,
                     tier = tier,
@@ -3520,7 +3552,8 @@ return function(locomotionFactory, Library, Common)
         end
 
         local sorted = Common.sortDrops(candidates)
-        pickupCount = pickupCount + activateSortedDrops(sorted, minValue, tierSet)
+        pickupCount = pickupCount
+            + activateSortedDrops(sorted, minValue, selectedItemIds)
     end
 
     task.spawn(function()
@@ -4077,9 +4110,38 @@ return function(locomotionFactory, Library, Common)
         end
     end
 
+    local function dropdownOptionValue(option)
+        if type(option) == "table" then
+            option = option.Value or option.value
+        end
+        if option == nil then return nil end
+        return tostring(option)
+    end
+
+    local function dropdownOptionText(option)
+        if type(option) == "table" then
+            local text = option.Text or option.text
+                or option.Label or option.label
+                or option.Value or option.value
+            if text == nil then return "" end
+            return tostring(text)
+        end
+        return tostring(option or "")
+    end
+
     local function catalogLabelId(value)
-        return tonumber(value)
-            or tonumber(string.match(tostring(value or ""), "^#(%d+)"))
+        local stableValue = dropdownOptionValue(value)
+        return tonumber(stableValue)
+            or tonumber(string.match(tostring(stableValue or ""), "^#?(%d+)"))
+    end
+
+    local function dropdownValuesFingerprint(values)
+        local parts = {}
+        for _, option in ipairs(values or {}) do
+            table.insert(parts, (dropdownOptionValue(option) or "")
+                .. "\31" .. dropdownOptionText(option))
+        end
+        return table.concat(parts, "\30")
     end
 
     local function sameArray(left, right)
@@ -4102,35 +4164,37 @@ return function(locomotionFactory, Library, Common)
         fallback
     )
         task.spawn(function()
-            local fingerprint = table.concat(initialValues or {}, "\30")
+            local fingerprint = dropdownValuesFingerprint(initialValues)
             while sessionAlive do
                 task.wait(2)
                 local refreshed = valuesBuilder()
                 local minimumCount = fallback ~= nil and 1 or 0
                 if #refreshed > minimumCount then
-                    local refreshedFingerprint = table.concat(refreshed, "\30")
+                    local refreshedFingerprint = dropdownValuesFingerprint(refreshed)
                     local previous = cfg[configName]
                     local desired
 
                     if multi then
                         local selectedIds = Common.parseIdSelection(previous)
                         desired = {}
-                        for _, label in ipairs(refreshed) do
-                            local id = catalogLabelId(label)
+                        for _, option in ipairs(refreshed) do
+                            local id = catalogLabelId(option)
                             if id ~= nil and selectedIds[math.floor(id)] == true then
-                                table.insert(desired, label)
+                                table.insert(desired, dropdownOptionValue(option))
                             end
                         end
                     else
                         local previousText = tostring(previous or fallback or "")
                         local previousId = catalogLabelId(previousText)
                         desired = fallback
-                        for _, label in ipairs(refreshed) do
-                            if label == previousText
+                        for _, option in ipairs(refreshed) do
+                            local optionValue = dropdownOptionValue(option)
+                            if optionValue == previousText
+                                or dropdownOptionText(option) == previousText
                                 or (previousId ~= nil
-                                    and catalogLabelId(label) == previousId)
+                                    and catalogLabelId(option) == previousId)
                             then
-                                desired = label
+                                desired = optionValue
                                 break
                             end
                         end
@@ -4395,25 +4459,29 @@ return function(locomotionFactory, Library, Common)
             Placeholder = "Type a whole number, for example 1000000000000",
             Parser = parsePickupMinimumValue,
         })
-        group:AddToggle("PickupFilterRarity", {
-            Text = "Filter by rarity",
+        group:AddToggle("PickupFilterItems", {
+            Text = "Filter by items",
             Default = false,
         })
-        local tierValues = {}
-        for tier = 1, MAX_PICKUP_TIER do
-            table.insert(tierValues, tostring(tier))
-        end
-        group:AddDropdown("PickupTiers", {
-            Text = "Rarities",
-            Values = tierValues,
+        local pickupItemValues = catalogDropdownValues("materialConf", "Material")
+        local pickupItemsDropdown = group:AddDropdown("PickupItems", {
+            Text = "Items",
+            Values = pickupItemValues,
             Default = {},
             Multi = true,
             MaxVisible = 5,
         })
+        refreshCatalogDropdown(
+            pickupItemsDropdown,
+            "PickupItems",
+            pickupItemValues,
+            function() return catalogDropdownValues("materialConf", "Material") end,
+            true
+        )
         tab:CreateSection("Notes"):AddParagraph({
             Title = "Event drops",
             Text = "Drops worth exactly 0 gold are treated as event drops: "
-                .. "they ignore the minimum value and rarity filter and are "
+                .. "they ignore the minimum value and item filter and are "
                 .. "collected first. Range and landing checks always apply.",
         })
 
@@ -4551,53 +4619,14 @@ return function(locomotionFactory, Library, Common)
             Default = "Best craftable",
             Multi = false,
         })
-        task.spawn(function()
-            local fingerprint = table.concat(recipeValues, "\30")
-            while sessionAlive do
-                task.wait(2)
-                local refreshed = alchemyDropdownValues()
-                local refreshedFingerprint = table.concat(refreshed, "\30")
-                local previous = tostring(cfg.BrewRecipe or "Best craftable")
-                local desired = previous
-                local desiredId = math.floor(
-                    tonumber(desired)
-                        or tonumber(string.match(desired, "^#(%d+)"))
-                        or 0
-                )
-                local found = false
-                if #refreshed > 1 then
-                    for _, value in ipairs(refreshed) do
-                        if value == desired then
-                            found = true
-                            break
-                        end
-                        if desiredId > 0
-                            and tonumber(string.match(value, "^#(%d+)")) == desiredId
-                        then
-                            desired = value
-                            found = true
-                            break
-                        end
-                    end
-                end
-                if #refreshed > 1 and not found and desiredId <= 0 then
-                    desired = "Best craftable"
-                end
-
-                if #refreshed > 1
-                    and (refreshedFingerprint ~= fingerprint or desired ~= previous)
-                then
-                    pcall(function()
-                        if refreshedFingerprint ~= fingerprint then
-                            recipeDropdown:SetValues(refreshed)
-                        end
-                        recipeDropdown:Set(desired)
-                    end)
-                    cfg.BrewRecipe = desired
-                    fingerprint = refreshedFingerprint
-                end
-            end
-        end)
+        refreshCatalogDropdown(
+            recipeDropdown,
+            "BrewRecipe",
+            recipeValues,
+            alchemyDropdownValues,
+            false,
+            "Best craftable"
+        )
         group:AddToggle("AutoDrinkPotion", { Text = "Auto Drink Potion", Default = false })
         local potionValues = catalogDropdownValues("potionConf", "Potion")
         local potionDropdown = group:AddDropdown("DrinkPotions", {
