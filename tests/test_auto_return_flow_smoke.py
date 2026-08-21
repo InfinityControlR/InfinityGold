@@ -55,7 +55,7 @@ BAG_HELPERS = helper_source(
     "    -- Stages",
 )
 RETURN_HELPERS = helper_source(
-    "    local MAX_RETURN_ATTEMPTS = 15",
+    "    local returnEpisode = {",
     "    -- Movement worker",
 )
 
@@ -176,18 +176,12 @@ assert(#actions == 1, "failed request retried faster than the 2 second cooldown"
 now = 12
 updateReturnEpisode(true)
 assert(#actions == 2 and returnEpisode.fired == true, "return request did not retry")
-assert(alchemyInvokeLease.returnHoldUntil == 22,
-    "successful return did not publish its cross-reload travel hold")
-assert(alchemyInvokeLease.returnEpisodeToken == 1,
-    "successful return did not publish a consumable arrival episode")
 now = 13
 updateReturnEpisode(true)
 assert(#actions == 2, "successful request retried faster than the cooldown")
 now = 14
 updateReturnEpisode(true)
 assert(#actions == 3, "request was not repeated while still inside the dungeon")
-assert(alchemyInvokeLease.returnEpisodeToken == 1,
-    "return retry published duplicate arrival episodes")
 assert(broomArms == 1, "broom was armed more than once in one episode")
 
 challenge = 0
@@ -226,22 +220,20 @@ updateReturnEpisode(true)
 assert(#actions == beforeDelayCalls + 1, "return did not fire after ReturnDelay")
 assert(broomArms == beforeDelayArms + 1, "broom did not arm with the first request")
 
-for attempt = 2, MAX_RETURN_ATTEMPTS do
+for attempt = 2, 20 do
     now = 33 + (attempt - 1) * 2
     updateReturnEpisode(true)
 end
-assert(#actions == beforeDelayCalls + MAX_RETURN_ATTEMPTS,
-    "bounded return did not make the expected attempts")
+assert(#actions == beforeDelayCalls + 20,
+    "Magic-style return did not keep retrying")
 now += 2
 updateReturnEpisode(true)
-assert(returnEpisode.active == false and returnEpisode.blocked == true,
-    "unconfirmed return did not enter its safe paused state")
-local callsAtPause = #actions
-now += 2
-updateReturnEpisode(true)
-assert(#actions == callsAtPause, "paused return continued sending")
+assert(returnEpisode.active == true,
+    "unconfirmed return stopped before replicated base confirmation")
+assert(#actions == beforeDelayCalls + 21,
+    "unconfirmed return did not continue after twenty attempts")
 updateReturnEpisode(false)
-assert(returnEpisode.blocked == false, "a real gate change did not re-arm return")
+assert(returnEpisode.active == false, "a real gate change did not cancel return")
 print("auto_return_episode_smoke=ok")
 """
         completed = run_luau(fixture)

@@ -302,6 +302,8 @@ return function(locomotionFactory, Library, Common)
         AutoEquipBest = false,
         AutoBuyWand = false,
         AutoEquipWand = false,
+        AutoEquipSelectedWand = false,
+        SelectedWand = "Select a wand",
         AutoBuyArmor = false,
         AutoEquipArmor = false,
         -- Utility
@@ -1037,7 +1039,6 @@ return function(locomotionFactory, Library, Common)
 
     -- Alchemy ---------------------------------------------------------------
 
-    local alchemyReturnPending = function() return false end
     local alchemyTelemetry = {
         status = "waiting",
         recipes = 0,
@@ -1296,6 +1297,31 @@ return function(locomotionFactory, Library, Common)
             return nil, "GetData.Alchemy unavailable"
         end
         return alchemy
+    end
+
+    -- Magic visits the replicated Alchemy actor immediately before each
+    -- craft/pickup request. Keep the visit fail-open: if the game has not
+    -- exposed the resolver yet, the verified remote path can still retry.
+    local function visitAlchemyStation(alchemy, resolverName)
+        alchemyTelemetry.travel = "remote fallback"
+        if type(alchemy) ~= "table" then return false, "Alchemy unavailable" end
+        local resolver = alchemy[resolverName]
+        if type(resolver) ~= "function" then
+            return false, resolverName .. " unavailable"
+        end
+        local parts = characterParts()
+        if parts == nil then return false, "character unavailable" end
+        local resolved, destination = pcall(resolver)
+        if not resolved or typeof(destination) ~= "CFrame" then
+            return false, "Alchemy destination unavailable"
+        end
+        local moved, moveError = pcall(function()
+            parts.root.CFrame = destination + Vector3.new(0, 3, 0)
+        end)
+        if not moved then return false, tostring(moveError) end
+        alchemyTelemetry.travel = "physical"
+        task.wait(0.2)
+        return true
     end
 
     local function rawAlchemyRecipes(alchemy)
@@ -2135,9 +2161,8 @@ return function(locomotionFactory, Library, Common)
             alchemy
         )
         if reconciled then return reconciledOk, reconciledError end
-        -- Alchemy actions are server requests and do not move the character.
-        -- They can therefore run while Walking, Running, Broom or Auto Return
-        -- are active; only the shared network lease serializes them.
+        -- Match Magic's physical station visit while retaining the shared
+        -- single-flight network lease and replicated-state confirmation.
         if type(alchemy.CanUseAlchemy) == "function" then
             local canUseOk, canUse = pcall(alchemy.CanUseAlchemy, player)
             if canUseOk then
@@ -2196,7 +2221,7 @@ return function(locomotionFactory, Library, Common)
                     return false, "pickup cancelled"
                 end
                 alchemyTelemetry.pickupAttempts += 1
-                alchemyTelemetry.travel = "remote"
+                visitAlchemyStation(alchemy, "ResolveFinishSpawnCFrame")
                 local sent, response, err, requestPending, didInvoke =
                     invokeAlchemyAction(
                         "ALCHEMY_PICKUP_FINISH_POTION"
@@ -2365,7 +2390,7 @@ return function(locomotionFactory, Library, Common)
             return false, "brew cancelled"
         end
         alchemyTelemetry.craftAttempts += 1
-        alchemyTelemetry.travel = "remote"
+        visitAlchemyStation(alchemy, "ResolveBrewActorCFrame")
         local recoverySnapshot = {
             key = alchemyRecovery.key,
             candidateIds = table.clone(alchemyRecovery.candidateIds),
@@ -2786,32 +2811,6 @@ return function(locomotionFactory, Library, Common)
             alive = function()
                 return sessionAlive
             end,
-            returnTravelPending = function()
-                return alchemyReturnPending()
-            end,
-            returnArrivalToken = function()
-                local challenge = playerNumber("InDungeonChallenge")
-                if challenge == nil or challenge > 0 then return nil end
-                local token = math.floor(
-                    tonumber(alchemyInvokeLease.returnEpisodeToken) or 0
-                )
-                local consumed = math.floor(
-                    tonumber(alchemyInvokeLease.returnConsumedToken) or 0
-                )
-                if token > consumed then return token end
-                return nil
-            end,
-            acknowledgeReturnArrival = function(token)
-                token = math.floor(tonumber(token) or 0)
-                if token <= 0 then return false end
-                local consumed = math.floor(
-                    tonumber(alchemyInvokeLease.returnConsumedToken) or 0
-                )
-                if token > consumed then
-                    alchemyInvokeLease.returnConsumedToken = token
-                end
-                return true
-            end,
         })
         if ok and type(module) == "table" then
             loco = module
@@ -2819,16 +2818,6 @@ return function(locomotionFactory, Library, Common)
     end
 
     local lastFarmMode = nil
-
-    local function shouldWaitForPhysicalStage(mode, stage, challenge)
-        local physical = mode == "Walking" or mode == "Running"
-        local challengeNumber = tonumber(challenge)
-        return physical
-            and (tonumber(stage) or 1) > 1
-            and (challengeNumber == nil or challengeNumber <= 0)
-    end
-
-    local stageEntryWaiting = false
 
     local function blocksPhysicalTransit()
         if loco ~= nil
@@ -2841,12 +2830,6 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function blocksAttack()
-        if stageEntryWaiting
-            and (cfg.AutoFarm or cfg.AutoFarmSpecific)
-            and (cfg.FarmMode == "Walking" or cfg.FarmMode == "Running")
-        then
-            return true
-        end
         return blocksPhysicalTransit()
     end
 
@@ -2858,7 +2841,6 @@ return function(locomotionFactory, Library, Common)
 
     -- Return episode (inventory full) ------------------------------------------
 
-    local MAX_RETURN_ATTEMPTS = 15
     local returnEpisode = {
         active = false,
         requestedAt = 0,
@@ -2867,50 +2849,8 @@ return function(locomotionFactory, Library, Common)
         lastAttemptAt = 0,
         lastError = nil,
         attempts = 0,
-        blocked = false,
         broomArmed = false,
     }
-    local returnTravelHoldUntil = tonumber(alchemyInvokeLease.returnHoldUntil) or 0
-
-    alchemyReturnPending = function()
-        local sharedHold = tonumber(alchemyInvokeLease.returnHoldUntil) or 0
-        if sharedHold > returnTravelHoldUntil then
-            returnTravelHoldUntil = sharedHold
-        end
-        if returnEpisode.active then return true end
-        local challenge = playerNumber("InDungeonChallenge")
-        local now = os.clock()
-        if challenge ~= nil and challenge <= 0
-            and (alchemyInventoryTransferPending()
-                or (alchemyInvokeLease.inventoryStageActive
-                    and configReady
-                    and (cfg.AutoBrew or autoSellEnabled())))
-        then
-            -- Auto Return has reached base, but the temporary LimitBag has not
-            -- yet been observed in the permanent Bag. This is a short base
-            -- reservation, not a movement suspension: Broom is released as
-            -- soon as the transfer is visible or its bounded timeout expires.
-            return true
-        end
-        if now < returnTravelHoldUntil then
-            -- During a server teleport nil is an unknown/loading state, not a
-            -- confirmation that base has been reached.
-            if challenge == nil or challenge > 0 then return true end
-        end
-        if returnTravelHoldUntil > 0 then
-            returnTravelHoldUntil = 0
-            alchemyInvokeLease.returnHoldUntil = nil
-        end
-        if challenge == nil or challenge <= 0 then return false end
-        -- Auto Return deliberately stops after its bounded request count. Once
-        -- the last travel hold has expired, that terminal state must release
-        -- Broom/re-entry coordination instead of becoming an invisible return.
-        if returnEpisode.blocked then return false end
-        if not cfg.AutoReturnFull then return false end
-        local full = bagFull()
-        return full == true
-    end
-
     local function resetReturnEpisode()
         returnEpisode.active = false
         returnEpisode.requestedAt = 0
@@ -2919,7 +2859,6 @@ return function(locomotionFactory, Library, Common)
         returnEpisode.lastAttemptAt = 0
         returnEpisode.lastError = nil
         returnEpisode.attempts = 0
-        returnEpisode.blocked = false
         returnEpisode.broomArmed = false
     end
 
@@ -2931,7 +2870,6 @@ return function(locomotionFactory, Library, Common)
         returnEpisode.lastAttemptAt = 0
         returnEpisode.lastError = nil
         returnEpisode.attempts = 0
-        returnEpisode.blocked = false
         returnEpisode.broomArmed = false
         notify("Inventory full; returning to base (" .. tostring(reason) .. ")")
     end
@@ -2953,8 +2891,6 @@ return function(locomotionFactory, Library, Common)
         end
         returnEpisode.lastChallenge = challenge
 
-        if returnEpisode.blocked then return end
-
         if not returnEpisode.active then
             startReturnEpisode("bag")
         end
@@ -2967,17 +2903,9 @@ return function(locomotionFactory, Library, Common)
         -- FireServer confirms only that the local facade accepted the call,
         -- not that the server returned us. Match the original worker and retry
         -- at most once every two seconds until InDungeonChallenge reaches 0.
-        -- A bounded latch prevents an unavailable server route from freezing
-        -- movement and sending forever; changing any real gate re-arms it.
+        -- Match Magic: retry every two seconds until replicated state confirms
+        -- that the player has reached base.
         if now - returnEpisode.lastAttemptAt >= 2 then
-            if returnEpisode.attempts >= MAX_RETURN_ATTEMPTS then
-                returnEpisode.active = false
-                returnEpisode.blocked = true
-                returnEpisode.lastError = "return not confirmed after "
-                    .. tostring(MAX_RETURN_ATTEMPTS) .. " requests"
-                notify("Auto return paused: " .. returnEpisode.lastError)
-                return
-            end
             if not returnEpisode.broomArmed and loco ~= nil then
                 local armedOk, armed = pcall(function()
                     return loco:OnAutoReturnFull()
@@ -2988,14 +2916,7 @@ return function(locomotionFactory, Library, Common)
             returnEpisode.attempts = returnEpisode.attempts + 1
             local ok, err = sendAction("DUNGEON_RETURN_TOWN")
             if ok then
-                if not returnEpisode.fired then
-                    alchemyInvokeLease.returnEpisodeToken = math.floor(
-                        tonumber(alchemyInvokeLease.returnEpisodeToken) or 0
-                    ) + 1
-                end
                 returnEpisode.fired = true
-                returnTravelHoldUntil = math.max(returnTravelHoldUntil, now + 10)
-                alchemyInvokeLease.returnHoldUntil = returnTravelHoldUntil
                 returnEpisode.lastError = nil
             else
                 returnEpisode.lastError = err or "return request failed"
@@ -3050,7 +2971,6 @@ return function(locomotionFactory, Library, Common)
             if lastFarmMode == "Walking" or lastFarmMode == "Running" then
                 stopMovementModes()
             end
-            stageEntryWaiting = false
             lastFarmMode = cfg.FarmMode
             enterDelay.stage = nil
         end
@@ -3059,15 +2979,12 @@ return function(locomotionFactory, Library, Common)
         updateReturnEpisode(full)
 
         if returnEpisode.active then
-            stageEntryWaiting = (cfg.AutoFarm or cfg.AutoFarmSpecific)
-                and (cfg.FarmMode == "Walking" or cfg.FarmMode == "Running")
             stopMovementModes()
             setMovementStatus("inventory full; returning to base")
             return
         end
 
         if not (cfg.AutoFarm or cfg.AutoFarmSpecific) then
-            stageEntryWaiting = false
             if movementStatus ~= "idle" then
                 stopMovementModes()
                 setMovementStatus("idle")
@@ -3084,14 +3001,6 @@ return function(locomotionFactory, Library, Common)
         )
 
         local mode = cfg.FarmMode
-        local challenge = playerNumber("InDungeonChallenge")
-        if shouldWaitForPhysicalStage(mode, stage, challenge) then
-            stageEntryWaiting = true
-            stopMovementModes()
-            setMovementStatus("stage " .. stage .. " waiting for dungeon entry")
-            return
-        end
-        stageEntryWaiting = false
 
         local stagePartInstance = stagePart(stage)
         if stagePartInstance == nil then
@@ -3252,7 +3161,14 @@ return function(locomotionFactory, Library, Common)
         return nil
     end
 
-    local function activatePrompt(prompt)
+    local function activatePrompt(prompt, maxDistance)
+        pcall(function()
+            prompt.HoldDuration = 0
+            prompt.MaxActivationDistance = math.max(
+                tonumber(prompt.MaxActivationDistance) or 0,
+                tonumber(maxDistance) or 0
+            )
+        end)
         if type(fireproximityprompt) == "function" then
             local ok = pcall(fireproximityprompt, prompt, 0)
             if ok then return true end
@@ -3280,7 +3196,7 @@ return function(locomotionFactory, Library, Common)
                 itemIds = selectedItemIds,
             }) then
                 local prompt = pickupPrompt(entry.primaryPart)
-                if prompt ~= nil and activatePrompt(prompt) then
+                if prompt ~= nil and activatePrompt(prompt, cfg.PickupRange) then
                     activatedCount = activatedCount + 1
                 end
             end
@@ -3460,7 +3376,7 @@ return function(locomotionFactory, Library, Common)
         {
             config = "weaponConf",
             itemType = 9,
-            equippedKey = "Weapon",
+            equippedKey = "Wand",
             buyToggle = "AutoBuyWand",
             equipToggle = "AutoEquipWand",
         },
@@ -3521,15 +3437,40 @@ return function(locomotionFactory, Library, Common)
         return true
     end
 
+    local function playerLevel()
+        local leaderstats = player:FindFirstChild("leaderstats")
+        local level = leaderstats and leaderstats:FindFirstChild("Level")
+        local value = level and tonumber(level.Value)
+        return value and math.floor(value) or 0
+    end
+
+    local function nextRebirthLevelRequirement()
+        local config = configByName("rebirthConf")
+        if type(config) ~= "table" then return nil end
+        local nextRebirth = math.floor((playerNumber("Rebirths") or 0) + 1)
+        local row = config[tostring(nextRebirth)] or config[nextRebirth]
+        if type(row) ~= "table" then return nil end
+        local requirement = tonumber(row.LvNeed)
+        return requirement and math.floor(requirement) or nil
+    end
+
+    local function runRebirthCycle()
+        if not cfg.AutoRebirth then return false end
+        local rebirths = playerNumber("Rebirths") or 0
+        local limit = math.floor(tonumber(cfg.RebirthLimit) or 41)
+        local levelRequirement = nextRebirthLevelRequirement()
+        if rebirths >= limit
+            or levelRequirement == nil
+            or playerLevel() < levelRequirement
+        then
+            return false
+        end
+        return invokeAction("PLAYER_REBIRTH")
+    end
+
     task.spawn(function() -- rebirth
         while sessionAlive do
-            if cfg.AutoRebirth then
-                local rebirths = playerNumber("Rebirths") or 0
-                local limit = math.floor(tonumber(cfg.RebirthLimit) or 41)
-                if rebirths < limit then
-                    invokeAction("PLAYER_REBIRTH")
-                end
-            end
+            runRebirthCycle()
             task.wait(3)
         end
     end)
@@ -3718,8 +3659,8 @@ return function(locomotionFactory, Library, Common)
             end
             -- While Auto Brew is farming, watch both sides of the two-bag
             -- handoff quickly. The stage owns the small LimitBag; base owns the
-            -- permanent Bag used by CanCraftRecipe. Broom waits through this
-            -- bounded handoff, but character movement is never suspended.
+            -- permanent Bag used by CanCraftRecipe. Poll the bounded handoff
+            -- quickly; Magic's Broom remains independent of this state.
             if configReady
                 and cfg.AutoBrew
                 and observedChallenge ~= nil
@@ -4096,9 +4037,6 @@ return function(locomotionFactory, Library, Common)
                     local state
                     if not cfg.AutoReturnFull then
                         state = "disabled"
-                    elseif returnEpisode.blocked then
-                        state = "paused after " .. tostring(returnEpisode.attempts)
-                            .. " requests"
                     elseif returnEpisode.active then
                         state = returnEpisode.fired
                             and ("request sent x" .. tostring(returnEpisode.attempts)
@@ -4477,9 +4415,9 @@ return function(locomotionFactory, Library, Common)
                 .. "Best waits only until those materials appear in the permanent "
                 .. "999-slot Bag, then sends the highest material-positive recipe in "
                 .. "that first base cycle. It never probes guessed recipe IDs one by "
-                .. "one. The bounded transfer gate releases Broom even when no material "
-                .. "change appears. Pickup can chain the next brew immediately; neither "
-                .. "action moves the character. Only one potion can brew at a time.",
+                .. "one. Pickup can chain the next brew immediately. Craft and pickup "
+                .. "visit the same replicated actor positions used by Magic; only one "
+                .. "potion can brew at a time.",
         })
     end
 
@@ -4503,6 +4441,38 @@ return function(locomotionFactory, Library, Common)
             Text = "Auto Equip Best Owned Wand",
             Default = false,
         })
+        if loco ~= nil then
+            local selectedBridge = {
+                [1] = function(configName, itemType)
+                    return catalogByName(configName, itemType)
+                end,
+                [2] = function(id, itemType)
+                    local bag = playerBag()
+                    if type(bag) ~= "table" then return false end
+                    local owned = Common.ownedItemIds(bag, itemType)
+                    return owned[math.floor(tonumber(id) or 0)] == true
+                end,
+                [3] = function(kind)
+                    return playerNumber(kind)
+                end,
+                [4] = function(action, payload)
+                    return invokeAction(action, payload)
+                end,
+                [5] = {
+                    AutoEquipWand = {
+                        SetValue = function(_, value)
+                            setRegisteredToggle("AutoEquipWand", value == true)
+                        end,
+                    },
+                },
+            }
+            local selectedOk = pcall(function()
+                loco:Install(wand, "Wand", selectedBridge)
+            end)
+            if not selectedOk then
+                wand:AddLabel("Selected Wand controls unavailable")
+            end
+        end
         local armor = bindGroup(tab:CreateSection("Armor"))
         armor:AddToggle("AutoBuyArmor", {
             Text = "Auto Buy Best Affordable Armor",

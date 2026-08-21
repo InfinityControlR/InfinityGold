@@ -1,9 +1,4 @@
-"""Executable regression checks for Walking/Running stage-entry gating.
-
-Stage geometry remains loaded while the player is at base.  Physical farm
-modes must therefore use InDungeonChallenge as their entry gate instead of
-treating a cached stage part as proof that the player is already there.
-"""
+"""Executable regression checks for Magic-compatible physical stage entry."""
 
 import subprocess
 import sys
@@ -42,32 +37,15 @@ def run_luau(source: str) -> subprocess.CompletedProcess:
 
 
 class PhysicalStageGateTests(unittest.TestCase):
-    def test_physical_modes_wait_at_base_for_non_first_stage(self):
-        helper = core_slice(
-            "    local function shouldWaitForPhysicalStage",
-            "    local function blocksAttack",
+    def test_physical_modes_dispatch_without_waiting_for_dungeon_state(self):
+        movement = core_slice("    local function updateMovement()", "    -- Combat")
+        self.assertNotIn("shouldWaitForPhysicalStage", movement)
+        self.assertNotIn("waiting for dungeon entry", movement)
+        self.assertNotIn('playerNumber("InDungeonChallenge")', movement)
+        self.assertLess(
+            movement.index("local stagePartInstance = stagePart(stage)"),
+            movement.index("return loco:Update("),
         )
-        fixture = f"""
-{helper}
-
-assert(shouldWaitForPhysicalStage("Walking", 4, 0) == true)
-assert(shouldWaitForPhysicalStage("Running", 4, nil) == true)
-assert(shouldWaitForPhysicalStage("Running", "4", "0") == true)
-assert(shouldWaitForPhysicalStage("Walking", 4, 1) == false)
-assert(shouldWaitForPhysicalStage("Running", 4, 7) == false)
-assert(shouldWaitForPhysicalStage("Running", 1, 0) == false)
-assert(shouldWaitForPhysicalStage("Walking", 1, nil) == false)
-assert(shouldWaitForPhysicalStage("Ground", 4, 0) == false)
-assert(shouldWaitForPhysicalStage("Above", 4, nil) == false)
-print("physical_stage_gate_smoke=ok")
-"""
-        completed = run_luau(fixture)
-        self.assertEqual(
-            completed.returncode,
-            0,
-            f"stage gate smoke failed:\n{completed.stdout}\n{completed.stderr}",
-        )
-        self.assertIn("physical_stage_gate_smoke=ok", completed.stdout)
 
     def test_stopping_physical_mode_delegates_to_locomotion_module(self):
         helper = core_slice(
@@ -98,15 +76,7 @@ print("running_stop_smoke=ok")
         )
         self.assertIn("running_stop_smoke=ok", completed.stdout)
 
-    def test_gate_precedes_stage_geometry_and_both_physical_dispatches(self):
-        source = (REPO_ROOT / "games" / "magicloot.lua").read_text(encoding="utf-8")
-        movement = core_slice("    local function updateMovement()", "    -- Combat")
-        gate = movement.index("if shouldWaitForPhysicalStage(mode, stage, challenge) then")
-        self.assertLess(gate, movement.index("local stagePartInstance = stagePart(stage)"))
-        self.assertLess(gate, movement.index("return loco:Update("))
-        self.assertIn('setMovementStatus("stage " .. stage .. " waiting for dungeon entry")', movement)
-
-    def test_waiting_at_base_does_not_block_background_autoclick(self):
+    def test_locomotion_itself_owns_the_attack_block(self):
         helper = core_slice(
             "    local function blocksPhysicalTransit()",
             "    local function stopMovementModes()",
@@ -119,22 +89,17 @@ local cfg = {{
 }}
 local locomotionBlocked = false
 local loco = {{ BlocksAttack = function() return locomotionBlocked end }}
-local stageEntryWaiting = true
-
 {helper}
 
--- This is the base-wait state: physical movement is stopped, but power clicks
--- must remain available in the background. AutoAttack keeps the broader gate.
-assert(blocksPhysicalTransit() == false, "base waiting incorrectly blocked AutoClick")
-assert(blocksAttack() == true, "base waiting did not block AutoAttack")
+assert(blocksPhysicalTransit() == false)
+assert(blocksAttack() == false)
 
 locomotionBlocked = true
-assert(blocksPhysicalTransit() == true, "active Running did not block AutoClick")
-assert(blocksAttack() == true, "active Running did not block AutoAttack")
+assert(blocksPhysicalTransit() == true)
+assert(blocksAttack() == true)
 locomotionBlocked = false
-stageEntryWaiting = false
-assert(blocksPhysicalTransit() == false, "arrived Running kept AutoClick blocked")
-assert(blocksAttack() == false, "arrived Running kept AutoAttack blocked")
+assert(blocksPhysicalTransit() == false)
+assert(blocksAttack() == false)
 
 cfg.FarmMode = "Walking"
 loco.BlocksAttack = function() return true end

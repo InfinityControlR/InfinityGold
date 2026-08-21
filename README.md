@@ -35,7 +35,7 @@ the InfinityGold dashboard.
 | `loader.lua` | Executor/game guards, downloads pinned modules + core, protected factory injection |
 | `ui/InfinityUI.lua` | Original dashboard library (window, tabs, toggles, sliders, dropdowns, toasts) |
 | `games/magicloot_common.lua` | Pure, Roblox-free helpers: drop sorting/gating, catalog and inventory selection, farm stage selection |
-| `games/magicloot_locomotion.lua` | Walking locomotion, EnterDelay, stuck reset, Auto Broom |
+| `games/magicloot_locomotion.lua` | Magic-compatible Walking/Running, Auto Broom and selected-Wand worker |
 | `games/magicloot.lua` | Core script: farm modes, combat, pickup, progress, dashboard |
 | `diagnostics/click_action_inspector.lua` | Passive real-click, remote and numeric-delta inspector |
 | `tests/` | Python regression suite + Luau smoke tests |
@@ -46,10 +46,12 @@ the InfinityGold dashboard.
 - **Farm**: Auto Farm (progresses from `DungeonRunMaxClear + 1`, respects a
   raised start stage, up to stage 32), specific-stage farming, modes `Ground`,
   `Above`, `Orbit`, `Running`, `Walking`, configurable height/orbit/enter delay.
+  Walking/Running start their route directly from base; they do not wait for
+  `InDungeonChallenge > 0` before moving toward a stage.
 - **Walking**: `humanoid:Move` driven from a render-step binding at
   `Enum.RenderPriority.Character + 1`. No teleports, no WalkSpeed/JumpPower
-  changes. Its final farm point is halfway between the stage entrance edge
-  and its centre; EnterDelay applies per stage change, 20-second stuck
+  changes. Its final farm point is the stage centre, matching Magic; EnterDelay
+  applies per stage change, 20-second stuck
   detection performs a single bounded character reset per stage, and stage
   entry releases the attack block (`enteredStage` latch).
 - **Running**: uses the Magic locomotion contract: `humanoid:Move` runs every
@@ -91,6 +93,8 @@ the InfinityGold dashboard.
   snapshot. The game has one brewing slot, so a live
   `brewing (one potion at a time)` state is an intentional wait for the current
   potion rather than a recipe-search delay.
+  Pickup prepares each real prompt with zero hold duration and expands its
+  activation distance to the configured pickup range before firing it.
 - **Broom**: offers stages 4, 8, 13, 18, 23 and 28, sends only the
   selected-stage request (`关卡跳关请求`) and never
   toggles/equips the broom. It keeps single-flight epoch tokens, invalidation
@@ -98,8 +102,9 @@ the InfinityGold dashboard.
   `InDungeonChallenge` transition. Startup waits until config restoration has
   finished; an unconfirmed request is retried at most three times, five seconds
   apart, and room entry cancels every pending retry immediately.
-- **Progress**: Auto Rebirth uses the payload-free invoke contract and stops at
-  the selected value from 1–41. Auto Train can use a selected ground or the
+- **Progress**: Auto Rebirth uses the payload-free invoke contract, stops at
+  the selected value from 1–41, and waits until `leaderstats.Level` reaches the
+  next `rebirthConf.LvNeed`. Auto Train can use a selected ground or the
   highest unlocked ground, moves to its zone, updates `TRAIN_ZONE_UPDATE` and
   invokes `TRAIN_MANUAL_CLICK`; farming and training switches exclude one
   another. Auto Return still handles the full temporary bag. Index claims are
@@ -108,7 +113,9 @@ the InfinityGold dashboard.
 - **Potions and gear**: Auto Drink sends each selected potion inventory
   `onlyID`; its selector continuously discovers new live potion config rows.
   Alchemy likewise re-reads the game's recipe list and accepts sparse/keyed
-  additions. Wand and
+  additions. Wand adds Magic's stage-only selected-Wand worker: its catalog is
+  captured once per full load, it disables Best only inside a stage, verifies
+  ownership and equips by stable ID. Wand and
   armor buying/equipping are separate, choose the best affordable/unowned or
   best owned entry, use Magic's item types 9 and 13, and re-evaluate the current
   weapon/armor configs on every worker cycle. Training grounds use the same live
@@ -167,7 +174,9 @@ These surfaces need confirmation inside Roblox (fail-open until then):
 - Auto-return now follows the original game contract exactly: bag capacity is
   `GetData.GetItemCountByID(LocalPlayer, 5)` and usage is
   `LocalPlayer.LimitBagUsed`. The Farm tab shows both live values and the
-  capacity source so this can be verified without another diagnostic script.
+  capacity source. After `ReturnDelay`, it retries `DUNGEON_RETURN_TOWN` every
+  two seconds until `InDungeonChallenge <= 0` confirms arrival; it does not
+  abandon an active full-bag episode after an arbitrary request count.
 - The statically recovered Magic contracts are now reproduced: payload-free
   `PLAYER_REBIRTH`; `INDEX_CLAIM_REWARD` with snapshot `tag` and
   `targetProgress`; `DRINK_POTION` with the selected Bag item's `onlyID`;
@@ -177,11 +186,12 @@ These surfaces need confirmation inside Roblox (fail-open until then):
   in-client confirmation.
 - Alchemy resolves `GetData.Alchemy` and sends only one locally selected Best
   recipe, never a server-side ID walk. It distinguishes the temporary LimitBag
-  from the permanent 999-slot Bag, reserves the short return window until a
-  material delta is visible, then evaluates `CanCraftRecipe` immediately. A
+  from the permanent 999-slot Bag, watches the bounded transfer window for a
+  material delta, then evaluates `CanCraftRecipe` immediately. A
   positive `CanMeetRecipeRebirth` is preferred, but its false/error result no
   longer hides a material-positive recipe that manual selection can submit.
-  Craft and pickup
-  use the verified InvokeServer actions only when `InDungeonChallenge <= 0`,
-  without moving the character or suspending Walking, Running or Broom.
+  Craft and pickup use the verified InvokeServer actions only when
+  `InDungeonChallenge <= 0`. Immediately before each request they visit Magic's
+  `ResolveBrewActorCFrame` or `ResolveFinishSpawnCFrame` destination plus three
+  studs vertically; a missing resolver remains a fail-open remote fallback.
   Automatic selling still waits for a confirmed brew.

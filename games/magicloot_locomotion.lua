@@ -1,65 +1,18 @@
--- InfinityGold external locomotion controller — Magic-compatible Walking and
--- Running plus the native Broom jump.
+-- InfinityGold controller ported from Magic Loot: locomotion, Broom and
+-- selected Wand equip.
 --
 -- This module never teleports the character and never changes movement speed.
 -- It is loaded behind a protected bridge in the main script; a load/runtime
--- failure therefore cannot prevent InfinityGold itself from opening.
+-- failure therefore cannot prevent Magic Loot itself from opening.
 
 local Module = {}
-
-function Module._entryDirection2D(stage, centerX, centerZ, neighborX, neighborZ)
-    stage = tonumber(stage)
-    centerX = tonumber(centerX)
-    centerZ = tonumber(centerZ)
-    neighborX = tonumber(neighborX)
-    neighborZ = tonumber(neighborZ)
-    if stage == nil or centerX == nil or centerZ == nil
-        or neighborX == nil or neighborZ == nil
-    then
-        return nil, nil
-    end
-
-    local directionSign = stage > 1 and 1 or -1
-    local deltaX = (neighborX - centerX) * directionSign
-    local deltaZ = (neighborZ - centerZ) * directionSign
-    local magnitude = math.sqrt(deltaX * deltaX + deltaZ * deltaZ)
-    if magnitude < 1 then return nil, nil end
-    return deltaX / magnitude, deltaZ / magnitude
-end
-
--- Pure geometry helper kept on the module so the exact oriented-footprint
--- calculation can be exercised by the offline Luau smoke suite. The caller
--- supplies a unit direction already transformed into the stage's local space.
-function Module._halfwayFootprintDistance(sizeX, sizeZ, localX, localZ)
-    sizeX = tonumber(sizeX)
-    sizeZ = tonumber(sizeZ)
-    localX = tonumber(localX)
-    localZ = tonumber(localZ)
-    if sizeX == nil or sizeZ == nil or sizeX <= 0 or sizeZ <= 0
-        or localX == nil or localZ == nil
-    then
-        return nil
-    end
-
-    local distanceToX = math.huge
-    local distanceToZ = math.huge
-    if math.abs(localX) > 0.0001 then
-        distanceToX = sizeX * 0.5 / math.abs(localX)
-    end
-    if math.abs(localZ) > 0.0001 then
-        distanceToZ = sizeZ * 0.5 / math.abs(localZ)
-    end
-    local edgeDistance = math.min(distanceToX, distanceToZ)
-    if edgeDistance == math.huge then return nil end
-    return edgeDistance * 0.5
-end
 
 function Module.create(context)
     context = type(context) == "table" and context or {}
     local runService = game:GetService("RunService")
     local players = game:GetService("Players")
     local replicatedStorage = game:GetService("ReplicatedStorage")
-    local bindName = "InfinityGoldWalking_"
+    local bindName = "InfinityGoldLocomotionControl_"
         .. tostring(math.random(1, 1000000000))
         .. "_"
         .. tostring(os.clock())
@@ -73,7 +26,6 @@ function Module.create(context)
         preparedStagePart = nil,
         routeChangedAt = 0,
         stage = nil,
-        mode = nil,
         stagePart = nil,
         humanoid = nil,
         root = nil,
@@ -83,15 +35,16 @@ function Module.create(context)
         bound = false,
         lastPosition = nil,
         lastMovedAt = 0,
-        orbitAngle = 0,
-        orbitRadius = 0,
-        lastJumpAt = -math.huge,
         resetHumanoid = nil,
         resetCharacter = nil,
         resetDeadline = 0,
         resetUsedStage = nil,
         blockedStage = nil,
         settleUntil = 0,
+        mode = nil,
+        orbitAngle = 0,
+        orbitRadius = 0,
+        lastJumpAt = -math.huge,
     }
 
     local api = {}
@@ -105,33 +58,21 @@ function Module.create(context)
     -- Broom only asks the server to jump to the selected stage. It deliberately
     -- never toggles/equips the broom; the game keeps ownership of the transition.
     local broomStages = { 4, 8, 13, 18, 23, 28 }
-    local broomStageSet = {
-        [4] = true,
-        [8] = true,
-        [13] = true,
-        [18] = true,
-        [23] = true,
-        [28] = true,
-    }
+    local broomStageSet = { [4] = true, [8] = true, [13] = true, [18] = true, [23] = true, [28] = true }
     local BROOM_INITIAL_DELAY = 1
     local BROOM_CONFIRM_TIMEOUT = 5
-    local BROOM_ARM_TIMEOUT = 30
     local MAX_BROOM_REQUEST_ATTEMPTS = 3
     local broom = {
         alive = true,
         installed = false,
         workerStarted = false,
         configReady = false,
-        suspended = false,
         enabled = false,
         stage = nil,
         armed = false,
         readyAt = 0,
-        giveUpAt = 0,
-        finalConfirmationPending = false,
         reason = nil,
         waitingForBase = false,
-        externalReturnPending = false,
         sawDungeon = false,
         returnEpisode = false,
         returnToken = 0,
@@ -143,6 +84,15 @@ function Module.create(context)
         requestAttempts = 0,
         activations = 0,
         status = "broom disabled",
+    }
+    local WAND_PLACEHOLDER = "Select a wand"
+    local wand = {
+        alive = true,
+        installed = false,
+        workerStarted = false,
+        bridge = nil,
+        labelsById = {},
+        lastEquipAt = -math.huge,
     }
 
     local function broomOption(name, fallback)
@@ -227,8 +177,6 @@ function Module.create(context)
     local function disarmBroom()
         broom.armed = false
         broom.readyAt = 0
-        broom.giveUpAt = 0
-        broom.finalConfirmationPending = false
         broom.reason = nil
         broom.requestAttempts = 0
     end
@@ -246,7 +194,6 @@ function Module.create(context)
             delay = BROOM_INITIAL_DELAY
         end
         broom.readyAt = math.max(now + delay, broom.lastAttemptAt + 2)
-        broom.giveUpAt = broom.readyAt + BROOM_ARM_TIMEOUT
     end
 
     local function updateBroom()
@@ -254,36 +201,15 @@ function Module.create(context)
             broom.status = "broom waiting for config"
             return
         end
-        if broom.suspended then
-            broom.status = "broom paused for Alchemy"
-            return
-        end
         local enabled = broomToggle()
         local selected = broomStage(broomOption("BroomStage", "4"))
         local now = os.clock()
         local challenge = inDungeonChallenge()
-        local arrivalToken = nil
-        if type(context.returnArrivalToken) == "function"
-            and type(context.acknowledgeReturnArrival) == "function"
-        then
-            local tokenOk, token = pcall(context.returnArrivalToken)
-            token = tokenOk and math.floor(tonumber(token) or 0) or 0
-            if token > 0 then arrivalToken = token end
-        end
-        local function acknowledgeArrival()
-            if arrivalToken ~= nil
-                and type(context.acknowledgeReturnArrival) == "function"
-            then
-                pcall(context.acknowledgeReturnArrival, arrivalToken)
-            end
-        end
         if not enabled then
-            acknowledgeArrival()
             if broom.enabled or broom.transactionActive then invalidateBroomTransaction() end
             broom.enabled = false
             broom.stage = selected
             broom.waitingForBase = false
-            broom.externalReturnPending = false
             broom.sawDungeon = false
             broom.returnEpisode = false
             broom.lastChallenge = nil
@@ -292,29 +218,16 @@ function Module.create(context)
             return
         end
         if selected == nil then
-            acknowledgeArrival()
             if broom.enabled or broom.transactionActive then invalidateBroomTransaction() end
             broom.enabled = true
             broom.stage = nil
             broom.waitingForBase = false
-            broom.externalReturnPending = false
             broom.returnEpisode = false
             broom.lastChallenge = nil
             disarmBroom()
             broom.status = "unsupported broom stage"
             return
         end
-        if type(context.returnTravelPending) == "function" then
-            local blockedOk, blocked = pcall(context.returnTravelPending)
-            if blockedOk and blocked == true then
-                broom.externalReturnPending = true
-                broom.status = "broom waiting for inventory return travel"
-                return
-            end
-        end
-        local externalReturnReleased = broom.externalReturnPending
-            or arrivalToken ~= nil
-        broom.externalReturnPending = false
         local wasEnabled = broom.enabled
         local changed = broom.stage ~= selected
         local previousChallenge = broom.lastChallenge
@@ -326,16 +239,12 @@ function Module.create(context)
         broom.enabled = true
         broom.stage = selected
         if not wasEnabled then
-            broom.returnEpisode = externalReturnReleased
-            armBroom(externalReturnReleased and "inventory return" or "initial", now)
+            broom.returnEpisode = false
+            armBroom("initial", now)
         elseif changed then
             invalidateBroomTransaction()
-            if externalReturnReleased then
-                broom.returnEpisode = true
-                armBroom("inventory return", now)
-            elseif broom.waitingForBase then
+            if broom.waitingForBase then
                 disarmBroom()
-                broom.giveUpAt = now + BROOM_ARM_TIMEOUT
             elseif broom.returnEpisode then
                 armBroom("inventory return", now)
             else
@@ -347,32 +256,8 @@ function Module.create(context)
             invalidateBroomTransaction()
             broom.returnEpisode = true
             armBroom("inventory return", now)
-        elseif externalReturnReleased and wasEnabled and not changed then
-            invalidateBroomTransaction()
-            broom.returnEpisode = true
-            armBroom("inventory return", now)
         elseif broom.waitingForBase then
-            if broom.giveUpAt > 0 and now >= broom.giveUpAt then
-                broom.waitingForBase = false
-                broom.returnEpisode = false
-                disarmBroom()
-                broom.status = "broom return transition timed out"
-                broomNotify(broom.status)
-                return
-            end
             broom.status = "broom waiting for InDungeonChallenge >0 -> 0"
-            return
-        end
-        acknowledgeArrival()
-        if broom.armed and broom.giveUpAt > 0 and now >= broom.giveUpAt then
-            local reason = broom.reason
-            if reason == "inventory return" then broom.returnEpisode = false end
-            disarmBroom()
-            broom.status = string.format(
-                "broom stage %d paused: game state or remote stayed unavailable",
-                selected
-            )
-            broomNotify(broom.status)
             return
         end
         if challenge == nil then
@@ -396,27 +281,6 @@ function Module.create(context)
                     selected
                 )
             end
-            return
-        end
-        if broom.finalConfirmationPending then
-            if now < broom.readyAt then
-                broom.status = string.format(
-                    "broom stage %d final request sent; waiting %.1fs for room entry",
-                    selected,
-                    broom.readyAt - now
-                )
-                return
-            end
-            local attempts = broom.requestAttempts
-            local reason = broom.reason
-            if reason == "inventory return" then broom.returnEpisode = false end
-            disarmBroom()
-            broom.status = string.format(
-                "broom stage %d sent %d time(s); no dungeon confirmation",
-                selected,
-                attempts
-            )
-            broomNotify(broom.status)
             return
         end
         if broom.transactionActive then return end
@@ -464,14 +328,15 @@ function Module.create(context)
         broom.activations = broom.activations + 1
         broom.lastActivatedAt = os.clock()
         if broom.requestAttempts >= MAX_BROOM_REQUEST_ATTEMPTS then
-            broom.finalConfirmationPending = true
-            broom.readyAt = now + BROOM_CONFIRM_TIMEOUT
+            local attempts = broom.requestAttempts
+            if reason == "inventory return" then broom.returnEpisode = false end
+            disarmBroom()
             broom.status = string.format(
-                "broom stage %d final request %d/%d sent; waiting for room entry",
+                "broom stage %d sent %d time(s); no dungeon confirmation",
                 selected,
-                broom.requestAttempts,
-                MAX_BROOM_REQUEST_ATTEMPTS
+                attempts
             )
+            broomNotify(broom.status)
             return
         end
         broom.readyAt = now + BROOM_CONFIRM_TIMEOUT
@@ -497,6 +362,153 @@ function Module.create(context)
                 task.wait(ok and 0.1 or 1)
             end
             broom.alive = false
+        end)
+    end
+
+    local function wandCall(action, id)
+        local bridge = wand.bridge
+        if type(bridge) ~= "table" then return false, nil end
+        if action == 1 and type(bridge[1]) == "function" then
+            local ok, result = pcall(bridge[1], "weaponConf", 9)
+            return ok, result
+        end
+        if action == 2 and type(bridge[2]) == "function" then
+            local ok, result = pcall(bridge[2], id, 9)
+            return ok, result
+        end
+        if action == 3 and type(bridge[3]) == "function" then
+            local ok, result = pcall(bridge[3], "Wand")
+            return ok, result
+        end
+        if action == 4 and type(bridge[4]) == "function" then
+            local ok, result = pcall(bridge[4], "EQUIP_SHOP_EQUIP", {
+                equipID = id,
+                itemType = 9,
+            })
+            return ok, result
+        end
+        if action == 5 then
+            local registry = bridge[5]
+            local option = type(registry) == "table" and registry.AutoEquipWand
+            if type(option) == "table" and type(option.SetValue) == "function" then
+                local ok, result = pcall(option.SetValue, option, false)
+                return ok, result
+            end
+            return true, true
+        end
+        return false, nil
+    end
+
+    local function selectedWandId(value)
+        local direct = tonumber(value)
+        if direct ~= nil and direct > 0 then return math.floor(direct) end
+        if type(value) == "string" then
+            local parsed = tonumber(string.match(value, "^#(%d+)"))
+            return parsed and math.floor(parsed) or nil
+        end
+        if type(value) == "table" then
+            for candidate, enabled in pairs(value) do
+                if enabled then
+                    local parsed = selectedWandId(candidate)
+                    if parsed ~= nil then return parsed end
+                end
+            end
+        end
+        return nil
+    end
+
+    local function selectedWandOption()
+        if type(context.option) ~= "function" then return WAND_PLACEHOLDER end
+        local ok, value = pcall(context.option, "SelectedWand", WAND_PLACEHOLDER)
+        return ok and value ~= nil and value or WAND_PLACEHOLDER
+    end
+
+    local function selectedWandToggle()
+        if type(context.toggle) ~= "function" then return false end
+        local ok, value = pcall(context.toggle, "AutoEquipSelectedWand")
+        return ok and value == true
+    end
+
+    local function wandCatalogValues()
+        local ok, raw = wandCall(1)
+        local entries = {}
+        local seen = {}
+        if ok and type(raw) == "table" then
+            for _, value in pairs(raw) do
+                if type(value) == "table" then
+                    local id = tonumber(value.id)
+                        or tonumber(value.ID)
+                        or tonumber(value.Id)
+                    if id ~= nil and id > 0 then
+                        id = math.floor(id)
+                        if not seen[id] then
+                            seen[id] = true
+                            table.insert(entries, {
+                                id = id,
+                                price = tonumber(value.price)
+                                    or tonumber(value.Price)
+                                    or 0,
+                                name = value.name
+                                    or value.Name
+                                    or value.ZhName
+                                    or value.DisplayName,
+                            })
+                        end
+                    end
+                end
+            end
+        end
+        table.sort(entries, function(left, right)
+            if left.price ~= right.price then return left.price > right.price end
+            return left.id < right.id
+        end)
+
+        local values = { WAND_PLACEHOLDER }
+        local labelsById = {}
+        for _, entry in ipairs(entries) do
+            local name = type(entry.name) == "string" and entry.name ~= ""
+                and entry.name
+                or ("Wand " .. tostring(entry.id))
+            local label = "#" .. tostring(entry.id) .. " " .. name
+            labelsById[entry.id] = label
+            table.insert(values, label)
+        end
+        return values, labelsById
+    end
+
+    local function updateSelectedWand()
+        if not broom.configReady or not selectedWandToggle() then return end
+        local challenge = inDungeonChallenge()
+        if challenge == nil or challenge <= 0 then return end
+        local selectedId = selectedWandId(selectedWandOption())
+        if selectedId == nil or wand.labelsById[selectedId] == nil then return end
+
+        -- Selected Wand only owns equipment inside a stage. At the base it
+        -- leaves manual equipment untouched.
+        wandCall(5)
+        local ownedOk, owned = wandCall(2, selectedId)
+        if not ownedOk or owned ~= true then return end
+        local currentOk, current = wandCall(3)
+        if currentOk and math.floor(tonumber(current) or 0) == selectedId then return end
+        local now = os.clock()
+        if now - wand.lastEquipAt < 2 then return end
+        wand.lastEquipAt = now
+        wandCall(4, selectedId)
+    end
+
+    local function startWandWorker()
+        if wand.workerStarted then return end
+        wand.workerStarted = true
+        task.spawn(function()
+            while wand.alive do
+                if type(context.alive) == "function" then
+                    local aliveOk, hostAlive = pcall(context.alive)
+                    if not aliveOk or hostAlive == false then break end
+                end
+                local ok = pcall(updateSelectedWand)
+                task.wait(ok and 2 or 1)
+            end
+            wand.alive = false
         end)
     end
 
@@ -622,70 +634,7 @@ function Module.create(context)
         return state.enteredStage
     end
 
-    local function resolveWalkingDestination(stage, stagePart, centerDestination)
-        local stageNumber = tonumber(stage)
-        if stageNumber == nil then return centerDestination, nil, nil end
-        stageNumber = math.floor(stageNumber)
-
-        local neighborStage = stageNumber > 1 and (stageNumber - 1) or 2
-        local neighborPart = resolveStagePart(neighborStage)
-        if neighborPart == nil then return centerDestination, nil, nil end
-
-        local neighborPoint = groundPoint(neighborPart)
-        -- Later stages face their predecessor. Stage 1 has no predecessor,
-        -- so its entrance is the side opposite stage 2.
-        local directionX, directionZ = Module._entryDirection2D(
-            stageNumber,
-            centerDestination.X,
-            centerDestination.Z,
-            neighborPoint.X,
-            neighborPoint.Z
-        )
-        if directionX == nil then return centerDestination, nil, nil end
-
-        local entryDirection = Vector3.new(directionX, 0, directionZ)
-        local localDirection = stagePart.CFrame:VectorToObjectSpace(entryDirection)
-        local halfwayDistance = Module._halfwayFootprintDistance(
-            stagePart.Size.X,
-            stagePart.Size.Z,
-            localDirection.X,
-            localDirection.Z
-        )
-        if halfwayDistance == nil then return centerDestination, nil, nil end
-
-        return centerDestination + entryDirection * halfwayDistance,
-            entryDirection,
-            halfwayDistance * 2
-    end
-
-    local function chooseInitialDestination(
-        stage,
-        stagePart,
-        root,
-        centerDestination,
-        finalDestination,
-        entryDirection,
-        entryOffset
-    )
-        if stage ~= 1 or isOverFootprint(stagePart, root.Position) then
-            return finalDestination, "final"
-        end
-
-        -- Stages 1 and 2 define the centre line. Approaching stage 1 from
-        -- the opposite side first prevents a diagonal cut from a train corner.
-        if entryDirection == nil or entryOffset == nil then
-            return finalDestination, "final"
-        end
-        local entry = centerDestination + entryDirection * (entryOffset + 6)
-        return Vector3.new(entry.X, finalDestination.Y, entry.Z), "align"
-    end
-
-    local function chooseRunningInitialDestination(
-        stage,
-        stagePart,
-        root,
-        destination
-    )
+    local function chooseInitialDestination(stage, stagePart, root, destination)
         if stage ~= 1 or isOverFootprint(stagePart, root.Position) then
             return destination, "final"
         end
@@ -695,13 +644,16 @@ function Module.create(context)
             return destination, "final"
         end
 
+        local firstPoint = destination
         local secondPoint = groundPoint(secondStagePart)
-        local axisDelta = secondPoint - destination
+        local axisDelta = secondPoint - firstPoint
         local planarAxis = Vector3.new(axisDelta.X, 0, axisDelta.Z)
         if planarAxis.Magnitude < 1 then
             return destination, "final"
         end
 
+        -- Stages 1 and 2 define the centre line. Approaching stage 1 from
+        -- the opposite side first prevents a diagonal cut from a train corner.
         local entryDirection = -planarAxis.Unit
         local localDirection = stagePart.CFrame:VectorToObjectSpace(entryDirection)
         local distanceToX = math.huge
@@ -716,7 +668,7 @@ function Module.create(context)
         if entryOffset == math.huge then
             return destination, "final"
         end
-        local entry = destination + entryDirection * (entryOffset + 6)
+        local entry = firstPoint + entryDirection * (entryOffset + 6)
         return Vector3.new(entry.X, destination.Y, entry.Z), "align"
     end
 
@@ -860,8 +812,35 @@ function Module.create(context)
         return mode == "Walking" or mode == "Running"
     end
 
-    function api:Install(group)
+    function api:Install(group, kind, bridge)
+        if kind == 1 or kind == "Wand" then
+            if wand.installed then return true end
+            wand.bridge = bridge
+            group:AddToggle("AutoEquipSelectedWand", {
+                Text = "Auto Equip Selected Wand",
+                Default = false,
+            })
+            local values, labelsById = wandCatalogValues()
+            wand.labelsById = labelsById
+            group:AddDropdown("SelectedWand", {
+                Text = "Selected Wand",
+                Values = values,
+                Default = WAND_PLACEHOLDER,
+                Multi = false,
+                Searchable = true,
+            })
+            wand.installed = true
+            startWandWorker()
+            return true
+        end
         if broom.installed then return true end
+        group:AddSlider("RunningDistance", {
+            Text = "Running distance from center",
+            Default = DEFAULT_RUNNING_DISTANCE,
+            Min = MIN_RUNNING_DISTANCE,
+            Max = MAX_RUNNING_DISTANCE,
+            Rounding = 0,
+        })
         group:AddToggle("AutoBroom", {
             Text = "Auto Broom",
             Default = false,
@@ -894,7 +873,6 @@ function Module.create(context)
         broom.enabled = false
         broom.stage = nil
         broom.waitingForBase = false
-        broom.externalReturnPending = false
         broom.sawDungeon = false
         broom.returnEpisode = false
         broom.lastChallenge = nil
@@ -919,22 +897,9 @@ function Module.create(context)
         broom.returnEpisode = true
         broom.returnToken = broom.returnToken + 1
         broom.waitingForBase = true
-        broom.externalReturnPending = false
         broom.sawDungeon = current ~= nil and current > 0
         disarmBroom()
-        broom.giveUpAt = os.clock() + BROOM_ARM_TIMEOUT
         broom.status = "broom return token armed before DUNGEON_RETURN_TOWN"
-        return true
-    end
-
-    function api:SetBroomSuspended(suspended)
-        if not broom.alive then return false end
-        broom.suspended = suspended == true
-        if broom.suspended then
-            broom.status = "broom paused for Alchemy"
-        else
-            broom.status = "broom resumed after Alchemy"
-        end
         return true
     end
 
@@ -949,7 +914,6 @@ function Module.create(context)
             transactionActive = broom.transactionActive,
             lastChallenge = broom.lastChallenge,
             configReady = broom.configReady,
-            suspended = broom.suspended,
             requestAttempts = broom.requestAttempts,
             activationCount = broom.activations,
             message = broom.status,
@@ -1059,14 +1023,7 @@ function Module.create(context)
                 .. " paused after repeated stall"
         end
 
-        local finalDestination = destination
-        local entryDirection = nil
-        local entryOffset = nil
-        if mode == "Walking" then
-            finalDestination, entryDirection, entryOffset =
-                resolveWalkingDestination(stage, stagePart, destination)
-        end
-        local finalDistance = planarDistance(finalDestination, root.Position)
+        local finalDistance = planarDistance(destination, root.Position)
         if mode == "Walking" and finalDistance <= 4 then
             stopMovement()
             return "stage " .. tostring(stage) .. " walking arrived"
@@ -1079,30 +1036,16 @@ function Module.create(context)
             and state.humanoid == humanoid
             and state.root == root
             and state.finalDestination ~= nil
-            and planarDistance(state.finalDestination, finalDestination) <= 0.25
+            and planarDistance(state.finalDestination, destination) <= 0.25
 
         if not sameRoute then
             stopMovement()
-            local initialDestination
-            local phase
-            if mode == "Walking" then
-                initialDestination, phase = chooseInitialDestination(
-                    stage,
-                    stagePart,
-                    root,
-                    destination,
-                    finalDestination,
-                    entryDirection,
-                    entryOffset
-                )
-            else
-                initialDestination, phase = chooseRunningInitialDestination(
-                    stage,
-                    stagePart,
-                    root,
-                    destination
-                )
-            end
+            local initialDestination, phase = chooseInitialDestination(
+                stage,
+                stagePart,
+                root,
+                destination
+            )
             state.active = true
             state.enteredStage = isOverFootprint(stagePart, root.Position)
             state.generation = state.generation + 1
@@ -1112,7 +1055,7 @@ function Module.create(context)
             state.humanoid = humanoid
             state.root = root
             state.destination = initialDestination
-            state.finalDestination = finalDestination
+            state.finalDestination = destination
             state.phase = phase
             state.lastPosition = root.Position
             state.lastMovedAt = now
@@ -1159,11 +1102,7 @@ function Module.create(context)
             end)
             if not moved then
                 resetAll()
-                return "stage "
-                    .. tostring(stage)
-                    .. " "
-                    .. string.lower(mode)
-                    .. " unavailable"
+                return "stage " .. tostring(stage) .. " walking unavailable"
             end
 
             state.bound = true
@@ -1201,10 +1140,10 @@ function Module.create(context)
         local distance = planarDistance(state.destination, root.Position)
         if state.phase == "align" and distance <= 4 then
             state.phase = "final"
-            state.destination = finalDestination
+            state.destination = destination
             state.lastPosition = root.Position
             state.lastMovedAt = now
-            distance = planarDistance(finalDestination, root.Position)
+            distance = planarDistance(destination, root.Position)
         end
 
         if mode == "Walking" and state.phase == "final" and distance <= 4 then
@@ -1238,22 +1177,14 @@ function Module.create(context)
         resetAll()
     end
 
-    -- Temporarily suspend the per-frame walking driver without forgetting the
-    -- prepared route or restarting EnterDelay. Alchemy uses this while it
-    -- performs its short hidden actor/finish interaction.
-    function api:PauseWalking()
-        stopMovement()
-    end
-
     function api:Stop()
         invalidateBroomTransaction()
         broom.alive = false
+        wand.alive = false
         broom.configReady = false
-        broom.suspended = false
         broom.enabled = false
         broom.returnEpisode = false
         broom.waitingForBase = false
-        broom.externalReturnPending = false
         broom.lastChallenge = nil
         disarmBroom()
         resetAll()

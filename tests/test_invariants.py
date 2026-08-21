@@ -46,16 +46,12 @@ class LocomotionInvariantTests(unittest.TestCase):
     def test_walking_detects_footprint_in_object_space(self):
         self.assertIn("PointToObjectSpace", self.source)
 
-    def test_walking_stops_halfway_between_entry_and_center(self):
-        self.assertIn("function Module._entryDirection2D", self.source)
-        self.assertIn("local directionSign = stage > 1 and 1 or -1", self.source)
-        self.assertIn("function Module._halfwayFootprintDistance", self.source)
-        self.assertIn("return edgeDistance * 0.5", self.source)
-        self.assertIn("resolveWalkingDestination", self.source)
-        self.assertIn("resolveStagePart(neighborStage)", self.source)
-        self.assertIn("centerDestination + entryDirection * halfwayDistance", self.source)
-        self.assertIn("state.finalDestination = finalDestination", self.source)
-        self.assertIn("state.destination = finalDestination", self.source)
+    def test_walking_finishes_at_the_magic_stage_center(self):
+        self.assertNotIn("resolveWalkingDestination", self.source)
+        self.assertNotIn("_halfwayFootprintDistance", self.source)
+        self.assertIn("local function chooseInitialDestination", self.source)
+        self.assertIn("state.finalDestination = destination", self.source)
+        self.assertIn("state.destination = destination", self.source)
 
     def test_running_orbits_the_stage_center_with_live_radius(self):
         core = read("games/magicloot.lua")
@@ -190,6 +186,9 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn('Default = 41, Min = 1, Max = 41', self.source)
         self.assertIn('invokeAction("PLAYER_REBIRTH")', self.source)
         self.assertNotIn('sendAction("PLAYER_REBIRTH")', self.source)
+        self.assertIn('configByName("rebirthConf")', self.source)
+        self.assertIn("row.LvNeed", self.source)
+        self.assertIn("playerLevel() < levelRequirement", self.source)
         self.assertIn('indexView.buildAllTabSnapshots,', self.source)
         self.assertIn('invokeAction("INDEX_CLAIM_REWARD", {', self.source)
         self.assertIn('tag = tag,', self.source)
@@ -326,10 +325,23 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn('group:AddLabel("Bag check: waiting...")', self.source)
         self.assertIn('"Bag: %s / %s • %s\\nAuto return: %s"', self.source)
 
-    def test_return_retries_are_bounded_and_visible(self):
-        self.assertIn("local MAX_RETURN_ATTEMPTS = 15", self.source)
-        self.assertIn("returnEpisode.blocked = true", self.source)
-        self.assertIn('notify("Auto return paused: "', self.source)
+    def test_return_keeps_retrying_until_replicated_confirmation(self):
+        self.assertNotIn("MAX_RETURN_ATTEMPTS", self.source)
+        self.assertNotIn("returnEpisode.blocked", self.source)
+        self.assertIn("now - returnEpisode.lastAttemptAt >= 2", self.source)
+
+    def test_pickup_prepares_the_prompt_like_magic(self):
+        self.assertIn("prompt.HoldDuration = 0", self.source)
+        self.assertIn("prompt.MaxActivationDistance = math.max(", self.source)
+        self.assertIn("activatePrompt(prompt, cfg.PickupRange)", self.source)
+
+    def test_selected_wand_is_stage_only_and_uses_stable_ids(self):
+        locomotion = read("games/magicloot_locomotion.lua")
+        self.assertIn('group:AddToggle("AutoEquipSelectedWand"', locomotion)
+        self.assertIn('group:AddDropdown("SelectedWand"', locomotion)
+        self.assertIn('if challenge == nil or challenge <= 0 then return end', locomotion)
+        self.assertIn('pcall(bridge[4], "EQUIP_SHOP_EQUIP", {', locomotion)
+        self.assertIn('loco:Install(wand, "Wand", selectedBridge)', self.source)
 
     def test_walking_reset_only_in_locomotion(self):
         self.assertNotIn("Enum.HumanoidStateType.Dead", self.source)

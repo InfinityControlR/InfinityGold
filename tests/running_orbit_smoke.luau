@@ -166,8 +166,8 @@ runningDistance = 20
 local resized = controller:Update("Running", 2, stagePart, root, center)
 assert(string.find(resized, "running 20.0 studs from center", 1, true) ~= nil)
 
--- Walking retains InfinityGold's own halfway-destination contract and never
--- jumps when it has reached that destination.
+-- Walking retains Magic's center-destination contract and never jumps when it
+-- has reached that destination.
 humanoid.Jump = false
 humanoid.lastState = nil
 root.Position = center
