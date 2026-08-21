@@ -3827,7 +3827,6 @@ return function(locomotionFactory, Library, Common)
                     Default = options.Default,
                     Multi = options.Multi,
                     MaxVisible = options.MaxVisible,
-                    DeselectTo = options.DeselectTo,
                     Callback = function(value) cfg[name] = value end,
                 })
                 return bind(name, element)
@@ -4369,7 +4368,6 @@ return function(locomotionFactory, Library, Common)
             Values = recipeValues,
             Default = "Best craftable",
             Multi = false,
-            DeselectTo = "Best craftable",
         })
         refreshCatalogDropdown(
             recipeDropdown,

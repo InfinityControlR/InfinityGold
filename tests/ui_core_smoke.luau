@@ -548,7 +548,6 @@ do
         },
         Default = "#42 old translated label",
         Multi = false,
-        DeselectTo = "42",
     })
     if descriptorDropdown:Get() ~= "42" then
         fail("descriptor dropdown did not preserve its stable numeric value")
@@ -567,23 +566,6 @@ do
     descriptorDropdown:Set("#77 another old label")
     if descriptorDropdown:Get() ~= "77" then
         fail("legacy dropdown selection was not migrated by numeric ID")
-    end
-    local descriptorHeader = descriptorFrame and descriptorFrame:FindFirstChild("Button")
-    descriptorHeader.MouseButton1Click:Fire()
-    local selectedDescriptorOption = nil
-    for _, child in ipairs(descriptorList:GetChildren()) do
-        if child.Name == "Option" and child.LayoutOrder == 2 then
-            selectedDescriptorOption = child
-            break
-        end
-    end
-    if selectedDescriptorOption == nil then
-        fail("cannot click the selected descriptor option")
-    else
-        selectedDescriptorOption.MouseButton1Click:Fire()
-        if descriptorDropdown:Get() ~= "42" then
-            fail("reselecting a single option did not restore its fallback")
-        end
     end
 
     local windowFrame = Library._windows[1] and Library._windows[1].Frame

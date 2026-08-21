@@ -95,8 +95,7 @@ the InfinityGold dashboard.
   is diagnostic rather than a veto because the server still validates the one
   selected ID. When every material predicate is false, a missing/stale rebirth
   helper cannot hide the resulting `alchemy-empty` outcome. It never walks
-  guessed recipe IDs. Clicking the currently selected named recipe again resets
-  the single-select dropdown to `Best craftable`. The game has one brewing slot,
+  guessed recipe IDs. The game has one brewing slot,
   so a live
   `brewing (one potion at a time)` state is an intentional wait for the current
   potion rather than a recipe-search delay.
