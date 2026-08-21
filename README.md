@@ -129,8 +129,9 @@ the InfinityGold dashboard.
   the selected value from 1–41, and waits until `leaderstats.Level` reaches the
   next `rebirthConf.LvNeed`. Auto Train can use a selected ground or the
   highest unlocked ground, moves to its zone, updates `TRAIN_ZONE_UPDATE` and
-  invokes `TRAIN_MANUAL_CLICK`; farming and training switches exclude one
-  another. Auto Return still handles the full temporary bag. Index claims are
+  invokes `TRAIN_MANUAL_CLICK`; enabling Auto Train immediately disables Auto
+  Broom and both farming switches, so its route is `Alchemy -> Sell -> Train`.
+  Auto Return still handles the full temporary bag. Index claims are
   built from live `IndexView` snapshots and online rewards are filtered through
   `OnlineBox` before individual claims.
 - **Potions and gear**: Auto Drink sends each selected potion inventory

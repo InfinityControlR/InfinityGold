@@ -4567,6 +4567,7 @@ return function(locomotionFactory, Library, Common)
                 if value then
                     setRegisteredToggle("AutoFarm", false)
                     setRegisteredToggle("AutoFarmSpecific", false)
+                    setRegisteredToggle("AutoBroom", false)
                 end
             end,
         })

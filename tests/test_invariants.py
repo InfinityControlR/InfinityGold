@@ -208,6 +208,13 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn('setRegisteredToggle("AutoFarm", false)', self.source)
         self.assertIn('setRegisteredToggle("AutoFarmSpecific", false)', self.source)
         self.assertIn('setRegisteredToggle("AutoTrain", false)', self.source)
+        train_toggle = self.source[
+            self.source.index('group:AddToggle("AutoTrain"') :
+            self.source.index('local trainGroundValues', self.source.index(
+                'group:AddToggle("AutoTrain"'
+            ))
+        ]
+        self.assertIn('setRegisteredToggle("AutoBroom", false)', train_toggle)
 
     def test_magic_potion_contract_uses_selected_inventory_only_id(self):
         self.assertIn('Common.parseIdSelection(cfg.DrinkPotions)', self.source)
