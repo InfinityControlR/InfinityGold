@@ -129,6 +129,18 @@ check("farm: clamp specific", Common.farmStageTarget(10, 99, true, 32) == 32)
 check("farm: default ceiling is 32", Common.farmStageTarget(40, 1, false) == 32)
 check("farm: nil cleared uses selected", Common.farmStageTarget(nil, 3, false, 32) == 3)
 
+local broomStage, released = Common.broomFarmStageTarget(28, 28, true)
+check("farm: Broom owns initial landing", broomStage == 28 and released == false)
+broomStage, released = Common.broomFarmStageTarget(29, 28, true)
+check("farm: progressive route releases Broom for next stage",
+    broomStage == 29 and released == true)
+broomStage, released = Common.broomFarmStageTarget(29, 28, false)
+check("farm: non-progressive route keeps Broom landing",
+    broomStage == 28 and released == false)
+broomStage, released = Common.broomFarmStageTarget(29, nil, true)
+check("farm: missing Broom route keeps normal target",
+    broomStage == 29 and released == false)
+
 local orbitX, orbitZ = Common.runningOrbitOffset(0, 12)
 check("running orbit: zero angle", math.abs(orbitX - 12) < 0.001
     and math.abs(orbitZ) < 0.001)

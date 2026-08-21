@@ -138,7 +138,9 @@ the InfinityGold dashboard.
   a new cycle starts automatically until room entry confirms success. The selected
   stage remains latched independently of that cycle counter, so confirmation
   after the third-attempt reset still releases the configured Farm mode with no
-  Enter Delay. A transient
+  Enter Delay. That override owns only the initial landing: once progressive
+  Auto Farm calculates a higher cleared+1 target, it releases Broom and continues
+  to the next stage with the normal per-stage timing. A transient
   nil during AutoReturn cannot leave `waitingForBase` latched.
 - **Progress**: Auto Rebirth uses the payload-free invoke contract, stops at
   the selected value from 1–41, and waits until `leaderstats.Level` reaches the

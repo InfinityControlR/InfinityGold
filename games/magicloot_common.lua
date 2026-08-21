@@ -109,6 +109,20 @@ function Common.farmStageTarget(cleared, selected, specific, maxStage)
     return math.clamp(math.max(clearedNext, startStage), 1, ceiling)
 end
 
+-- Broom owns only the initial landing stage. Progressive Auto Farm resumes as
+-- soon as its normal target advances beyond that landing; Farm Specific keeps
+-- its explicit route unchanged.
+function Common.broomFarmStageTarget(normalStage, broomStage, progressive)
+    local normal = math.max(1, math.floor(tonumber(normalStage) or 1))
+    local broom = tonumber(broomStage)
+    if broom == nil then return normal, false end
+    broom = math.max(1, math.floor(broom))
+    if progressive == true and normal > broom then
+        return normal, true
+    end
+    return broom, false
+end
+
 -- Local-space offset for Running's circular waypoints. Keeping the trigonometry
 -- pure makes the orbit contract testable without Roblox services.
 function Common.runningOrbitOffset(angle, radius)

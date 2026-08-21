@@ -78,7 +78,14 @@ print("broom_teleport_fast_start_smoke=ok")
             movement.index("local stagePartInstance = stagePart(stage)"),
             movement.index("return loco:Update("),
         )
-        self.assertIn("stage = broomFarmRoute.stage", movement)
+        self.assertIn("Common.broomFarmStageTarget(", movement)
+        self.assertIn("if releaseBroomRoute then", movement)
+        self.assertIn("broomFarmRoute.stage = nil", movement)
+        self.assertIn("broomFarmRoute.bypassEnterDelay = false", movement)
+        self.assertLess(
+            movement.index("if releaseBroomRoute then"),
+            movement.index("local stagePartInstance = stagePart(stage)"),
+        )
         self.assertIn("bypassEnterDelay", movement)
         self.assertIn("groundPoint(stagePartInstance),\n                    bypassEnterDelay", movement)
         self.assertEqual(

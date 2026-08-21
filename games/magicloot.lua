@@ -3600,8 +3600,15 @@ return function(locomotionFactory, Library, Common)
             cfg.AutoFarmSpecific == true,
             MAX_FARM_STAGE
         )
-        if broomFarmRoute.stage ~= nil then
-            stage = broomFarmRoute.stage
+        local releaseBroomRoute
+        stage, releaseBroomRoute = Common.broomFarmStageTarget(
+            stage,
+            broomFarmRoute.stage,
+            cfg.AutoFarm == true and cfg.AutoFarmSpecific ~= true
+        )
+        if releaseBroomRoute then
+            broomFarmRoute.stage = nil
+            broomFarmRoute.bypassEnterDelay = false
         end
 
         local mode = cfg.FarmMode
