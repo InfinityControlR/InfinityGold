@@ -2274,13 +2274,12 @@ return function(locomotionFactory, Library, Common)
                     alchemyTelemetry.status = "pickup unconfirmed"
                 end
                 if not confirmed then return false, confirmation end
-                -- The station has one brewing slot. Once pickup frees it, start
-                -- the next requested brew in this same base window instead of
-                -- sleeping for another worker cycle (which can lose to Broom's
-                -- one-second return delay).
+                -- A confirmed pickup closes this Alchemy pass. Sell and Broom
+                -- receive their turns before a later base return can start a
+                -- new potion; otherwise a failed replacement selection leaves
+                -- the strict priority machine stuck in Alchemy indefinitely.
                 observeAlchemyLocation(challenge)
-                readyBefore = false
-                if not cfg.AutoBrew then return true end
+                return true
             end
             alchemyPickupNextAttemptAt = 0
         elseif readyBefore == true then
@@ -2468,6 +2467,7 @@ return function(locomotionFactory, Library, Common)
 
     local function alchemyPriorityOutcome()
         if alchemyTelemetry.confirmedAction == "brew" then return "brew" end
+        if alchemyTelemetry.confirmedAction == "pickup" then return "pickup" end
         if alchemyTelemetry.inProgress == true
             and alchemyTelemetry.status == "brewing (one potion at a time)"
         then
@@ -2496,9 +2496,6 @@ return function(locomotionFactory, Library, Common)
         then
             return "alchemy-empty"
         end
-        if alchemyTelemetry.confirmedAction == "pickup" and not cfg.AutoBrew then
-            return "pickup"
-        end
         return nil
     end
 
@@ -2524,6 +2521,7 @@ return function(locomotionFactory, Library, Common)
         end
 
         local alchemySettled = confirmedActionThisCycle == "brew"
+            or confirmedActionThisCycle == "pickup"
             or confirmedActionThisCycle == "alchemy-empty"
             or confirmedActionThisCycle == "potion-ready"
         sellTelemetry.brewInProgress = nil
@@ -2552,9 +2550,8 @@ return function(locomotionFactory, Library, Common)
             sellTelemetry.authorization = "already brewing"
         elseif cfg.AutoBrew then
             -- A craft can complete so quickly that replicated state moves
-            -- directly from idle to ready. A typed confirmation from THIS
-            -- worker tick still proves its ingredients were consumed. Pickup
-            -- confirmations never set this permission.
+            -- directly from idle to ready. A typed brew or pickup confirmation
+            -- from THIS worker tick proves the current Alchemy pass settled.
             sellTelemetry.authorization = confirmedActionThisCycle
         end
 
@@ -2563,10 +2560,9 @@ return function(locomotionFactory, Library, Common)
         local sold, count, err = sellAllMaterials(automaticSellSelection(), function()
             local brewStateValidated = alchemySettled
             if cfg.AutoBrew and not alchemySettled then
-                -- A detached sell scan can overlap pickup/the next brew.
-                -- Re-read the authoritative state immediately before SELL so
-                -- a stale "already brewing" grant cannot sell ingredients in
-                -- the gap after pickup and before a new craft starts.
+                -- A detached sell scan can overlap a running brew. Re-read the
+                -- authoritative state immediately before SELL so a stale
+                -- "already brewing" grant cannot sell ingredients after it ends.
                 local currentAlchemy = resolveAlchemy()
                 if currentAlchemy == nil then return false, "waiting for Alchemy" end
                 local currentProgress = alchemyState(
@@ -4459,7 +4455,7 @@ return function(locomotionFactory, Library, Common)
                 .. "Best waits only until those materials appear in the permanent "
                 .. "999-slot Bag, then sends the highest material-positive recipe in "
                 .. "that first base cycle. It never probes guessed recipe IDs one by "
-                .. "one. Pickup can chain the next brew immediately. Craft and pickup "
+                .. "one. Confirmed pickup releases Sell, then Broom. Craft and pickup "
                 .. "are remote-only and never move the character; only one potion can "
                 .. "brew at a time.",
         })

@@ -620,26 +620,25 @@ assert(pauseCalls == 0 and resumeCalls == 0,
     "remote pickup paused or resumed character movement")
 assert(refreshCalls == 3, "pickup did not refresh PotionBrewingGame")
 
--- A ready potion and the next craft share one base window. Pickup alone is not
--- the typed outcome: when Auto Brew remains enabled the same cycle must finish
--- by confirming the replacement brew.
+-- A confirmed pickup closes this Alchemy pass even while Auto Brew remains on.
+-- Sell and Broom must receive their turns before a later base return starts
+-- another potion.
 cfg.AutoBrew = true
 cfg.AutoPickupPotion = true
 inProgress = false
 readyForPickup = true
 remoteMode = "accept"
 resetAlchemyRecovery()
-local callsBeforePickupChain = #calls
-local refreshBeforePickupChain = refreshCalls
+local callsBeforeTerminalPickup = #calls
+local refreshBeforeTerminalPickup = refreshCalls
 sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil
-    and #calls == callsBeforePickupChain + 2
-    and calls[callsBeforePickupChain + 1].action
+    and #calls == callsBeforeTerminalPickup + 1
+    and calls[callsBeforeTerminalPickup + 1].action
         == "ALCHEMY_PICKUP_FINISH_POTION"
-    and calls[callsBeforePickupChain + 2].action == "ALCHEMY_CRAFT_RECIPE"
-    and alchemyTelemetry.confirmedAction == "brew"
-    and refreshCalls == refreshBeforePickupChain + 2,
-    "pickup did not chain the next brew in the same base cycle")
+    and alchemyTelemetry.confirmedAction == "pickup"
+    and refreshCalls == refreshBeforeTerminalPickup + 1,
+    "confirmed pickup did not terminate the current Alchemy pass")
 
 cfg.AutoBrew = true
 cfg.AutoPickupPotion = false
@@ -912,7 +911,8 @@ assert(sent == true and craftError == nil
 
 -- A brew already in progress belongs to the single station slot, not to the
 -- staged recipe we just proved from this Bag. Seeing that slot occupied at
--- base must preserve #17 so the ready pickup can chain #17 in the same cycle.
+-- base must preserve #17 until the ready potion is collected; pickup itself
+-- closes the pass instead of consuming the candidate immediately.
 inProgress = false
 readyForPickup = false
 cfg.AutoPickupPotion = true
@@ -947,34 +947,21 @@ end
 sent, craftError = runAlchemyCycle()
 pickupConfirmationHook = function() end
 assert(sent == true and craftError == nil
-    and #calls == callsBeforeOccupiedSlot + 2
+    and #calls == callsBeforeOccupiedSlot + 1
     and #bag == bagRowsBeforePotionPickup + 1
     and bag[#bag].tp == 9
     and calls[callsBeforeOccupiedSlot + 1].action
         == "ALCHEMY_PICKUP_FINISH_POTION"
-    and calls[callsBeforeOccupiedSlot + 2].action == "ALCHEMY_CRAFT_RECIPE"
-    and calls[callsBeforeOccupiedSlot + 2].payload.recipeId == 17
-    and alchemyTelemetry.confirmedAction == "brew",
-    "pickup did not preserve and consume staged #17 in the same base cycle: "
+    and alchemyTelemetry.confirmedAction == "pickup",
+    "pickup did not close the occupied-slot Alchemy pass: "
         .. tostring(sent) .. "/" .. tostring(craftError)
         .. " calls=" .. tostring(#calls - callsBeforeOccupiedSlot)
-        .. " second=" .. tostring(
-            calls[callsBeforeOccupiedSlot + 2] ~= nil
-                and calls[callsBeforeOccupiedSlot + 2].action
-                or nil
-        )
-        .. " recipe=" .. tostring(
-            calls[callsBeforeOccupiedSlot + 2] ~= nil
-                and calls[callsBeforeOccupiedSlot + 2].payload ~= nil
-                and calls[callsBeforeOccupiedSlot + 2].payload.recipeId
-                or nil
-        )
         .. " confirmed=" .. tostring(alchemyTelemetry.confirmedAction)
         .. " status=" .. tostring(alchemyTelemetry.status))
 
 -- The inverse race is material: if a tp=2 row lands while pickup is being
--- confirmed, the stage fingerprint is stale. Keep the pickup, but do not send
--- #17 from the older Bag; normal base sync must freshly choose #19 instead.
+-- confirmed, the stage fingerprint is stale. Keep the pickup, invalidate #17,
+-- and leave fresh recipe selection to the next Alchemy pass.
 inProgress = false
 readyForPickup = false
 resetAlchemyRecovery()
@@ -1003,14 +990,12 @@ pickupConfirmationHook = function() end
 assert(sent == true and craftError == nil
     and #bag == bagRowsBeforeMaterialPickup + 1
     and bag[#bag].tp == 2
-    and #calls == callsBeforeMaterialPickup + 2
+    and #calls == callsBeforeMaterialPickup + 1
     and calls[callsBeforeMaterialPickup + 1].action
         == "ALCHEMY_PICKUP_FINISH_POTION"
-    and calls[#calls].action == "ALCHEMY_CRAFT_RECIPE"
-    and calls[#calls].payload.recipeId == 19
-    and alchemyTelemetry.confirmedAction == "brew"
+    and alchemyTelemetry.confirmedAction == "pickup"
     and alchemyTelemetry.stageCandidateId == nil,
-    "a tp=2 pickup did not immediately rank and craft fresh recipe #19")
+    "a tp=2 pickup did not close the pass and invalidate stale stage evidence")
 
 -- A final pickup can replicate after the last stage scan but before challenge
 -- flips to zero. That newer Bag fingerprint invalidates the cached #17: the

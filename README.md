@@ -83,17 +83,18 @@ the InfinityGold dashboard.
   selling runs only at base through a strict `Alchemy -> Sell -> Broom` state
   machine. Alchemy releases Sell only after a brew is confirmed/already brewing,
   a finished potion occupies the slot, or a non-empty valid recipe catalog proves
-  that no recipe is craftable. Sell releases Broom only after a follow-up inventory
+  that no recipe is craftable, or a finished potion is picked up successfully.
+  Sell releases Broom only after a follow-up inventory
   scan reports that no configured item remains sellable; transport success alone
-  is not confirmation. A pickup confirmation alone never unlocks selling. Dungeon
+  is not confirmation. A confirmed pickup closes the current Alchemy pass and
+  never chains another brew before Sell/Broom receive their turns. Dungeon
   drops live in the small temporary `LimitBag` while farming and move into the
   visible 999-slot `PlayerData.Bag` only at base. Best Craftable watches that
   handoff, refreshes the local Alchemy facade and sends the highest recipe whose
   material predicate is positive in the first base cycle. A stale rebirth hint
   is diagnostic rather than a veto because the server still validates the one
-  selected ID. It never walks guessed recipe IDs. A confirmed pickup chains the
-  next brew in the same base cycle without invalidating the unchanged material
-  snapshot. The game has one brewing slot, so a live
+  selected ID. It never walks guessed recipe IDs. The game has one brewing slot,
+  so a live
   `brewing (one potion at a time)` state is an intentional wait for the current
   potion rather than a recipe-search delay.
   Pickup prepares each real prompt with zero hold duration and expands its

@@ -59,6 +59,73 @@ ALCHEMY_WORKER = AUTO_SELL_OPTIONS + BASE_PRIORITY + core_slice(
 
 
 class SellBrewFlowTests(unittest.TestCase):
+    def test_valid_zero_craftable_round_releases_sell_and_broom(self):
+        fixture = f"""
+local sessionAlive = true
+local configReady = true
+local cfg = {{
+    AutoBrew = true,
+    AutoPickupPotion = true,
+    BrewRecipe = "Best craftable",
+    AutoSell = true,
+    AutoSellSpecific = false,
+    SellItems = {{}},
+}}
+local fakeClock = 0
+local os = {{ clock = function() return fakeClock end }}
+local alchemyTelemetry = {{
+    confirmedAction = nil,
+    inProgress = false,
+    status = "no recipe candidate",
+    checkTotal = 4,
+    craftable = 0,
+    predicateErrors = 0,
+    ready = false,
+}}
+local sellTelemetry = {{ status = "waiting", lastError = nil }}
+local events = {{}}
+
+local function playerNumber(name)
+    assert(name == "InDungeonChallenge")
+    return 0
+end
+local function observeAlchemyLocation(_challenge) end
+local function alchemyInventoryTransferPending() return false end
+local function resetAlchemyRecovery() end
+local function clearAlchemyStageCandidate() end
+local function runAlchemyCycle()
+    table.insert(events, "alchemy-empty")
+    return false, "no recipe can be crafted"
+end
+local function runAutoSellCycle(authorization)
+    assert(authorization == "alchemy-empty",
+        "zero-material round lost its typed authorization")
+    table.insert(events, "sell-empty")
+    sessionAlive = false
+    return false, 0, "nothing to sell"
+end
+
+local task = {{}}
+task.spawn = function(callback) callback() end
+task.wait = function(seconds) fakeClock += seconds end
+
+{ALCHEMY_OUTCOME}
+{ALCHEMY_WORKER}
+
+assert(table.concat(events, ",") == "alchemy-empty,sell-empty",
+    "empty round did not preserve Alchemy -> Sell order")
+assert(basePriority.phase == "broom",
+    "valid zero-craftable round left Broom blocked")
+print("empty_round_priority_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"empty-round priority smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("empty_round_priority_smoke=ok", completed.stdout)
+
     def test_worker_enforces_alchemy_then_confirmed_sell_then_broom(self):
         fixture = f"""
 local sessionAlive = true
@@ -162,6 +229,10 @@ alchemyTelemetry.predicateErrors = 0
 alchemyTelemetry.status = "brewing (one potion at a time)"
 alchemyTelemetry.inProgress = true
 assert(alchemyPriorityOutcome() == "brew")
+alchemyTelemetry.confirmedAction = "pickup"
+assert(alchemyPriorityOutcome() == "pickup",
+    "a confirmed pickup did not close the current Alchemy phase")
+alchemyTelemetry.confirmedAction = nil
 alchemyTelemetry.inProgress = false
 alchemyTelemetry.status = "potion ready for pickup"
 cfg.AutoPickupPotion = false
@@ -222,15 +293,15 @@ assert(runAutoSellCycle("alchemy-empty") == true and scans == 1,
     "verified empty Alchemy did not authorize Sell")
 assert(runAutoSellCycle("potion-ready") == true and scans == 2,
     "a completed potion did not authorize Sell")
-assert(runAutoSellCycle("pickup") == false and scans == 2,
-    "pickup alone incorrectly authorized Sell while AutoBrew remained on")
+assert(runAutoSellCycle("pickup") == true and scans == 3,
+    "confirmed pickup did not authorize the following Sell phase")
 inProgress = true
-assert(runAutoSellCycle(nil) == true and scans == 3,
+assert(runAutoSellCycle(nil) == true and scans == 4,
     "authoritative in-progress state did not authorize Sell")
 challenge = 4
-assert(runAutoSellCycle("brew") == false and scans == 3,
+assert(runAutoSellCycle("brew") == false and scans == 4,
     "Sell escaped the base gate")
-assert(sales == 3)
+assert(sales == 4)
 print("terminal_sell_authorization_smoke=ok")
 """
         completed = run_luau(fixture)
