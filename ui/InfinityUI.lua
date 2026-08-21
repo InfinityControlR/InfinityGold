@@ -1247,6 +1247,7 @@ function Library:CreateWindow(options)
         function section:AddDropdown(dropdownOptions)
             dropdownOptions = type(dropdownOptions) == "table" and dropdownOptions or {}
             local multi = dropdownOptions.Multi == true
+            local deselectTo = dropdownOptions.DeselectTo
             local values = {}
             local valueLabels = {}
             local labelValues = {}
@@ -1575,7 +1576,17 @@ function Library:CreateWindow(options)
                         if multi then
                             selected[entry] = not selected[entry] or nil
                         else
-                            selected = { [entry] = true }
+                            local deselectValue = resolveValue(deselectTo)
+                            if deselectValue ~= nil
+                                and valueLabels[deselectValue] == nil
+                            then
+                                deselectValue = nil
+                            end
+                            if selected[entry] and deselectValue ~= nil then
+                                selected = { [deselectValue] = true }
+                            else
+                                selected = { [entry] = true }
+                            end
                         end
                         emit()
                         rebuildList()

@@ -255,6 +255,18 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn('refreshCatalogDropdown(\n            recipeDropdown,', self.source)
         self.assertIn('refreshCatalogDropdown(\n            potionDropdown,', self.source)
 
+    def test_brew_recipe_reselection_restores_best_craftable(self):
+        wrapper = self.source[
+            self.source.index("            AddDropdown = function") :
+            self.source.index("            AddSlider = function")
+        ]
+        recipe = self.source[
+            self.source.index('        local recipeDropdown = group:AddDropdown("BrewRecipe"') :
+            self.source.index('        group:AddToggle("AutoDrinkPotion"')
+        ]
+        self.assertIn("DeselectTo = options.DeselectTo", wrapper)
+        self.assertIn('DeselectTo = "Best craftable"', recipe)
+
     def test_legacy_unlimited_rebirth_setting_migrates_to_magic_limit(self):
         self.assertIn('decoded.RebirthLimit = 41', self.source)
 
@@ -567,6 +579,10 @@ class DropdownTests(unittest.TestCase):
         self.assertIn('Text = valueLabels[entry] or entry', self.source)
         self.assertIn('table.insert(chosen, entry)', self.source)
         self.assertIn('string.match(candidate, "^#?(%d+)%s+")', self.source)
+
+    def test_single_reselection_can_restore_a_configured_fallback(self):
+        self.assertIn("local deselectTo = dropdownOptions.DeselectTo", self.source)
+        self.assertIn("if selected[entry] and deselectValue ~= nil", self.source)
 
     def test_arrow_sits_inside_the_header(self):
         self.assertIn("Position = UDim2.new(1, -10, 0.5, 0)", self.source)
