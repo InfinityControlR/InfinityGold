@@ -341,7 +341,7 @@ local root = setmetatable({{ Parent = {{}} }}, {{
     end,
 }})
 local function characterParts()
-    return {{ root = root }}
+    error("remote-only Alchemy must not inspect the character")
 end
 
 local inProgress = false
@@ -403,10 +403,10 @@ local alchemy = {{
         return recipes
     end,
     ResolveBrewActorCFrame = function()
-        return brewActor
+        error("remote-only brew must not resolve the actor")
     end,
     ResolveFinishSpawnCFrame = function()
-        return finishActor
+        error("remote-only pickup must not resolve the actor")
     end,
 }}
 local function resolveGetData() return {{ Alchemy = alchemy }} end
@@ -555,14 +555,12 @@ assert(potionConfReads == 0, "potionConf incorrectly replaced the recipe list")
 assert(potionFindCalls == 12 and translationCalls == 15,
     "recipe display metadata was not localized independently of craft data: "
         .. tostring(potionFindCalls) .. "/" .. tostring(translationCalls))
-assert(calls[1].root.name == "brew actor+offset",
-    "craft did not visit the Magic brew actor")
-assert(root.CFrame.name == "brew actor+offset",
-    "craft did not remain at the Magic brew actor")
-assert(cframeWrites == writesBeforeCraft + 1,
-    "craft did not write the physical Alchemy destination")
-assert(waits[1] == 0.2 and waits[2] == 0.4 and waits[3] == 0.25,
-    "physical craft cadence changed")
+assert(calls[1].root == home and root.CFrame == home,
+    "remote craft moved the player")
+assert(cframeWrites == writesBeforeCraft,
+    "remote craft wrote Root.CFrame")
+assert(waits[1] == 0.4 and waits[2] == 0.25,
+    "remote craft cadence changed")
 assert(pauseCalls == 0 and resumeCalls == 0,
     "remote craft paused or resumed character movement")
 assert(refreshCalls == 2,
@@ -612,15 +610,12 @@ assert(alchemyTelemetry.confirmedAction == "pickup",
 assert(#calls == 2 and calls[2].action == "ALCHEMY_PICKUP_FINISH_POTION",
     "pickup did not use the verified InvokeServer action")
 assert(calls[2].payload == nil, "pickup unexpectedly sent a payload")
-assert(calls[2].root.name == "finish actor+offset",
-    "pickup did not visit the Magic finish actor")
-assert(root.CFrame.name == "finish actor+offset",
-    "pickup did not remain at the Magic finish actor")
-assert(cframeWrites >= writesBeforePickup + 1,
-    "pickup did not write the physical Alchemy destination")
-assert(waits[1] == 0.2 and waits[2] == 0.2 and waits[3] == 0.5
-    and waits[4] == 0.25,
-    "physical pickup cadence changed: " .. table.concat(waits, ","))
+assert(calls[2].root == home and root.CFrame == home,
+    "remote pickup moved the player")
+assert(cframeWrites == writesBeforePickup,
+    "remote pickup wrote Root.CFrame")
+assert(waits[1] == 0.5 and waits[2] == 0.25,
+    "remote pickup cadence changed: " .. table.concat(waits, ","))
 assert(pauseCalls == 0 and resumeCalls == 0,
     "remote pickup paused or resumed character movement")
 assert(refreshCalls == 3, "pickup did not refresh PotionBrewingGame")
@@ -758,8 +753,6 @@ inProgress = false
 cfg.BrewRecipe = "Best craftable"
 resetAlchemyRecovery()
 
-local validBrewResolver = alchemy.ResolveBrewActorCFrame
-alchemy.ResolveBrewActorCFrame = nil
 root.CFrame = home
 local callsBeforeTravelFailure = #calls
 fakeClock = 3
@@ -768,11 +761,10 @@ sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil,
     "remote craft incorrectly required ResolveBrewActorCFrame")
 assert(#calls == callsBeforeTravelFailure + 1 and root.CFrame == home,
-    "missing actor resolver did not preserve the fail-open remote fallback")
-assert(alchemyTelemetry.travel == "remote fallback",
-    "missing actor resolver did not report the fallback")
+    "remote craft unexpectedly depended on the actor resolver")
+assert(alchemyTelemetry.travel == "remote",
+    "remote Alchemy reported a physical trip")
 
-alchemy.ResolveBrewActorCFrame = validBrewResolver
 remoteMode = "unconfirmed"
 fakeClock = 5
 inProgress = false
@@ -784,10 +776,10 @@ assert(sent == false and craftError == "brew was not confirmed by game state",
 assert(alchemyTelemetry.confirmed == false
     and alchemyTelemetry.status == "brew unconfirmed",
     "unconfirmed craft diagnostics are misleading")
-assert(root.CFrame.name == "brew actor+offset",
-    "unconfirmed craft did not retain the Magic actor visit")
-assert(waits[1] == 0.2 and waits[2] == 0.4 and waits[3] == 0.25,
-    "physical confirmation polling cadence changed")
+assert(root.CFrame == home,
+    "unconfirmed remote craft moved the player")
+assert(waits[1] == 0.4 and waits[2] == 0.25,
+    "remote confirmation polling cadence changed")
 
 fakeClock = 10
 remoteMode = "accept"
@@ -915,7 +907,7 @@ assert(sent == true and craftError == nil
     and calls[#calls].action == "ALCHEMY_CRAFT_RECIPE"
     and calls[#calls].payload.recipeId == 17
     and calls[#calls].clock - baseReturnAt < 1
-    and cframeWrites > writesBeforeStageThirteen,
+    and cframeWrites == writesBeforeStageThirteen,
     "post-stage Best did not use the exact same-epoch recipe in its first remote")
 
 -- A brew already in progress belongs to the single station slot, not to the
@@ -1288,9 +1280,8 @@ assert(sent == false and string.find(craftError, "fixture rejection", 1, true) ~
 assert(#calls == callsBeforeExplicitRejection + 1
     and calls[#calls].payload.recipeId == 4,
     "one rejected cycle emitted zero or multiple recipe requests")
-assert(root.CFrame.name == "brew actor+offset"
-    and alchemyTelemetry.confirmed == false,
-    "rejected craft lost the Magic actor visit or confirmation state")
+assert(root.CFrame == home and alchemyTelemetry.confirmed == false,
+    "rejected remote craft moved the player or lost confirmation state")
 
 -- The live rebirth facade can be stale even though CanCraftRecipe sees the
 -- transferred materials and the server accepts the same manually selected id.
@@ -1472,9 +1463,8 @@ local resumesBeforeTimeout = resumeCalls
 sent, craftError = runAlchemyCycle()
 assert(sent == false and string.find(craftError, "timed out", 1, true) ~= nil,
     "full Alchemy cycle did not expose its bounded timeout")
-assert(root.CFrame.name == "brew actor+offset"
-    and alchemyInvokeLease.pending == true,
-    "remote timeout lost the Magic actor visit or network lease")
+assert(root.CFrame == home and alchemyInvokeLease.pending == true,
+    "remote timeout moved the player or lost the network lease")
 assert(#delayed == 0 and resumeCalls == resumesBeforeTimeout,
     "remote timeout scheduled a physical travel watchdog")
 assert(alchemyInvokeLease.pending == true,
@@ -1582,8 +1572,11 @@ print("alchemy_flow_smoke=ok")
             "    local function runAlchemyCycle()",
             "    -- Attack -----------------------------------------------------------------",
         )
-        self.assertIn('visitAlchemyStation(alchemy, "ResolveBrewActorCFrame")', cycle)
-        self.assertIn('visitAlchemyStation(alchemy, "ResolveFinishSpawnCFrame")', cycle)
+        self.assertIn('alchemyTelemetry.travel = "remote"', cycle)
+        self.assertNotIn("visitAlchemyStation", cycle)
+        self.assertNotIn("ResolveBrewActorCFrame", cycle)
+        self.assertNotIn("ResolveFinishSpawnCFrame", cycle)
+        self.assertNotIn("root.CFrame", cycle)
         self.assertIn('playerNumber("InDungeonChallenge")', cycle)
         self.assertIn("updateStageAlchemyCandidate(stageAlchemy)", cycle)
         self.assertIn('or "collecting in temporary bag"', cycle)

@@ -1324,31 +1324,6 @@ return function(locomotionFactory, Library, Common)
         return alchemy
     end
 
-    -- Magic visits the replicated Alchemy actor immediately before each
-    -- craft/pickup request. Keep the visit fail-open: if the game has not
-    -- exposed the resolver yet, the verified remote path can still retry.
-    local function visitAlchemyStation(alchemy, resolverName)
-        alchemyTelemetry.travel = "remote fallback"
-        if type(alchemy) ~= "table" then return false, "Alchemy unavailable" end
-        local resolver = alchemy[resolverName]
-        if type(resolver) ~= "function" then
-            return false, resolverName .. " unavailable"
-        end
-        local parts = characterParts()
-        if parts == nil then return false, "character unavailable" end
-        local resolved, destination = pcall(resolver)
-        if not resolved or typeof(destination) ~= "CFrame" then
-            return false, "Alchemy destination unavailable"
-        end
-        local moved, moveError = pcall(function()
-            parts.root.CFrame = destination + Vector3.new(0, 3, 0)
-        end)
-        if not moved then return false, tostring(moveError) end
-        alchemyTelemetry.travel = "physical"
-        task.wait(0.2)
-        return true
-    end
-
     local function rawAlchemyRecipes(alchemy)
         -- GetRecipeList is the Alchemy-owned recipe source used by the game.
         -- potionConf contains potion item definitions, not the raw recipe
@@ -2186,8 +2161,8 @@ return function(locomotionFactory, Library, Common)
             alchemy
         )
         if reconciled then return reconciledOk, reconciledError end
-        -- Match Magic's physical station visit while retaining the shared
-        -- single-flight network lease and replicated-state confirmation.
+        -- Alchemy is remote-only in this experimental build. The replicated
+        -- state remains the authority; no character movement is performed.
         if type(alchemy.CanUseAlchemy) == "function" then
             local canUseOk, canUse = pcall(alchemy.CanUseAlchemy, player)
             if canUseOk then
@@ -2246,7 +2221,7 @@ return function(locomotionFactory, Library, Common)
                     return false, "pickup cancelled"
                 end
                 alchemyTelemetry.pickupAttempts += 1
-                visitAlchemyStation(alchemy, "ResolveFinishSpawnCFrame")
+                alchemyTelemetry.travel = "remote"
                 local sent, response, err, requestPending, didInvoke =
                     invokeAlchemyAction(
                         "ALCHEMY_PICKUP_FINISH_POTION"
@@ -2415,7 +2390,7 @@ return function(locomotionFactory, Library, Common)
             return false, "brew cancelled"
         end
         alchemyTelemetry.craftAttempts += 1
-        visitAlchemyStation(alchemy, "ResolveBrewActorCFrame")
+        alchemyTelemetry.travel = "remote"
         local recoverySnapshot = {
             key = alchemyRecovery.key,
             candidateIds = table.clone(alchemyRecovery.candidateIds),
@@ -4485,8 +4460,8 @@ return function(locomotionFactory, Library, Common)
                 .. "999-slot Bag, then sends the highest material-positive recipe in "
                 .. "that first base cycle. It never probes guessed recipe IDs one by "
                 .. "one. Pickup can chain the next brew immediately. Craft and pickup "
-                .. "visit the same replicated actor positions used by Magic; only one "
-                .. "potion can brew at a time.",
+                .. "are remote-only and never move the character; only one potion can "
+                .. "brew at a time.",
         })
     end
 

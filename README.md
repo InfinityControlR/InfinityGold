@@ -196,8 +196,7 @@ These surfaces need confirmation inside Roblox (fail-open until then):
   positive `CanMeetRecipeRebirth` is preferred, but its false/error result no
   longer hides a material-positive recipe that manual selection can submit.
   Craft and pickup use the verified InvokeServer actions only when
-  `InDungeonChallenge <= 0`. Immediately before each request they visit Magic's
-  `ResolveBrewActorCFrame` or `ResolveFinishSpawnCFrame` destination plus three
-  studs vertically; a missing resolver remains a fail-open remote fallback.
+  `InDungeonChallenge <= 0`. This test build is completely remote-only: it never
+  resolves the actor positions and never writes the character CFrame.
   Automatic selling waits for a terminal Alchemy outcome; Broom waits for the
   subsequent empty Sell rescan.
