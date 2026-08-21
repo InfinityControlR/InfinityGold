@@ -3257,6 +3257,17 @@ return function(locomotionFactory, Library, Common)
             return
         end
 
+        local objectiveAllowed, objectiveStatus = broomEconomyGate()
+        if not objectiveAllowed then
+            -- Do not prepare a route while Alchemy/Sell own the base. Reset
+            -- both implementations so EnterDelay starts from its full
+            -- configured value only after the next objective is released.
+            stopMovementModes()
+            enterDelay.stage = nil
+            setMovementStatus(objectiveStatus)
+            return
+        end
+
         local cleared = playerNumber("DungeonRunMaxClear") or 0
         local stage = Common.farmStageTarget(
             cleared,
@@ -3742,7 +3753,8 @@ return function(locomotionFactory, Library, Common)
 
     task.spawn(function() -- train
         while sessionAlive do
-            if cfg.AutoTrain then
+            local trainPriorityAllowed = broomEconomyGate()
+            if cfg.AutoTrain and trainPriorityAllowed then
                 local trainId = selectedTrainGroundId()
                 if trainId ~= nil and trainId > 0 then
                     local ground = trainGroundPart(trainId)
@@ -4707,7 +4719,9 @@ return function(locomotionFactory, Library, Common)
                 .. "999-slot Bag, aggregates duplicate material rows and compares "
                 .. "MID/NeedCount for all recipes locally. It sends one highest "
                 .. "available recipe in that first base cycle, never recipe IDs one by "
-                .. "one. Confirmed pickup releases Sell, then Broom. Craft and pickup "
+                .. "one. A pickup refills the slot immediately when another Best is "
+                .. "available; otherwise it releases Sell, then Broom. Objective "
+                .. "delays start only after that base economy sequence. Craft and pickup "
                 .. "are remote-only and never move the character; only one potion can "
                 .. "brew at a time.",
         })

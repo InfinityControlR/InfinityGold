@@ -115,8 +115,8 @@ assert(broomStage("32") == nil)
 updateBroom()
 assert(#calls == 0 and broom.status == "broom waiting for config")
 
--- A saved Auto Broom value creates an activation edge only after config load,
--- then waits one second before the first stage-only request.
+-- A saved Auto Broom value creates an activation edge only after config load.
+-- Its one-second delay must not start until Alchemy/Sell release the gate.
 assert(api:OnConfigLoaded())
 updateBroom()
 assert(broom.armed and #calls == 0)
@@ -129,14 +129,21 @@ assert(#calls == 0 and broom.status == "broom waiting for alchemy",
     "Broom ignored the Alchemy/Sell priority gate")
 priorityAllowed = true
 updateBroom()
+assert(#calls == 0 and broom.delayStarted and broom.readyAt == 2,
+    "initial delay was consumed while the priority gate was closed")
+now = 1.99
+updateBroom()
+assert(#calls == 0)
+now = 2
+updateBroom()
 assert(#calls == 1 and calls[1].action == "关卡跳关请求" and calls[1].stage == 28)
 
 -- A request with no room confirmation remains armed and retries after five
 -- seconds, never earlier.
-now = 5.99
+now = 6.99
 updateBroom()
 assert(#calls == 1)
-now = 6
+now = 7
 updateBroom()
 assert(#calls == 2 and broom.requestAttempts == 2)
 
@@ -187,8 +194,20 @@ priorityAllowed = false
 now = 80
 updateBroom()
 assert(broom.waitingForBase == false and broom.armed == true
+    and broom.delayStarted == false and broom.readyAt == 0
     and broom.status == "broom waiting for alchemy",
     "missed >0 -> 0 replication transition stranded Broom")
+priorityAllowed = true
+updateBroom()
+assert(#calls == 6 and broom.delayStarted and broom.readyAt == 85,
+    "return delay did not start after the economy gate opened")
+now = 84.99
+updateBroom()
+assert(#calls == 6)
+now = 85
+updateBroom()
+assert(#calls == 7 and calls[7].at == 85,
+    "Alchemy/Sell time consumed the configured Broom Return Delay")
 
 print("broom_startup_flow=ok")
 '''

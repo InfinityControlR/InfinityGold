@@ -339,6 +339,27 @@ print("terminal_sell_authorization_smoke=ok")
         self.assertIn("broomGate = broomEconomyGate", core)
         self.assertIn("local function broomPriorityGate()", locomotion)
         self.assertIn("local priorityAllowed, priorityStatus", locomotion)
+        movement = core_slice("    local function updateMovement()", "    -- Combat")
+        self.assertLess(
+            movement.index("broomEconomyGate()"),
+            movement.index("Common.farmStageTarget"),
+        )
+        self.assertIn("enterDelay.stage = nil", movement)
+        train_worker = core_slice(
+            "    task.spawn(function() -- train",
+            "    task.spawn(function() -- alchemy",
+        )
+        self.assertIn("local trainPriorityAllowed = broomEconomyGate()", train_worker)
+        self.assertIn("cfg.AutoTrain and trainPriorityAllowed", train_worker)
+        broom_update = locomotion[
+            locomotion.index("    local function updateBroom()") :
+            locomotion.index("    local function startBroomWorker()")
+        ]
+        self.assertLess(
+            broom_update.index("broomPriorityGate()"),
+            broom_update.index("scheduleBroomDelay(now, broom.delayDuration)"),
+        )
+        self.assertIn("deferBroomDelay()", broom_update)
         self.assertNotIn("queuedCraftSellAuthorization", core)
 
 

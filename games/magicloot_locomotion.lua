@@ -71,6 +71,8 @@ function Module.create(context)
         stage = nil,
         armed = false,
         readyAt = 0,
+        delayStarted = false,
+        delayDuration = 0,
         reason = nil,
         waitingForBase = false,
         sawDungeon = false,
@@ -185,11 +187,27 @@ function Module.create(context)
     local function disarmBroom()
         broom.armed = false
         broom.readyAt = 0
+        broom.delayStarted = false
+        broom.delayDuration = 0
         broom.reason = nil
         broom.requestAttempts = 0
     end
 
-    local function armBroom(reason, now)
+    local function scheduleBroomDelay(now, delay)
+        broom.delayDuration = math.max(0, tonumber(delay) or 0)
+        broom.delayStarted = true
+        broom.readyAt = math.max(
+            now + broom.delayDuration,
+            broom.lastAttemptAt + 2
+        )
+    end
+
+    local function deferBroomDelay()
+        broom.delayStarted = false
+        broom.readyAt = 0
+    end
+
+    local function armBroom(reason, _now)
         broom.waitingForBase = false
         broom.sawDungeon = false
         broom.armed = true
@@ -201,7 +219,8 @@ function Module.create(context)
         elseif reason == "initial" then
             delay = BROOM_INITIAL_DELAY
         end
-        broom.readyAt = math.max(now + delay, broom.lastAttemptAt + 2)
+        broom.delayDuration = delay
+        deferBroomDelay()
     end
 
     local function updateBroom()
@@ -303,11 +322,19 @@ function Module.create(context)
         end
         local priorityAllowed, priorityStatus = broomPriorityGate()
         if not priorityAllowed then
+            -- Base economy owns the time before Broom. If its gate closes,
+            -- restart the complete configured delay only after it reopens;
+            -- Alchemy/Sell time must never consume BroomReturnDelay or retry
+            -- confirmation timing.
+            if broom.armed and broom.delayStarted then deferBroomDelay() end
             broom.status = priorityStatus
             return
         end
         if broom.transactionActive then return end
         if not broom.armed then return end
+        if not broom.delayStarted then
+            scheduleBroomDelay(now, broom.delayDuration)
+        end
         if now < broom.readyAt then
             broom.status = string.format("broom stage %d armed in %.1fs", selected, broom.readyAt - now)
             return
@@ -330,7 +357,7 @@ function Module.create(context)
                 broom.requestAttempts = 0
                 broom.armed = true
                 broom.reason = reason
-                broom.readyAt = now + BROOM_CONFIRM_TIMEOUT
+                scheduleBroomDelay(now, BROOM_CONFIRM_TIMEOUT)
                 broom.status = string.format(
                     "broom stage %d failed %d time(s); retry cycle in %.0fs: %s",
                     selected,
@@ -340,7 +367,7 @@ function Module.create(context)
                 )
                 broomNotify(broom.status)
             else
-                broom.readyAt = now + BROOM_CONFIRM_TIMEOUT
+                scheduleBroomDelay(now, BROOM_CONFIRM_TIMEOUT)
                 broom.status = string.format(
                     "broom stage %d request %d/%d failed; retrying in %.0fs",
                     selected,
@@ -358,7 +385,7 @@ function Module.create(context)
             broom.requestAttempts = 0
             broom.armed = true
             broom.reason = reason
-            broom.readyAt = now + BROOM_CONFIRM_TIMEOUT
+            scheduleBroomDelay(now, BROOM_CONFIRM_TIMEOUT)
             broom.status = string.format(
                 "broom stage %d sent %d time(s); retry cycle in %.0fs",
                 selected,
@@ -368,7 +395,7 @@ function Module.create(context)
             broomNotify(broom.status)
             return
         end
-        broom.readyAt = now + BROOM_CONFIRM_TIMEOUT
+        scheduleBroomDelay(now, BROOM_CONFIRM_TIMEOUT)
         broom.status = string.format(
             "broom stage %d request %d/%d sent; waiting for room entry",
             selected,
@@ -939,6 +966,9 @@ function Module.create(context)
             enabled = broom.enabled,
             stage = broom.stage,
             armed = broom.armed,
+            delayStarted = broom.delayStarted,
+            delayDuration = broom.delayDuration,
+            readyAt = broom.readyAt,
             waitingForBase = broom.waitingForBase,
             returnToken = broom.returnToken,
             epoch = broom.epoch,
