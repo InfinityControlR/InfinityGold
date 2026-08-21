@@ -40,21 +40,19 @@ local function matches(value)
     return false
 end
 
-local function shallowMatch(value)
+local function structuralQuestMatch(value)
     if type(value) ~= "table" then return false end
-    local checked = 0
-    for key, item in pairs(value) do
-        checked += 1
-        if matches(key) or matches(item) then return true end
-        if type(item) == "table" then
-            local nested = 0
-            for nestedKey, nestedValue in pairs(item) do
-                nested += 1
-                if matches(nestedKey) or matches(nestedValue) then return true end
-                if nested >= 32 then break end
-            end
+    if type(value.Accepted) == "table"
+        and type(value.Completed) == "table"
+        and type(value.Progress) == "table"
+    then
+        return true
+    end
+    if value.canClaim ~= nil or value.CanClaim ~= nil then return true end
+    if value.ResetType ~= nil then
+        for key, item in pairs(value) do
+            if matches(key) or matches(item) then return true end
         end
-        if checked >= 96 then break end
     end
     return false
 end
@@ -153,7 +151,7 @@ else
         for index, object in ipairs(objects) do
             if index > MAX_GC_OBJECTS or matched >= MAX_MATCHES then break end
             scanned += 1
-            if type(object) == "table" and shallowMatch(object) then
+            if type(object) == "table" and structuralQuestMatch(object) then
                 matched += 1
                 table.insert(lines, string.format(
                     "TABLE #%d gc=%d %s",
