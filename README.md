@@ -90,7 +90,8 @@ the InfinityGold dashboard.
   never chains another brew before Sell/Broom receive their turns. Dungeon
   drops live in the small temporary `LimitBag` while farming and move into the
   visible 999-slot `PlayerData.Bag` only at base. Best Craftable watches that
-  handoff, aggregates duplicate material rows, compares each raw recipe's
+  handoff, uses the recipe/MID/NeedCount snapshot captured once on script load,
+  aggregates duplicate material rows, compares each raw recipe's
   `MID` and `NeedCount`, and sends exactly the highest locally available recipe
   in the first base cycle. If `LimitBagUsed`
   clears before the permanent Bag changes, the later material fingerprint rearms
@@ -105,6 +106,8 @@ the InfinityGold dashboard.
   potion rather than a recipe-search delay. `Copy Best diagnostic` copies a
   bounded, passive snapshot of the real recipe rows, material Bag rows and local
   predicate results; it sends no game action.
+  A game update is incorporated by re-running the loader, which captures the
+  new recipe configuration before the next Best calculation.
   Pickup prepares each real prompt with zero hold duration and expands its
   activation distance to the configured pickup range before firing it.
 - **Broom**: offers stages 4, 8, 13, 18, 23 and 28, sends only the
@@ -126,8 +129,9 @@ the InfinityGold dashboard.
   `OnlineBox` before individual claims.
 - **Potions and gear**: Auto Drink sends each selected potion inventory
   `onlyID`; its selector continuously discovers new live potion config rows.
-  Alchemy likewise re-reads the game's recipe list and accepts sparse/keyed
-  additions. Wand adds Magic's stage-only selected-Wand worker: its catalog is
+  Alchemy captures the game's sparse/keyed recipe list once per full script
+  load; reloading after a game update captures new rows and requirements. Wand
+  adds Magic's stage-only selected-Wand worker: its catalog is
   captured once per full load, it disables Best only inside a stage, verifies
   ownership and equips by stable ID. Wand and
   armor buying/equipping are separate, choose the best affordable/unowned or

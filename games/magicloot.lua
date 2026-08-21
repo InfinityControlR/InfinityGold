@@ -1331,10 +1331,14 @@ return function(locomotionFactory, Library, Common)
         return alchemy
     end
 
+    local alchemyRawRecipeCache = nil
+
     local function rawAlchemyRecipes(alchemy)
-        -- GetRecipeList is the Alchemy-owned recipe source used by the game.
-        -- potionConf contains potion item definitions, not the raw recipe
-        -- objects expected by CanCraftRecipe/CanMeetRecipeRebirth.
+        if alchemyRawRecipeCache ~= nil then return alchemyRawRecipeCache end
+        -- Recipes are version configuration. Capture the first valid list once
+        -- per script load; every Best cycle thereafter only reads Bag state.
+        -- If game modules are still loading, leave the cache empty so the next
+        -- caller can retry rather than freezing a failed/empty bootstrap read.
         if type(alchemy.GetRecipeList) ~= "function" then
             return nil, "Alchemy.GetRecipeList unavailable"
         end
@@ -1343,7 +1347,22 @@ return function(locomotionFactory, Library, Common)
         if type(recipes) ~= "table" then
             return nil, "Alchemy.GetRecipeList returned " .. type(recipes)
         end
-        return recipes
+        local snapshot = {}
+        local validRows = 0
+        for key, raw in pairs(recipes) do
+            if type(raw) == "table"
+                and math.floor(tonumber(raw.recipeId) or 0) > 0
+            then
+                -- Freeze catalog membership for this script load. The row is
+                -- immutable game configuration; retaining its reference avoids
+                -- duplicating nested MID/NeedCount tables on every Best tick.
+                snapshot[key] = raw
+                validRows += 1
+            end
+        end
+        if validRows == 0 then return nil, "no alchemy recipes found" end
+        alchemyRawRecipeCache = snapshot
+        return alchemyRawRecipeCache
     end
 
     local function isAsciiText(value)
@@ -1398,7 +1417,7 @@ return function(locomotionFactory, Library, Common)
         return translated or "Recipe"
     end
 
-    local function alchemyRecipeCatalog(alchemy)
+    local function alchemyRecipeCatalog(alchemy, includeLabels)
         local rawRecipes, err = rawAlchemyRecipes(alchemy)
         if rawRecipes == nil then return nil, err end
 
@@ -1408,7 +1427,9 @@ return function(locomotionFactory, Library, Common)
                 local id = math.floor(tonumber(raw.recipeId) or 0)
                 if id > 0 then
                     local potionId = math.floor(tonumber(raw.PID) or 0)
-                    local name = translatedAlchemyRecipeName(raw, id, potionId)
+                    local name = includeLabels == false
+                        and ("Recipe " .. tostring(id))
+                        or translatedAlchemyRecipeName(raw, id, potionId)
                     table.insert(catalog, {
                         id = id,
                         potionId = potionId,
@@ -1679,7 +1700,7 @@ return function(locomotionFactory, Library, Common)
         selection = tostring(selection or "Best craftable")
         local recoveryPrefix = "infinity-best-v2|" .. selection .. "|"
 
-        local catalog, err = alchemyRecipeCatalog(alchemy)
+        local catalog, err = alchemyRecipeCatalog(alchemy, false)
         if catalog == nil then return nil, err end
 
         alchemyTelemetry.checkTotal = #catalog
@@ -1702,6 +1723,7 @@ return function(locomotionFactory, Library, Common)
             local advisoryBest = nil
             local sawDirectSchema = false
             local stagedFallback = nil
+            local currentRebirth = playerNumber("Rebirth")
             stagedRecipeId = math.floor(tonumber(stagedRecipeId) or 0)
             if stagedRecipeId > 0 then
                 for _, recipe in ipairs(catalog) do
@@ -1714,30 +1736,50 @@ return function(locomotionFactory, Library, Common)
             local materialCounts, materialCountError = alchemyMaterialCounts()
             if materialCounts == nil then return nil, materialCountError end
             for _, recipe in ipairs(catalog) do
-                local craftable, _, reason = isAlchemyRecipeCraftable(
-                    alchemy,
-                    recipe
-                )
-                noteAlchemyRecipeCheck(reason)
                 local directAvailable, directError =
                     recipeAvailableFromMaterialCounts(recipe, materialCounts)
-                local available = directAvailable
                 if directAvailable == nil then
                     alchemyTelemetry.directSchemaErrors += 1
-                    available = craftable
-                elseif directAvailable then
-                    sawDirectSchema = true
-                    alchemyTelemetry.directCraftable += 1
+                    local craftable, _, reason = isAlchemyRecipeCraftable(
+                        alchemy,
+                        recipe
+                    )
+                    noteAlchemyRecipeCheck(reason)
+                    if craftable then
+                        if reason == "craftable" then
+                            best = recipe
+                        else
+                            advisoryBest = recipe
+                        end
+                    end
                 else
                     sawDirectSchema = true
-                end
-                if available then
-                    if reason == "craftable"
-                        or reason == "materials"
+                    alchemyTelemetry.materialChecks += 1
+                    local rebirthAllowed = nil
+                    if currentRebirth ~= nil then
+                        rebirthAllowed = currentRebirth >= recipe.rebirth
+                    end
+                    if rebirthAllowed == nil and directAvailable
+                        and type(alchemy.CanMeetRecipeRebirth) == "function"
                     then
-                        best = recipe
-                    elseif reason ~= "materials-error" and reason ~= "api" then
-                        advisoryBest = recipe
+                        local ok, allowed = pcall(
+                            alchemy.CanMeetRecipeRebirth,
+                            player,
+                            recipe.recipe
+                        )
+                        if ok then rebirthAllowed = allowed == true end
+                    end
+                    if rebirthAllowed == true then
+                        alchemyTelemetry.rebirthPassed += 1
+                    end
+                    if directAvailable then
+                        alchemyTelemetry.directCraftable += 1
+                        if rebirthAllowed == true then
+                            alchemyTelemetry.craftable += 1
+                            best = recipe
+                        elseif rebirthAllowed == nil then
+                            advisoryBest = recipe
+                        end
                     end
                 end
             end
@@ -4115,7 +4157,8 @@ return function(locomotionFactory, Library, Common)
         initialValues,
         valuesBuilder,
         multi,
-        fallback
+        fallback,
+        captureOnce
     )
         task.spawn(function()
             local fingerprint = dropdownValuesFingerprint(initialValues)
@@ -4167,6 +4210,7 @@ return function(locomotionFactory, Library, Common)
                         cfg[configName] = desired
                         fingerprint = refreshedFingerprint
                     end
+                    if captureOnce then break end
                 end
             end
         end)
@@ -4553,7 +4597,8 @@ return function(locomotionFactory, Library, Common)
             recipeValues,
             alchemyDropdownValues,
             false,
-            "Best craftable"
+            "Best craftable",
+            true
         )
         group:AddButton({
             Text = "Copy Best diagnostic",

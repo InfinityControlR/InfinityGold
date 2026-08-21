@@ -256,6 +256,7 @@ print("alchemy_invoke_lease_smoke=ok")
 local player = {{ marker = "local-player" }}
 local challenge = 0
 local temporaryBagUsed = 0
+local playerRebirth = 2
 local challengeReadHook = function() end
 local function playerNumber(name)
     if name == "InDungeonChallenge" then
@@ -263,6 +264,7 @@ local function playerNumber(name)
         return challenge
     end
     if name == "LimitBagUsed" then return temporaryBagUsed end
+    if name == "Rebirth" then return playerRebirth end
     error("wrong Alchemy location state " .. tostring(name))
 end
 local cfg = {{
@@ -523,6 +525,14 @@ assert(recipeValues[1] == "Best craftable"
     and recipeValues[4].Value == "7"
     and recipeValues[4].Text == "Localized 药水键107",
     "recipe dropdown did not use the game's translator")
+table.insert(recipes, {{
+    recipeId = 99, PID = 199, Rebirth = 0,
+    MID = {{ 2010001 }}, NeedCount = {{ 1 }},
+}})
+local frozenRecipeValues = alchemyDropdownValues()
+assert(#frozenRecipeValues == 4 and recipeListReads == 2,
+    "the recipe snapshot changed without a full script reload")
+table.remove(recipes)
 
 local legacyRecipe = selectAlchemyRecipe(alchemy, "#4 old-language label")
 assert(legacyRecipe ~= nil and legacyRecipe.id == 4,
@@ -563,9 +573,10 @@ assert(#calls == 1 and calls[1].action == "ALCHEMY_CRAFT_RECIPE",
     "craft used the wrong transport/action")
 assert(calls[1].payload.recipeId == 1,
     "Best craftable did not immediately select the locally available recipe")
-assert(recipeListReads == 5, "Alchemy.GetRecipeList was not retried by UI and worker")
+assert(recipeListReads == 2,
+    "GetRecipeList was not frozen after the first valid capture")
 assert(potionConfReads == 0, "potionConf incorrectly replaced the recipe list")
-assert(potionFindCalls == 12 and translationCalls == 15,
+assert(potionFindCalls == 9 and translationCalls == 12,
     "recipe display metadata was not localized independently of craft data: "
         .. tostring(potionFindCalls) .. "/" .. tostring(translationCalls))
 assert(calls[1].root == home and root.CFrame == home,
@@ -814,6 +825,7 @@ resetAlchemyRecovery()
 alchemyInvokeLease.inventoryEpoch = 0
 local recipesBeforeDirectMaterials = recipes
 local bagBeforeDirectMaterials = bag
+alchemyRawRecipeCache = nil -- simulate a fresh script load for the live schema
 recipes = {{
     {{ recipeId = 1, PID = 101, Rebirth = 0, craftable = false,
         MID = {{ 2010001, 2010002 }}, NeedCount = {{ 1, 1 }} }},
@@ -832,17 +844,20 @@ bag = {{
 remoteMode = "accept-id"
 remoteAcceptedRecipeId = 4
 local callsBeforeDirectMaterials = #calls
+local predicateReadsBeforeDirectMaterials = craftPredicateReads
 sent, craftError = runAlchemyCycle()
 assert(sent == true and craftError == nil
     and #calls == callsBeforeDirectMaterials + 1
     and calls[#calls].payload.recipeId == 4
-    and alchemyTelemetry.craftable == 0
+    and alchemyTelemetry.craftable == 2
     and alchemyTelemetry.directCraftable == 2
+    and craftPredicateReads == predicateReadsBeforeDirectMaterials
     and alchemyTelemetry.predicateErrors == 0
     and alchemyTelemetry.chosenId == 4,
     "Best did not use MID/NeedCount to send one highest available recipe")
 recipes = recipesBeforeDirectMaterials
 bag = bagBeforeDirectMaterials
+alchemyRawRecipeCache = nil -- restore the fixture's original load snapshot
 inProgress = false
 recipes[1].craftable = false
 recipes[2].craftable = false
@@ -931,6 +946,7 @@ inProgress = false
 resetAlchemyRecovery()
 local originalRecipes = recipes
 recipes = {{}}
+alchemyRawRecipeCache = nil -- simulate another full load for the 28-row fixture
 for id = 1, 28 do
     table.insert(recipes, {{
         recipeId = id,
@@ -1295,6 +1311,7 @@ cfg.AutoBrew = true
 
 postStageInventoryEpoch = alchemyInvokeLease.inventoryEpoch
 recipes = originalRecipes
+alchemyRawRecipeCache = nil -- restore the original full-load catalog
 bag = {{}}
 recipes[1].craftable = true
 recipes[2].craftable = true

@@ -269,6 +269,25 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertNotIn("sendAction", report)
         self.assertIn('Text = "Copy Best diagnostic"', self.source)
 
+    def test_recipe_configuration_is_captured_once_per_load(self):
+        raw = self.source[
+            self.source.index("    local alchemyRawRecipeCache = nil") :
+            self.source.index("    local function isAsciiText")
+        ]
+        self.assertIn("if alchemyRawRecipeCache ~= nil", raw)
+        self.assertIn("alchemyRawRecipeCache = snapshot", raw)
+        self.assertIn("snapshot[key] = raw", raw)
+        self.assertIn("validRows == 0", raw)
+        self.assertIn("alchemyRecipeCatalog(alchemy, false)", self.source)
+        recipe_ui = self.source[
+            self.source.index('        local recipeValues = alchemyDropdownValues()') :
+            self.source.index('        group:AddButton({', self.source.index(
+                '        local recipeValues = alchemyDropdownValues()'
+            ))
+        ]
+        self.assertIn('"Best craftable",\n            true', recipe_ui)
+        self.assertIn("if captureOnce then break end", self.source)
+
     def test_legacy_unlimited_rebirth_setting_migrates_to_magic_limit(self):
         self.assertIn('decoded.RebirthLimit = 41', self.source)
 
