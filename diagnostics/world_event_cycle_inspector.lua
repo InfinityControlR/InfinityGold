@@ -18,7 +18,10 @@ local MAX_SCALARS = 900
 local MAX_UI_TEXTS = 700
 local MAX_PARTS = 3000
 local MAX_TABLE_MATCHES = 60
+local MAX_TABLE_SNAPSHOTS = 6
 local MAX_DIFF_RECORDS = 100
+local MAX_STRUCTURE_EVENTS_PER_SECOND = 160
+local MAX_VALUE_EVENTS_PER_SECOND = 120
 local CHECKPOINT_SECONDS = 15
 local CHECKPOINT_FILE = "InfinityGold_world_event_capture.txt"
 local POLL_SECONDS = 1
@@ -32,13 +35,23 @@ local uiState = {}
 local monsterState = {}
 local partState = {}
 local remoteRate = {}
+local tableSnapshots = {}
+local observedValues = setmetatable({}, { __mode = "k" })
 local lastRootPosition = nil
 local baselineSummary = "pending"
-local lastCheckpointStatus = "checkpoint pending"
+local lastCheckpointStatus = "clipboard ready; file backup pending"
+local structureWindowAt = os.clock()
+local structureEmitted = 0
+local structureOmitted = 0
+local valueWindowAt = os.clock()
+local valueEmitted = 0
+local valueOmitted = 0
+local requestTableSnapshot = function(_) end
 
 local strongTokens = {
-    "dragon", "event", "countdown",
-    "龙", "活動", "活动", "事件", "倒计时",
+    "dragon", "event", "countdown", "activity", "boss", "egg", "raid",
+    "龙", "巨龙", "龙蛋", "蛋", "首领", "限时", "宠物",
+    "活動", "活动", "事件", "倒计时",
 }
 
 local function clean(value, limit)
@@ -124,14 +137,36 @@ local function uiSnapshot()
     local result = {}
     local gui = player:FindFirstChildOfClass("PlayerGui")
     if gui == nil then return result end
+    local contexts = {}
+    local contextSeen = setmetatable({}, { __mode = "k" })
     local count = 0
     for _, descendant in ipairs(gui:GetDescendants()) do
         if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
             local ok, text = pcall(function() return descendant.Text end)
             if ok and type(text) == "string" and relevantUiText(text) then
-                count += 1
-                if count > MAX_UI_TEXTS then break end
-                result[path(descendant)] = clean(text, 240)
+                local context = descendant.Parent
+                if context ~= nil and context.Parent ~= nil then context = context.Parent end
+                if context ~= nil and not contextSeen[context] then
+                    contextSeen[context] = true
+                    table.insert(contexts, context)
+                end
+            end
+        end
+    end
+    -- A timer alone is ambiguous. Preserve every neighbouring caption in the
+    -- same small panel so the event name/type survives in the report too.
+    for _, context in ipairs(contexts) do
+        for _, descendant in ipairs(context:GetDescendants()) do
+            if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
+                local ok, text = pcall(function() return descendant.Text end)
+                if ok and type(text) == "string" and text ~= "" then
+                    local key = path(descendant)
+                    if result[key] == nil then
+                        count += 1
+                        if count > MAX_UI_TEXTS then return result end
+                        result[key] = clean(text, 240)
+                    end
+                end
             end
         end
     end
@@ -144,6 +179,78 @@ local function modelAnchor(model)
         or model:FindFirstChildWhichIsA("BasePart", true)
 end
 
+local function instanceDescription(instance)
+    local rows = {
+        "class=" .. instance.ClassName,
+        "path=" .. path(instance),
+    }
+    if instance:IsA("BasePart") then
+        table.insert(rows, "pos=" .. positionText(instance.Position))
+        table.insert(rows, "size=" .. positionText(instance.Size))
+        table.insert(rows, string.format(
+            "T=%.2f C=%s Q=%s",
+            instance.Transparency,
+            tostring(instance.CanCollide),
+            tostring(instance.CanTouch)
+        ))
+    elseif instance:IsA("Model") then
+        local anchor = modelAnchor(instance)
+        table.insert(rows, "pos=" .. (anchor and positionText(anchor.Position) or "?"))
+        local humanoid = instance:FindFirstChildOfClass("Humanoid")
+        if humanoid ~= nil then
+            table.insert(rows, string.format("hp=%.1f/%.1f", humanoid.Health, humanoid.MaxHealth))
+        end
+    elseif instance:IsA("ValueBase") then
+        local ok, value = pcall(function() return instance.Value end)
+        if ok then table.insert(rows, "value=" .. clean(value, 120)) end
+    end
+    local attributes = attributesText(instance)
+    if attributes ~= "" then table.insert(rows, "attrs=" .. attributes) end
+    local tags = tagsText(instance)
+    if tags ~= "" then table.insert(rows, "tags=" .. tags) end
+    return table.concat(rows, " | ")
+end
+
+local function flushBurstSummaries(now)
+    now = now or os.clock()
+    if now - structureWindowAt >= 1 then
+        if structureOmitted > 0 then
+            add("workspace!", tostring(structureOmitted) .. " additional changes summarized")
+        end
+        structureWindowAt, structureEmitted, structureOmitted = now, 0, 0
+    end
+    if now - valueWindowAt >= 1 then
+        if valueOmitted > 0 then
+            add("value!", tostring(valueOmitted) .. " additional changes summarized")
+        end
+        valueWindowAt, valueEmitted, valueOmitted = now, 0, 0
+    end
+end
+
+local function recordStructure(kind, instance)
+    flushBurstSummaries()
+    if structureEmitted >= MAX_STRUCTURE_EVENTS_PER_SECOND then
+        structureOmitted += 1
+        return
+    end
+    structureEmitted += 1
+    add(kind, instanceDescription(instance))
+end
+
+local function observeValue(instance)
+    if not instance:IsA("ValueBase") or observedValues[instance] then return end
+    observedValues[instance] = true
+    connect(instance.Changed, function(value)
+        flushBurstSummaries()
+        if valueEmitted >= MAX_VALUE_EVENTS_PER_SECOND then
+            valueOmitted += 1
+            return
+        end
+        valueEmitted += 1
+        add("value~", path(instance) .. " = " .. clean(value, 160))
+    end)
+end
+
 local function monsterSnapshot()
     local result = {}
     for _, descendant in ipairs(workspace:GetDescendants()) do
@@ -153,9 +260,12 @@ local function monsterSnapshot()
         then
             local anchor = modelAnchor(descendant)
             local position = anchor and positionText(anchor.Position) or "?"
+            local humanoid = descendant:FindFirstChildOfClass("Humanoid")
             result[path(descendant)] = table.concat({
                 "name=" .. clean(descendant.Name, 100),
                 "pos=" .. position,
+                humanoid and string.format("hp=%.1f/%.1f", humanoid.Health, humanoid.MaxHealth)
+                    or "hp=?",
                 "attrs=" .. attributesText(descendant),
                 "tags=" .. tagsText(descendant),
             }, " | ")
@@ -188,7 +298,9 @@ end
 local function diffState(kind, previous, current)
     local emitted = 0
     local omitted = 0
+    local changed = 0
     local function emit(suffix, detail)
+        changed += 1
         if emitted < MAX_DIFF_RECORDS then
             emitted += 1
             add(kind .. suffix, detail)
@@ -208,6 +320,7 @@ local function diffState(kind, previous, current)
         if current[key] == nil then emit("-", key .. " | " .. value) end
     end
     if omitted > 0 then add(kind .. "!", tostring(omitted) .. " additional changes summarized") end
+    return changed
 end
 
 local function remoteValue(value, depth)
@@ -239,6 +352,7 @@ local function observeRemote(remote)
             table.insert(args, tostring(index) .. "=" .. remoteValue(packed[index]))
         end
         add("remote<", path(remote) .. " | " .. table.concat(args, " | "))
+        if matchesStrong(action) then requestTableSnapshot("event remote") end
     end)
 end
 
@@ -281,6 +395,54 @@ local function loadedTableMatches()
     return rows
 end
 
+local lastTableSnapshotAt = -math.huge
+local tableSnapshotPending = false
+local function captureLoadedTableSnapshot(reason)
+    local rows = loadedTableMatches()
+    table.insert(tableSnapshots, {
+        at = os.clock() - startedAt,
+        reason = clean(reason, 80),
+        rows = rows,
+    })
+    while #tableSnapshots > MAX_TABLE_SNAPSHOTS do table.remove(tableSnapshots, 1) end
+end
+
+requestTableSnapshot = function(reason)
+    local now = os.clock()
+    if tableSnapshotPending or now - lastTableSnapshotAt < 8 then return end
+    tableSnapshotPending = true
+    lastTableSnapshotAt = now
+    task.defer(function()
+        tableSnapshotPending = false
+        if alive then captureLoadedTableSnapshot(reason) end
+    end)
+end
+
+for _, root in ipairs({ player, ReplicatedStorage, workspace }) do
+    for _, descendant in ipairs(root:GetDescendants()) do observeValue(descendant) end
+end
+connect(player.DescendantAdded, observeValue)
+connect(ReplicatedStorage.DescendantAdded, observeValue)
+connect(workspace.DescendantAdded, function(instance)
+    observeValue(instance)
+    local character = player.Character
+    if (instance:IsA("Model") or instance:IsA("BasePart"))
+        and (character == nil or not instance:IsDescendantOf(character))
+    then
+        recordStructure("workspace+", instance)
+        requestTableSnapshot("workspace addition")
+    end
+end)
+connect(workspace.DescendantRemoving, function(instance)
+    local character = player.Character
+    if (instance:IsA("Model") or instance:IsA("BasePart"))
+        and (character == nil or not instance:IsDescendantOf(character))
+    then
+        recordStructure("workspace-", instance)
+    end
+end)
+requestTableSnapshot("startup")
+
 local function currentStateLines()
     local rows = { "Baseline: " .. baselineSummary, "Current relevant state:" }
     local character = player.Character
@@ -315,6 +477,17 @@ local function report(includeLoadedTables)
     for _, event in ipairs(events) do
         table.insert(lines, string.format("+%.2fs [%s] %s", event.at, event.kind, event.detail))
     end
+    table.insert(lines, "")
+    table.insert(lines, "Loaded-table snapshots captured during the cycle:")
+    for _, snapshot in ipairs(tableSnapshots) do
+        table.insert(lines, string.format(
+            "+%.2fs reason=%s matches=%d",
+            snapshot.at,
+            snapshot.reason,
+            #snapshot.rows
+        ))
+        for _, row in ipairs(snapshot.rows) do table.insert(lines, row) end
+    end
     if includeLoadedTables ~= false then
         table.insert(lines, "")
         table.insert(lines, "Matching loaded tables at copy time:")
@@ -337,13 +510,13 @@ end
 
 local function checkpoint(includeLoadedTables)
     if type(writefile) ~= "function" then
-        lastCheckpointStatus = "writefile unavailable; clipboard still active"
+        lastCheckpointStatus = "clipboard ready; optional file backup unavailable"
         return false
     end
     local ok, err = pcall(writefile, CHECKPOINT_FILE, report(includeLoadedTables))
     lastCheckpointStatus = ok
-        and ("saved " .. CHECKPOINT_FILE)
-        or ("checkpoint failed: " .. clean(err, 120))
+        and ("clipboard ready; backup saved " .. CHECKPOINT_FILE)
+        or ("clipboard ready; backup failed: " .. clean(err, 90))
     return ok
 end
 
@@ -422,11 +595,16 @@ task.spawn(function()
         local ui = uiSnapshot()
         local monsters = monsterSnapshot()
         local parts = partSnapshot()
-        diffState("scalar", scalarState, scalars)
-        diffState("ui", uiState, ui)
-        diffState("monster", monsterState, monsters)
-        diffState("part", partState, parts)
+        local scalarChanges = diffState("scalar", scalarState, scalars)
+        local uiChanges = diffState("ui", uiState, ui)
+        local monsterChanges = diffState("monster", monsterState, monsters)
+        local partChanges = diffState("part", partState, parts)
         scalarState, uiState, monsterState, partState = scalars, ui, monsters, parts
+        if partChanges >= 3
+            or (uiChanges > 0 and (monsterChanges > 0 or scalarChanges > 0))
+        then
+            requestTableSnapshot("replicated event-state change")
+        end
 
         local character = player.Character
         local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -440,6 +618,7 @@ task.spawn(function()
             checkpoint(false)
             nextCheckpointAt = os.clock() + CHECKPOINT_SECONDS
         end
+        flushBurstSummaries()
         status.Text = string.format(
             "World Event Inspector • %.0fs • %d records\n%s",
             os.clock() - startedAt,
