@@ -1401,7 +1401,6 @@ return function(locomotionFactory, Library, Common)
         eventId = nil,
         completedEventId = nil,
         entryTarget = nil,
-        lastReturnAt = 0,
         lastError = nil,
         status = "idle",
         -- Captured while two participants had InEventCombat=1. Live positions
@@ -1417,9 +1416,64 @@ return function(locomotionFactory, Library, Common)
         return tonumber(playerNumber("InEventCombat")) or 0
     end
 
+    function worldEvent:InvitationValue()
+        local notices = player:FindFirstChild("事件通知")
+        local invitation = notices and notices:FindFirstChild("Mysterious Event")
+        if invitation == nil then return 0 end
+        local ok, value = pcall(function() return invitation.Value end)
+        if not ok then return 0 end
+        if value == true then return 1 end
+        return tonumber(value) or 0
+    end
+
+    function worldEvent:CountdownSeconds()
+        local playerGui = player:FindFirstChildOfClass("PlayerGui")
+        local weather = playerGui
+            and playerGui:FindFirstChild("Buff_EventWeather", true)
+        local timer = weather and weather:FindFirstChild("Time")
+        if timer == nil then return nil end
+        local ok, text = pcall(function() return tostring(timer.Text) end)
+        if not ok then return nil end
+        local minutes, seconds = string.match(text, "^%s*(%d+):(%d+)%s*$")
+        if minutes == nil or seconds == nil then return nil end
+        return tonumber(minutes) * 60 + tonumber(seconds)
+    end
+
+    function worldEvent:AvailableId()
+        local eventId = self:CurrentId()
+        if eventId == nil then return nil end
+        if self:CombatValue() > 0 or self:InvitationValue() > 0 then
+            return eventId
+        end
+        return nil
+    end
+
+    function worldEvent:ShouldPrewait()
+        if cfg.AutoWorldEvent ~= true
+            or self:CurrentId() == nil
+            or self:CombatValue() > 0
+            or self:InvitationValue() > 0
+        then
+            return false
+        end
+        local countdown = self:CountdownSeconds()
+        local challenge = playerNumber("InDungeonChallenge")
+        return countdown ~= nil
+            and countdown >= 0
+            and countdown <= 10
+            and challenge ~= nil
+            and challenge <= 0
+    end
+
     function worldEvent:OwnsObjective()
         if cfg.AutoWorldEvent ~= true then return false end
-        local currentId = self:CurrentId()
+        if self:CombatValue() > 0 then return true end
+        local challenge = playerNumber("InDungeonChallenge")
+        -- A dragon event never pulls the player out of an active farm run.
+        -- It takes ownership only after that run returns to base naturally.
+        if challenge == nil or challenge > 0 then return false end
+        if self:ShouldPrewait() then return true end
+        local currentId = self:AvailableId()
         if self.phase == "cooldown"
             and currentId ~= nil
             and currentId == tonumber(self.completedEventId)
@@ -1428,6 +1482,7 @@ return function(locomotionFactory, Library, Common)
         end
         return self:CombatValue() > 0
             or currentId ~= nil
+            or self.phase == "prewait"
             or self.phase == "seeking"
             or self.phase == "combat"
     end
@@ -1496,10 +1551,13 @@ return function(locomotionFactory, Library, Common)
             self.phase,
             self.eventId,
             self.completedEventId,
-            playerNumber("curEventId"),
+            self:AvailableId(),
             playerNumber("InEventCombat"),
             cfg.AutoWorldEvent == true
         )
+        if nextPhase == "idle" and self:ShouldPrewait() then
+            nextPhase = "prewait"
+        end
         self.phase = nextPhase
         self.eventId = activeId
         self.completedEventId = completedId
@@ -1508,6 +1566,9 @@ return function(locomotionFactory, Library, Common)
             self.entryTarget = nil
             self.lastError = nil
             self.status = "idle"
+        elseif nextPhase == "prewait" then
+            self.entryTarget = nil
+            self.status = "event begins in 10s; waiting at base"
         elseif nextPhase == "seeking" then
             self.status = "walking to event"
         elseif nextPhase == "combat" then
@@ -1518,7 +1579,9 @@ return function(locomotionFactory, Library, Common)
         end
 
         if previousPhase ~= nextPhase then
-            if nextPhase == "seeking" then
+            if nextPhase == "prewait" then
+                notify("Dragon event in 10 seconds; waiting at base")
+            elseif nextPhase == "seeking" then
                 notify("Dragon event detected; pausing objectives")
             elseif nextPhase == "combat" then
                 notify("Dragon event entered; attacking until server return")
@@ -3747,20 +3810,13 @@ return function(locomotionFactory, Library, Common)
             return true
         end
 
-        local challenge = playerNumber("InDungeonChallenge")
-        if challenge == nil then
-            self.status = "waiting for dungeon state"
-            setMovementStatus("World Event: waiting for dungeon state")
-            return true
-        end
-        if challenge > 0 then
-            if os.clock() - self.lastReturnAt >= 1 then
-                self.lastReturnAt = os.clock()
-                local sent, err = sendAction("DUNGEON_RETURN_TOWN")
-                self.lastError = sent and nil or tostring(err or "return failed")
-            end
-            self.status = "returning to base for event"
-            setMovementStatus("World Event: returning to base")
+        if self.phase == "prewait" then
+            pcall(function()
+                parts.humanoid:Move(Vector3.zero, false)
+                parts.humanoid:MoveTo(parts.root.Position)
+            end)
+            self.status = "event begins in 10s; waiting at base"
+            setMovementStatus("World Event: waiting for start")
             return true
         end
 
@@ -4909,10 +4965,13 @@ return function(locomotionFactory, Library, Common)
                 pcall(function()
                     local state = cfg.AutoWorldEvent and worldEvent.status or "disabled"
                     local eventId = worldEvent:CurrentId()
+                    local countdown = worldEvent:CountdownSeconds()
                     worldEventDiagnostics:Set(string.format(
-                        "World Event: %s • id %s • combat %d",
+                        "World Event: %s • id %s • timer %s • ready %d • combat %d",
                         tostring(state),
                         eventId and tostring(eventId) or "-",
+                        countdown ~= nil and tostring(countdown) or "-",
+                        worldEvent:InvitationValue(),
                         worldEvent:CombatValue()
                     ))
                 end)

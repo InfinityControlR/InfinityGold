@@ -48,8 +48,11 @@ the InfinityGold dashboard.
   `Above`, `Orbit`, `Running`, `Walking`, configurable height/orbit/enter delay.
   Walking/Running start their route directly from base; they do not wait for
   `InDungeonChallenge > 0` before moving toward a stage.
-  Auto World Event recognizes the captured dragon rotation IDs 3/4, returns
-  from a dungeon when necessary and walks natively to a live participant's
+  Auto World Event recognizes the captured dragon rotation IDs 3/4. During
+  the countdown all objectives continue normally; only a player already at
+  base waits during the final ten seconds. An active dungeon run is never
+  interrupted or returned early. When that run reaches base naturally and
+  the event is live, the controller walks natively to a live participant's
   event position (falling back to the captured entrance). It pauses
   `Alchemy -> Sell -> Broom -> Farm/Train` without changing any of those
   toggles. Once `InEventCombat=1` confirms entry, it holds position and attacks

@@ -65,10 +65,11 @@ class WorldEventFlowTests(unittest.TestCase):
             "AutoWorldEvent = false",
             'playerNumber("curEventId")',
             'playerNumber("InEventCombat")',
+            'player:FindFirstChild("事件通知")',
+            'notices:FindFirstChild("Mysterious Event")',
             "Vector3.new(-452.6, 10.2, -137.2)",
             'candidate:FindFirstChild("InEventCombat")',
             'model:GetAttribute("EventBattleEnemy") ~= true',
-            'sendAction("DUNGEON_RETURN_TOWN")',
             "parts.humanoid:MoveTo(target)",
             "parts.humanoid:MoveTo(parts.root.Position)",
             'resetBasePriority("world event finished")',
@@ -77,9 +78,105 @@ class WorldEventFlowTests(unittest.TestCase):
 
         self.assertNotIn("FireDragon", controller)
         self.assertNotIn("DarkDragon", controller)
+        self.assertNotIn("DUNGEON_RETURN_TOWN", controller)
         self.assertNotIn("root.CFrame =", controller)
         self.assertNotIn("eventDuration", controller)
         self.assertNotIn("eventEndsAt", controller)
+
+    def test_countdown_only_waits_at_base_during_final_ten_seconds(self):
+        availability = core_slice(
+            "    function worldEvent:CurrentId()",
+            "    local basePriority = {",
+        )
+        fixture = f"""
+local currentId = 3
+local combat = 0
+local invitation = 0
+local countdown = 750
+local challenge = 0
+local cfg = {{ AutoWorldEvent = true }}
+local Common = {{}}
+function Common.dragonWorldEventId(value)
+    value = tonumber(value)
+    return (value == 3 or value == 4) and value or nil
+end
+local invitationValue = {{ Value = 0 }}
+local notices = {{}}
+function notices:FindFirstChild(name)
+    assert(name == "Mysterious Event")
+    invitationValue.Value = invitation
+    return invitationValue
+end
+local player = {{}}
+function player:FindFirstChild(name)
+    assert(name == "事件通知")
+    return notices
+end
+local timer = {{ Text = "12:30" }}
+local weather = {{ FindFirstChild = function(_, name)
+    assert(name == "Time")
+    timer.Text = string.format("%02d:%02d", math.floor(countdown / 60), countdown % 60)
+    return timer
+end }}
+local playerGui = {{ FindFirstChild = function(_, name, recursive)
+    assert(name == "Buff_EventWeather" and recursive == true)
+    return weather
+end }}
+function player:FindFirstChildOfClass(name)
+    assert(name == "PlayerGui")
+    return playerGui
+end
+local function playerNumber(name)
+    if name == "curEventId" then return currentId end
+    if name == "InEventCombat" then return combat end
+    if name == "InDungeonChallenge" then return challenge end
+    error("unexpected player value " .. tostring(name))
+end
+local worldEvent = {{ phase = "idle", completedEventId = nil }}
+
+{availability}
+
+assert(worldEvent:CurrentId() == 3)
+assert(worldEvent:AvailableId() == nil)
+assert(worldEvent:OwnsObjective() == false,
+    "dragon ID during countdown paused normal objectives")
+
+countdown = 10
+assert(worldEvent:ShouldPrewait() == true)
+assert(worldEvent:OwnsObjective() == true,
+    "last ten seconds at base did not reserve the event")
+
+challenge = 28
+assert(worldEvent:ShouldPrewait() == false)
+assert(worldEvent:OwnsObjective() == false,
+    "last ten seconds interrupted an active farm run")
+
+invitation = 1
+assert(worldEvent:AvailableId() == 3)
+assert(worldEvent:OwnsObjective() == false,
+    "live event forced an active farm run to return")
+
+challenge = 0
+assert(worldEvent:OwnsObjective() == true,
+    "natural return to base did not release the live event")
+
+invitation = 0
+combat = 1
+assert(worldEvent:OwnsObjective() == true,
+    "confirmed InEventCombat did not retain event ownership")
+print("world_event_countdown_gate_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"World Event countdown smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("world_event_countdown_gate_smoke=ok", completed.stdout)
+        self.assertIn(
+            'if nextPhase == "idle" and self:ShouldPrewait() then', CORE
+        )
+        self.assertIn('nextPhase = "prewait"', CORE)
 
     def test_movement_walks_holds_and_returns_without_teleporting(self):
         movement = core_slice(
@@ -96,7 +193,6 @@ local workspace = {{ FindFirstChild = function() return nil end }}
 local fakeClock = 2
 local os = {{ clock = function() return fakeClock end }}
 local challenge = 0
-local sentActions = {{}}
 local stopped = 0
 local movementStatus = "idle"
 local root = {{ Position = Vector3.new(1, 2, 3) }}
@@ -113,25 +209,19 @@ local function playerNumber(name)
     assert(name == "InDungeonChallenge")
     return challenge
 end
-local function sendAction(name)
-    table.insert(sentActions, name)
-    return true
-end
-
 local worldEvent = {{
     phase = "seeking",
     entryTarget = nil,
     fallbackEntry = Vector3.new(-452.6, 10.2, -137.2),
-    lastReturnAt = 0,
 }}
 function worldEvent:Sync() end
-function worldEvent:OwnsObjective() return true end
+function worldEvent:OwnsObjective() return challenge <= 0 end
 
 {movement}
 
 assert(worldEvent:UpdateMovement() == true)
 assert(humanoid.moveTo == worldEvent.fallbackEntry)
-assert(#sentActions == 0 and stopped == 1)
+assert(stopped == 1)
 
 worldEvent.phase = "combat"
 humanoid.moveTo = nil
@@ -140,12 +230,17 @@ assert(humanoid.moveTo == root.Position)
 assert(humanoid.move == Vector3.zero)
 assert(string.find(movementStatus, "attacking until server return", 1, true))
 
+worldEvent.phase = "prewait"
+humanoid.moveTo = nil
+assert(worldEvent:UpdateMovement() == true)
+assert(humanoid.moveTo == root.Position)
+assert(string.find(movementStatus, "waiting for start", 1, true))
+
 worldEvent.phase = "seeking"
 challenge = 28
 humanoid.moveTo = nil
-assert(worldEvent:UpdateMovement() == true)
+assert(worldEvent:UpdateMovement() == false)
 assert(humanoid.moveTo == nil)
-assert(#sentActions == 1 and sentActions[1] == "DUNGEON_RETURN_TOWN")
 print("world_event_movement_smoke=ok")
 """
         completed = run_luau(fixture)
@@ -191,7 +286,10 @@ print("world_event_movement_smoke=ok")
     def test_ui_exposes_event_state(self):
         self.assertIn('group:AddToggle("AutoWorldEvent"', CORE)
         self.assertIn('Text = "Auto World Event"', CORE)
-        self.assertIn('"World Event: %s • id %s • combat %d"', CORE)
+        self.assertIn(
+            '"World Event: %s • id %s • timer %s • ready %d • combat %d"',
+            CORE,
+        )
 
 
 if __name__ == "__main__":
