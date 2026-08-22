@@ -1445,17 +1445,14 @@ return function(locomotionFactory, Library, Common)
     function worldEvent:AvailableId()
         local eventId = self:CurrentId()
         if eventId == nil then return nil end
-        -- curEventId and Mysterious Event are shared by non-dragon weather
-        -- events. Only the captured dragon target attribute (or an already
-        -- confirmed combat instance) authorizes active takeover.
-        if self:CombatValue() > 0 or self:FindTarget() ~= nil then
-            return eventId
-        end
-        if self:HasSpecialEnemyEvent() then return nil end
-        -- Dragon weather rows can remain cached long after the event. The
-        -- live invitation is required as an activation edge; SpecialEnemy
-        -- remains a stronger veto because it shares that same notification.
-        if self:InvitationValue() > 0 and self:DragonWeatherActive() then
+        -- Every config/notification/timer observed so far remains cached or
+        -- is shared by other weather events. Only live combat surfaces can
+        -- authorize takeover without stranding the player at base.
+        if self:CombatValue() > 0
+            or self:FindTarget() ~= nil
+            or self:DragonBossUiActive()
+            or self:ActiveParticipantPosition() ~= nil
+        then
             return eventId
         end
         return nil
@@ -1489,22 +1486,10 @@ return function(locomotionFactory, Library, Common)
     end
 
     function worldEvent:ShouldPrewait()
-        if cfg.AutoWorldEvent ~= true
-            or self:CurrentId() == nil
-            or self:CombatValue() > 0
-            or self:InvitationValue() > 0
-            or self:HasSpecialEnemyEvent()
-            or not self:DragonWeatherActive()
-        then
-            return false
-        end
-        local countdown = self:CountdownSeconds()
-        local challenge = playerNumber("InDungeonChallenge")
-        return countdown ~= nil
-            and countdown >= 0
-            and countdown <= 10
-            and challenge ~= nil
-            and challenge <= 0
+        -- No captured pre-countdown value distinguishes dragon, SpecialEnemy
+        -- and idle weather reliably. Waiting speculatively is worse than
+        -- joining on the first live boss/participant signal.
+        return false
     end
 
     function worldEvent:OwnsObjective()
@@ -3790,6 +3775,16 @@ return function(locomotionFactory, Library, Common)
 
     function worldEvent:EntryPosition()
         if self.entryTarget ~= nil then return self.entryTarget end
+        local participantPosition = self:ActiveParticipantPosition()
+        if participantPosition ~= nil then
+            self.entryTarget = participantPosition
+            return self.entryTarget
+        end
+        self.entryTarget = self.fallbackEntry
+        return self.entryTarget
+    end
+
+    function worldEvent:ActiveParticipantPosition()
         for _, candidate in ipairs(Players:GetPlayers()) do
             if candidate ~= player then
                 local combatFlag = candidate:FindFirstChild("InEventCombat")
@@ -3799,17 +3794,32 @@ return function(locomotionFactory, Library, Common)
                     return combatFlag and tonumber(combatFlag.Value) or 0
                 end)
                 if ok and combat > 0 and root ~= nil then
-                    self.entryTarget = Vector3.new(
+                    return Vector3.new(
                         root.Position.X,
                         self.fallbackEntry.Y,
                         root.Position.Z
                     )
-                    return self.entryTarget
                 end
             end
         end
-        self.entryTarget = self.fallbackEntry
-        return self.entryTarget
+        return nil
+    end
+
+    function worldEvent:DragonBossUiActive()
+        local playerGui = player:FindFirstChildOfClass("PlayerGui")
+        local boss = playerGui and playerGui:FindFirstChild("BossHp", true)
+        if boss == nil then return false end
+        local visibleOk, visible = pcall(function() return boss.Visible end)
+        if not visibleOk or visible ~= true then return false end
+        local nameLabel = boss:FindFirstChild("ZhName", true)
+        local textOk, text = pcall(function()
+            return nameLabel and tostring(nameLabel.Text) or ""
+        end)
+        if not textOk then return false end
+        return string.find(text, "Fire Dragon", 1, true) ~= nil
+            or string.find(text, "Dark Dragon", 1, true) ~= nil
+            or string.find(text, "火龙", 1, true) ~= nil
+            or string.find(text, "暗龙", 1, true) ~= nil
     end
 
     function worldEvent:FindTarget()
@@ -5030,13 +5040,17 @@ return function(locomotionFactory, Library, Common)
                     local dragonTarget = worldEvent:FindTarget() ~= nil
                     local specialEvent = worldEvent:HasSpecialEnemyEvent()
                     local dragonWeather = worldEvent:DragonWeatherActive()
+                    local bossUi = worldEvent:DragonBossUiActive()
+                    local participant = worldEvent:ActiveParticipantPosition() ~= nil
                     worldEventDiagnostics:Set(string.format(
-                        "World Event: %s • id %s • timer %s • config %s • live %d • dragon %s • special %s • combat %d",
+                        "World Event: %s • id %s • timer %s • config %s • notice %d • boss %s • participant %s • dragon %s • special %s • combat %d",
                         tostring(state),
                         eventId and tostring(eventId) or "-",
                         countdown ~= nil and tostring(countdown) or "-",
                         dragonWeather and tostring(worldEvent.weatherName) or "no",
                         worldEvent:InvitationValue(),
+                        bossUi and "yes" or "no",
+                        participant and "yes" or "no",
                         dragonTarget and "yes" or "no",
                         specialEvent and "yes" or "no",
                         worldEvent:CombatValue()

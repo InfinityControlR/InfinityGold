@@ -87,7 +87,7 @@ class WorldEventFlowTests(unittest.TestCase):
         self.assertNotIn("eventDuration", controller)
         self.assertNotIn("eventEndsAt", controller)
 
-    def test_countdown_only_waits_at_base_during_final_ten_seconds(self):
+    def test_cached_countdown_signals_never_own_objectives(self):
         availability = core_slice(
             "    function worldEvent:CurrentId()",
             "    local basePriority = {",
@@ -156,11 +156,19 @@ local worldEvent = {{
 
 local dragonTarget = false
 local specialEvent = false
+local bossActive = false
+local participantActive = false
 function worldEvent:FindTarget()
     return dragonTarget and {{}} or nil
 end
 function worldEvent:HasSpecialEnemyEvent()
     return specialEvent
+end
+function worldEvent:DragonBossUiActive()
+    return bossActive
+end
+function worldEvent:ActiveParticipantPosition()
+    return participantActive and {{ X = -452, Y = 10, Z = -140 }} or nil
 end
 
 assert(worldEvent:CurrentId() == 3)
@@ -177,9 +185,9 @@ assert(worldEvent:OwnsObjective() == false,
 
 countdown = 10
 fakeClock = 4
-assert(worldEvent:ShouldPrewait() == true)
-assert(worldEvent:OwnsObjective() == true,
-    "last ten seconds at base did not reserve the event")
+assert(worldEvent:ShouldPrewait() == false)
+assert(worldEvent:OwnsObjective() == false,
+    "last ten seconds speculatively reserved an unknown event")
 
 challenge = 28
 assert(worldEvent:ShouldPrewait() == false)
@@ -209,10 +217,22 @@ weatherConfig = true
 fakeClock = 8
 dragonTarget = false
 assert(worldEvent:DragonWeatherActive() == true)
-assert(worldEvent:AvailableId() == 3,
-    "DragonNest weather did not authorize pre-entry movement")
+assert(worldEvent:AvailableId() == nil,
+    "cached config plus stale notice authorized movement")
+assert(worldEvent:OwnsObjective() == false,
+    "cached DragonNest state took over at base")
+
+bossActive = true
+assert(worldEvent:AvailableId() == 3)
 assert(worldEvent:OwnsObjective() == true,
-    "pre-entry DragonNest state did not take over at base")
+    "visible dragon Boss UI did not authorize takeover")
+bossActive = false
+
+participantActive = true
+assert(worldEvent:AvailableId() == 3)
+assert(worldEvent:OwnsObjective() == true,
+    "active event participant did not authorize takeover")
+participantActive = false
 
 dragonTarget = true
 assert(worldEvent:AvailableId() == 3)
@@ -237,10 +257,8 @@ print("world_event_countdown_gate_smoke=ok")
             f"World Event countdown smoke failed:\n{completed.stdout}\n{completed.stderr}",
         )
         self.assertIn("world_event_countdown_gate_smoke=ok", completed.stdout)
-        self.assertIn(
-            'if nextPhase == "idle" and self:ShouldPrewait() then', CORE
-        )
-        self.assertIn('nextPhase = "prewait"', CORE)
+        self.assertIn("function worldEvent:ShouldPrewait()", CORE)
+        self.assertIn("joining on the first live boss/participant signal", CORE)
 
     def test_movement_walks_holds_and_returns_without_teleporting(self):
         movement = core_slice(
@@ -386,7 +404,7 @@ print("world_event_attack_fallback_smoke=ok")
         self.assertIn('group:AddToggle("AutoWorldEvent"', CORE)
         self.assertIn('Text = "Auto World Event"', CORE)
         self.assertIn(
-            '"World Event: %s • id %s • timer %s • config %s • live %d • dragon %s • special %s • combat %d"',
+            '"World Event: %s • id %s • timer %s • config %s • notice %d • boss %s • participant %s • dragon %s • special %s • combat %d"',
             CORE,
         )
 
