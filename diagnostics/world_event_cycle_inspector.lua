@@ -12,12 +12,15 @@ local CoreGui = game:GetService("CoreGui")
 local player = Players.LocalPlayer
 if player == nil then return end
 
-local MAX_EVENTS = 500
-local MAX_REPORT_CHARACTERS = 60000
+local MAX_EVENTS = 700
+local MAX_REPORT_CHARACTERS = 180000
 local MAX_SCALARS = 900
 local MAX_UI_TEXTS = 700
 local MAX_PARTS = 3000
 local MAX_TABLE_MATCHES = 60
+local MAX_DIFF_RECORDS = 100
+local CHECKPOINT_SECONDS = 15
+local CHECKPOINT_FILE = "InfinityGold_world_event_capture.txt"
 local POLL_SECONDS = 1
 
 local alive = true
@@ -30,6 +33,8 @@ local monsterState = {}
 local partState = {}
 local remoteRate = {}
 local lastRootPosition = nil
+local baselineSummary = "pending"
+local lastCheckpointStatus = "checkpoint pending"
 
 local strongTokens = {
     "dragon", "event", "countdown",
@@ -65,7 +70,7 @@ local function add(kind, detail)
     table.insert(events, {
         at = os.clock() - startedAt,
         kind = clean(kind, 40),
-        detail = clean(detail, 520),
+        detail = clean(detail, 360),
     })
     while #events > MAX_EVENTS do table.remove(events, 1) end
 end
@@ -181,17 +186,28 @@ local function partSnapshot()
 end
 
 local function diffState(kind, previous, current)
+    local emitted = 0
+    local omitted = 0
+    local function emit(suffix, detail)
+        if emitted < MAX_DIFF_RECORDS then
+            emitted += 1
+            add(kind .. suffix, detail)
+        else
+            omitted += 1
+        end
+    end
     for key, value in pairs(current) do
         local old = previous[key]
         if old == nil then
-            add(kind .. "+", key .. " | " .. value)
+            emit("+", key .. " | " .. value)
         elseif old ~= value then
-            add(kind .. "~", key .. " | " .. old .. " -> " .. value)
+            emit("~", key .. " | " .. old .. " -> " .. value)
         end
     end
     for key, value in pairs(previous) do
-        if current[key] == nil then add(kind .. "-", key .. " | " .. value) end
+        if current[key] == nil then emit("-", key .. " | " .. value) end
     end
+    if omitted > 0 then add(kind .. "!", tostring(omitted) .. " additional changes summarized") end
 end
 
 local function remoteValue(value, depth)
@@ -233,13 +249,14 @@ scalarState = scalarSnapshot()
 uiState = uiSnapshot()
 monsterState = monsterSnapshot()
 partState = partSnapshot()
-add("baseline", string.format(
+baselineSummary = string.format(
     "scalars=%d ui=%d monsters=%d parts=%d",
     (function() local n=0 for _ in pairs(scalarState) do n+=1 end return n end)(),
     (function() local n=0 for _ in pairs(uiState) do n+=1 end return n end)(),
     (function() local n=0 for _ in pairs(monsterState) do n+=1 end return n end)(),
     (function() local n=0 for _ in pairs(partState) do n+=1 end return n end)()
-))
+)
+add("baseline", baselineSummary)
 
 local function loadedTableMatches()
     local rows = {}
@@ -264,26 +281,70 @@ local function loadedTableMatches()
     return rows
 end
 
-local function report()
+local function currentStateLines()
+    local rows = { "Baseline: " .. baselineSummary, "Current relevant state:" }
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    table.insert(rows, "player=" .. (root and positionText(root.Position) or "?"))
+    for key, value in pairs(uiState) do
+        table.insert(rows, "ui " .. key .. " | " .. value)
+    end
+    for key, value in pairs(monsterState) do
+        table.insert(rows, "monster " .. key .. " | " .. value)
+    end
+    for key, value in pairs(scalarState) do
+        if matchesStrong(key)
+            or string.find(key, "InDungeonChallenge", 1, true)
+        then
+            table.insert(rows, "scalar " .. key .. " | " .. value)
+        end
+    end
+    return rows
+end
+
+local function report(includeLoadedTables)
     local lines = {
         "INFINITYGOLD PASSIVE WORLD EVENT CYCLE INSPECTOR",
         "mode=READ ONLY | no remotes sent | no movement | no synthetic input",
         string.format("elapsed=%.1fs events=%d", os.clock() - startedAt, #events),
         "",
-        "Timeline:",
     }
+    for _, row in ipairs(currentStateLines()) do table.insert(lines, row) end
+    table.insert(lines, "")
+    table.insert(lines, "Timeline:")
     for _, event in ipairs(events) do
         table.insert(lines, string.format("+%.2fs [%s] %s", event.at, event.kind, event.detail))
     end
-    table.insert(lines, "")
-    table.insert(lines, "Matching loaded tables at copy time:")
-    for _, row in ipairs(loadedTableMatches()) do table.insert(lines, row) end
+    if includeLoadedTables ~= false then
+        table.insert(lines, "")
+        table.insert(lines, "Matching loaded tables at copy time:")
+        for _, row in ipairs(loadedTableMatches()) do table.insert(lines, row) end
+    end
     local text = table.concat(lines, "\n")
     if #text > MAX_REPORT_CHARACTERS then
-        text = string.sub(text, 1, MAX_REPORT_CHARACTERS)
-            .. "\n<report truncated at " .. tostring(MAX_REPORT_CHARACTERS) .. " characters>"
+        local preserved = { lines[1], lines[2], lines[3], "" }
+        for _, row in ipairs(currentStateLines()) do table.insert(preserved, row) end
+        table.insert(preserved, "")
+        table.insert(preserved, "<earlier timeline truncated; newest data preserved>")
+        local header = table.concat(preserved, "\n") .. "\n"
+        text = header .. string.sub(
+            text,
+            math.max(1, #text - (MAX_REPORT_CHARACTERS - #header - 1))
+        )
     end
     return text
+end
+
+local function checkpoint(includeLoadedTables)
+    if type(writefile) ~= "function" then
+        lastCheckpointStatus = "writefile unavailable; clipboard still active"
+        return false
+    end
+    local ok, err = pcall(writefile, CHECKPOINT_FILE, report(includeLoadedTables))
+    lastCheckpointStatus = ok
+        and ("saved " .. CHECKPOINT_FILE)
+        or ("checkpoint failed: " .. clean(err, 120))
+    return ok
 end
 
 local old = CoreGui:FindFirstChild("InfinityGoldWorldEventInspector")
@@ -331,7 +392,7 @@ close.TextSize = 12
 close.Parent = frame
 
 connect(copy.Activated, function()
-    local text = report()
+    local text = report(true)
     local copied = false
     for _, name in ipairs({ "setclipboard", "toclipboard" }) do
         local writer = nil
@@ -339,12 +400,14 @@ connect(copy.Activated, function()
         if type(writer) == "function" then copied = pcall(writer, text) end
         if copied then break end
     end
+    checkpoint(true)
     print(text)
     copy.Text = copied and "Copied" or "Printed to console"
 end)
 
 local function shutdown()
     if not alive then return end
+    checkpoint(false)
     alive = false
     for _, connection in ipairs(connections) do pcall(function() connection:Disconnect() end) end
     table.clear(connections)
@@ -353,6 +416,7 @@ end
 connect(close.Activated, shutdown)
 
 task.spawn(function()
+    local nextCheckpointAt = os.clock() + CHECKPOINT_SECONDS
     while alive do
         local scalars = scalarSnapshot()
         local ui = uiSnapshot()
@@ -372,11 +436,15 @@ task.spawn(function()
                 lastRootPosition = root.Position
             end
         end
+        if os.clock() >= nextCheckpointAt then
+            checkpoint(false)
+            nextCheckpointAt = os.clock() + CHECKPOINT_SECONDS
+        end
         status.Text = string.format(
-            "World Event Inspector running • %.0fs • %d records\n"
-                .. "Keep open through countdown, dragons and forced return",
+            "World Event Inspector • %.0fs • %d records\n%s",
             os.clock() - startedAt,
-            #events
+            #events,
+            lastCheckpointStatus
         )
         task.wait(POLL_SECONDS)
     end

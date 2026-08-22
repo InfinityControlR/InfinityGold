@@ -12,12 +12,15 @@ SOURCE = (
 class WorldEventCycleInspectorTests(unittest.TestCase):
     def test_is_passive_bounded_and_captures_required_surfaces(self):
         for marker in (
-            "MAX_EVENTS = 500",
-            "MAX_REPORT_CHARACTERS = 60000",
+            "MAX_EVENTS = 700",
+            "MAX_REPORT_CHARACTERS = 180000",
             "MAX_SCALARS = 900",
             "MAX_UI_TEXTS = 700",
             "MAX_PARTS = 3000",
             "MAX_TABLE_MATCHES = 60",
+            "MAX_DIFF_RECORDS = 100",
+            "CHECKPOINT_SECONDS = 15",
+            'CHECKPOINT_FILE = "InfinityGold_world_event_capture.txt"',
             "while #events > MAX_EVENTS",
             "remote.OnClientEvent",
             "ReplicatedStorage.DescendantAdded",
@@ -26,6 +29,10 @@ class WorldEventCycleInspectorTests(unittest.TestCase):
             "monsterSnapshot()",
             "partSnapshot()",
             "loadedTableMatches()",
+            "for _, row in ipairs(currentStateLines()) do table.insert(preserved, row) end",
+            "earlier timeline truncated; newest data preserved",
+            "checkpoint(false)",
+            "pcall(writefile, CHECKPOINT_FILE",
             "connection:Disconnect()",
             'copy.Text = copied and "Copied"',
         ):
