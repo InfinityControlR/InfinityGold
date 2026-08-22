@@ -1403,6 +1403,9 @@ return function(locomotionFactory, Library, Common)
         entryTarget = nil,
         lastError = nil,
         status = "idle",
+        weatherScanAt = 0,
+        weatherActive = false,
+        weatherName = nil,
         -- Captured while two participants had InEventCombat=1. Live positions
         -- from another participant take precedence; this is only a fallback.
         fallbackEntry = Vector3.new(-452.6, 10.2, -137.2),
@@ -1448,7 +1451,36 @@ return function(locomotionFactory, Library, Common)
         if self:CombatValue() > 0 or self:FindTarget() ~= nil then
             return eventId
         end
+        if self:HasSpecialEnemyEvent() then return nil end
+        if self:DragonWeatherActive() then return eventId end
         return nil
+    end
+
+    function worldEvent:DragonWeatherActive()
+        local now = os.clock()
+        if now < (tonumber(self.weatherScanAt) or 0) then
+            return self.weatherActive == true
+        end
+        self.weatherScanAt = now + 1
+        self.weatherActive = false
+        self.weatherName = nil
+        if type(getgc) ~= "function" then return false end
+        local ok, objects = pcall(getgc, true)
+        if not ok or type(objects) ~= "table" then return false end
+        for _, object in ipairs(objects) do
+            if type(object) == "table" then
+                local facility = rawget(object, "Facility")
+                local weather = rawget(object, "Weather")
+                if facility == "DragonNest"
+                    and (weather == "FireDragon" or weather == "DarkDragon")
+                then
+                    self.weatherActive = true
+                    self.weatherName = weather
+                    return true
+                end
+            end
+        end
+        return false
     end
 
     function worldEvent:ShouldPrewait()
@@ -1457,6 +1489,7 @@ return function(locomotionFactory, Library, Common)
             or self:CombatValue() > 0
             or self:InvitationValue() > 0
             or self:HasSpecialEnemyEvent()
+            or not self:DragonWeatherActive()
         then
             return false
         end
@@ -3472,11 +3505,13 @@ return function(locomotionFactory, Library, Common)
         return best
     end
 
-    local function attackTarget(target)
+    local function attackTarget(target, allowUntargeted)
         local input = resolveAttack()
         if input == nil then return false, attack.status end
         if target ~= nil and not setNowTarget(target) then
-            return false, "NowTargetCurrent unavailable"
+            if allowUntargeted ~= true then
+                return false, "NowTargetCurrent unavailable"
+            end
         end
         -- Match the game/original call context: only module resolution needs
         -- identity 2; the actual input simulation runs at the caller identity.
@@ -4013,7 +4048,7 @@ return function(locomotionFactory, Library, Common)
                 local target = eventCombat and worldEvent:FindTarget()
                     or findAttackTarget(tonumber(cfg.AttackRange) or 120)
                 if target ~= nil then
-                    local ok, err = attackTarget(target)
+                    local ok, err = attackTarget(target, eventCombat)
                     if ok then
                         combatStats.attacksOk = combatStats.attacksOk + 1
                         combatStats.lastAttackError = "none"
@@ -4989,11 +5024,13 @@ return function(locomotionFactory, Library, Common)
                     local countdown = worldEvent:CountdownSeconds()
                     local dragonTarget = worldEvent:FindTarget() ~= nil
                     local specialEvent = worldEvent:HasSpecialEnemyEvent()
+                    local dragonWeather = worldEvent:DragonWeatherActive()
                     worldEventDiagnostics:Set(string.format(
-                        "World Event: %s • id %s • timer %s • dragon %s • special %s • combat %d",
+                        "World Event: %s • id %s • timer %s • weather %s • dragon %s • special %s • combat %d",
                         tostring(state),
                         eventId and tostring(eventId) or "-",
                         countdown ~= nil and tostring(countdown) or "-",
+                        dragonWeather and tostring(worldEvent.weatherName) or "no",
                         dragonTarget and "yes" or "no",
                         specialEvent and "yes" or "no",
                         worldEvent:CombatValue()

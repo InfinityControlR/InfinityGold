@@ -688,7 +688,7 @@ class CombatDiagnosticsTests(unittest.TestCase):
             "-- Pickup worker", 1
         )[0]
         autoattack = worker.split("task.spawn(function()", 2)[1]
-        self.assertIn("attackTarget(target)", autoattack)
+        self.assertIn("attackTarget(target, eventCombat)", autoattack)
         self.assertNotIn("TRAIN_MANUAL_CLICK", autoattack)
         self.assertNotIn("performAutoClick", autoattack)
         self.assertIn("local farming = cfg.AutoFarm or cfg.AutoFarmSpecific", autoattack)

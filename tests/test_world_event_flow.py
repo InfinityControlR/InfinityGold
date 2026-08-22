@@ -72,14 +72,16 @@ class WorldEventFlowTests(unittest.TestCase):
             'model:GetAttribute("EventBattleEnemy") ~= true',
             'model:GetAttribute("SpecialEnemyConfigId") ~= nil',
             'model:GetAttribute("SpecialEnemyStageId") ~= nil',
+            'facility == "DragonNest"',
+            'weather == "FireDragon" or weather == "DarkDragon"',
             "parts.humanoid:MoveTo(target)",
             "parts.humanoid:MoveTo(parts.root.Position)",
             'resetBasePriority("world event finished")',
         ):
             self.assertIn(marker, CORE)
 
-        self.assertNotIn("FireDragon", controller)
-        self.assertNotIn("DarkDragon", controller)
+        self.assertNotIn('model.Name == "FireDragon"', controller)
+        self.assertNotIn('model.Name == "DarkDragon"', controller)
         self.assertNotIn("DUNGEON_RETURN_TOWN", controller)
         self.assertNotIn("root.CFrame =", controller)
         self.assertNotIn("eventDuration", controller)
@@ -96,6 +98,15 @@ local combat = 0
 local invitation = 0
 local countdown = 750
 local challenge = 0
+local weatherConfig = false
+local fakeClock = 0
+local os = {{ clock = function() return fakeClock end }}
+local function getgc()
+    if weatherConfig then
+        return {{{{ Facility = "DragonNest", Weather = "DarkDragon" }}}}
+    end
+    return {{{{ Facility = "SpecialEnemy", Weather = "Dark" }}}}
+end
 local cfg = {{ AutoWorldEvent = true }}
 local Common = {{}}
 function Common.dragonWorldEventId(value)
@@ -134,7 +145,12 @@ local function playerNumber(name)
     if name == "InDungeonChallenge" then return challenge end
     error("unexpected player value " .. tostring(name))
 end
-local worldEvent = {{ phase = "idle", completedEventId = nil }}
+local worldEvent = {{
+    phase = "idle",
+    completedEventId = nil,
+    weatherScanAt = 0,
+    weatherActive = false,
+}}
 
 {availability}
 
@@ -153,6 +169,8 @@ assert(worldEvent:OwnsObjective() == false,
     "dragon ID during countdown paused normal objectives")
 
 countdown = 10
+weatherConfig = true
+fakeClock = 2
 assert(worldEvent:ShouldPrewait() == true)
 assert(worldEvent:OwnsObjective() == true,
     "last ten seconds at base did not reserve the event")
@@ -164,6 +182,8 @@ assert(worldEvent:OwnsObjective() == false,
 
 challenge = 0
 specialEvent = true
+weatherConfig = false
+fakeClock = 4
 assert(worldEvent:ShouldPrewait() == false)
 assert(worldEvent:OwnsObjective() == false,
     "SpecialEnemy event reserved the final ten seconds at base")
@@ -179,6 +199,15 @@ assert(worldEvent:OwnsObjective() == false,
     "non-dragon SpecialEnemy event held the player at base")
 
 specialEvent = false
+weatherConfig = true
+fakeClock = 6
+dragonTarget = false
+assert(worldEvent:DragonWeatherActive() == true)
+assert(worldEvent:AvailableId() == 3,
+    "DragonNest weather did not authorize pre-entry movement")
+assert(worldEvent:OwnsObjective() == true,
+    "pre-entry DragonNest state did not take over at base")
+
 dragonTarget = true
 assert(worldEvent:AvailableId() == 3)
 assert(worldEvent:OwnsObjective() == true,
@@ -280,6 +309,41 @@ print("world_event_movement_smoke=ok")
         )
         self.assertIn("world_event_movement_smoke=ok", completed.stdout)
 
+    def test_event_attack_falls_back_when_target_value_is_unavailable(self):
+        attack_helper = core_slice(
+            "    local function attackTarget(target, allowUntargeted)",
+            "    -- Auto Click combines",
+        )
+        fixture = f"""
+local calls = 0
+local attack = {{ slotIndex = 7, status = "ready" }}
+local input = {{ simulateSlotPressRelease = function(slot, pressed)
+    assert(slot == 7 and pressed == true)
+    calls += 1
+end }}
+local function resolveAttack() return input end
+local function setNowTarget() return false end
+local target = {{}}
+
+{attack_helper}
+
+local ok, err = attackTarget(target, false)
+assert(ok == false and err == "NowTargetCurrent unavailable")
+assert(calls == 0)
+ok, err = attackTarget(target, true)
+assert(ok == true and err == nil)
+assert(calls == 1,
+    "event attack did not fall back to untargeted skill simulation")
+print("world_event_attack_fallback_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"World Event attack fallback failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("world_event_attack_fallback_smoke=ok", completed.stdout)
+
     def test_world_event_preempts_every_objective_without_changing_toggles(self):
         movement = core_slice("    local function updateMovement()", "    -- Combat")
         self.assertLess(
@@ -316,7 +380,7 @@ print("world_event_movement_smoke=ok")
         self.assertIn('group:AddToggle("AutoWorldEvent"', CORE)
         self.assertIn('Text = "Auto World Event"', CORE)
         self.assertIn(
-            '"World Event: %s • id %s • timer %s • dragon %s • special %s • combat %d"',
+            '"World Event: %s • id %s • timer %s • weather %s • dragon %s • special %s • combat %d"',
             CORE,
         )
 
