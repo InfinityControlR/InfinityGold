@@ -70,6 +70,8 @@ class WorldEventFlowTests(unittest.TestCase):
             "Vector3.new(-452.6, 10.2, -137.2)",
             'candidate:FindFirstChild("InEventCombat")',
             'model:GetAttribute("EventBattleEnemy") ~= true',
+            'model:GetAttribute("SpecialEnemyConfigId") ~= nil',
+            'model:GetAttribute("SpecialEnemyStageId") ~= nil',
             "parts.humanoid:MoveTo(target)",
             "parts.humanoid:MoveTo(parts.root.Position)",
             'resetBasePriority("world event finished")',
@@ -136,6 +138,15 @@ local worldEvent = {{ phase = "idle", completedEventId = nil }}
 
 {availability}
 
+local dragonTarget = false
+local specialEvent = false
+function worldEvent:FindTarget()
+    return dragonTarget and {{}} or nil
+end
+function worldEvent:HasSpecialEnemyEvent()
+    return specialEvent
+end
+
 assert(worldEvent:CurrentId() == 3)
 assert(worldEvent:AvailableId() == nil)
 assert(worldEvent:OwnsObjective() == false,
@@ -151,16 +162,34 @@ assert(worldEvent:ShouldPrewait() == false)
 assert(worldEvent:OwnsObjective() == false,
     "last ten seconds interrupted an active farm run")
 
-invitation = 1
-assert(worldEvent:AvailableId() == 3)
+challenge = 0
+specialEvent = true
+assert(worldEvent:ShouldPrewait() == false)
 assert(worldEvent:OwnsObjective() == false,
-    "live event forced an active farm run to return")
+    "SpecialEnemy event reserved the final ten seconds at base")
+
+invitation = 1
+assert(worldEvent:AvailableId() == nil,
+    "shared Mysterious Event flag was mistaken for a dragon")
+assert(worldEvent:OwnsObjective() == false,
+    "non-dragon SpecialEnemy event interrupted active farming")
 
 challenge = 0
+assert(worldEvent:OwnsObjective() == false,
+    "non-dragon SpecialEnemy event held the player at base")
+
+specialEvent = false
+dragonTarget = true
+assert(worldEvent:AvailableId() == 3)
 assert(worldEvent:OwnsObjective() == true,
-    "natural return to base did not release the live event")
+    "captured EventBattleEnemy did not authorize takeover at base")
+
+challenge = 28
+assert(worldEvent:OwnsObjective() == false,
+    "dragon target forced an active farm run to return")
 
 invitation = 0
+dragonTarget = false
 combat = 1
 assert(worldEvent:OwnsObjective() == true,
     "confirmed InEventCombat did not retain event ownership")
@@ -287,7 +316,7 @@ print("world_event_movement_smoke=ok")
         self.assertIn('group:AddToggle("AutoWorldEvent"', CORE)
         self.assertIn('Text = "Auto World Event"', CORE)
         self.assertIn(
-            '"World Event: %s • id %s • timer %s • ready %d • combat %d"',
+            '"World Event: %s • id %s • timer %s • dragon %s • special %s • combat %d"',
             CORE,
         )
 

@@ -52,13 +52,17 @@ the InfinityGold dashboard.
   the countdown all objectives continue normally; only a player already at
   base waits during the final ten seconds. An active dungeon run is never
   interrupted or returned early. When that run reaches base naturally and
-  the event is live, the controller walks natively to a live participant's
+  the dragon target marked `EventBattleEnemy=true` is live, the controller
+  walks natively to a live participant's
   event position (falling back to the captured entrance). It pauses
   `Alchemy -> Sell -> Broom -> Farm/Train` without changing any of those
   toggles. Once `InEventCombat=1` confirms entry, it holds position and attacks
   the model carrying `EventBattleEnemy=true` until the server clears that flag
   and expels the player; only then is base priority restarted. The dragon name,
   health and a local duration are never completion signals.
+  Rotations that instead spawn `SpecialEnemyConfigId`/`SpecialEnemyStageId`
+  monsters are explicitly ignored, even though they share `curEventId` and
+  `Mysterious Event` with the dragon rotation.
 - **Walking**: `humanoid:Move` driven from a render-step binding at
   `Enum.RenderPriority.Character + 1`. No teleports, no WalkSpeed/JumpPower
   changes. Its final farm point is the stage centre, matching Magic; EnterDelay

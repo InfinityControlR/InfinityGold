@@ -1442,7 +1442,10 @@ return function(locomotionFactory, Library, Common)
     function worldEvent:AvailableId()
         local eventId = self:CurrentId()
         if eventId == nil then return nil end
-        if self:CombatValue() > 0 or self:InvitationValue() > 0 then
+        -- curEventId and Mysterious Event are shared by non-dragon weather
+        -- events. Only the captured dragon target attribute (or an already
+        -- confirmed combat instance) authorizes active takeover.
+        if self:CombatValue() > 0 or self:FindTarget() ~= nil then
             return eventId
         end
         return nil
@@ -1453,6 +1456,7 @@ return function(locomotionFactory, Library, Common)
             or self:CurrentId() == nil
             or self:CombatValue() > 0
             or self:InvitationValue() > 0
+            or self:HasSpecialEnemyEvent()
         then
             return false
         end
@@ -3786,6 +3790,23 @@ return function(locomotionFactory, Library, Common)
         return nil
     end
 
+    function worldEvent:HasSpecialEnemyEvent()
+        for _, folderName in ipairs({ "Monster", "LocalMonster" }) do
+            local folder = workspace:FindFirstChild(folderName)
+            if folder ~= nil then
+                for _, model in ipairs(folder:GetChildren()) do
+                    local ok, special = pcall(function()
+                        if not model:IsA("Model") then return false end
+                        return model:GetAttribute("SpecialEnemyConfigId") ~= nil
+                            or model:GetAttribute("SpecialEnemyStageId") ~= nil
+                    end)
+                    if ok and special then return true end
+                end
+            end
+        end
+        return false
+    end
+
     function worldEvent:UpdateMovement()
         self:Sync()
         if not self:OwnsObjective() then return false end
@@ -4966,12 +4987,15 @@ return function(locomotionFactory, Library, Common)
                     local state = cfg.AutoWorldEvent and worldEvent.status or "disabled"
                     local eventId = worldEvent:CurrentId()
                     local countdown = worldEvent:CountdownSeconds()
+                    local dragonTarget = worldEvent:FindTarget() ~= nil
+                    local specialEvent = worldEvent:HasSpecialEnemyEvent()
                     worldEventDiagnostics:Set(string.format(
-                        "World Event: %s • id %s • timer %s • ready %d • combat %d",
+                        "World Event: %s • id %s • timer %s • dragon %s • special %s • combat %d",
                         tostring(state),
                         eventId and tostring(eventId) or "-",
                         countdown ~= nil and tostring(countdown) or "-",
-                        worldEvent:InvitationValue(),
+                        dragonTarget and "yes" or "no",
+                        specialEvent and "yes" or "no",
                         worldEvent:CombatValue()
                     ))
                 end)
