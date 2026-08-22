@@ -262,6 +262,7 @@ class CoreInvariantTests(unittest.TestCase):
         self.assertIn('refreshCatalogDropdown(\n            recipeDropdown,', self.source)
         self.assertIn('refreshCatalogDropdown(\n            potionDropdown,', self.source)
         self.assertIn("Common.catalogDisplayName(", self.source)
+        self.assertIn('"Best available",\n            true', self.source)
         locomotion = read("games/magicloot_locomotion.lua")
         self.assertIn("Value = tostring(entry.id)", locomotion)
         self.assertIn("Text = name", locomotion)

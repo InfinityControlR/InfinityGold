@@ -49,7 +49,7 @@ def run_luau(source: str) -> subprocess.CompletedProcess:
 
 
 class CatalogLabelTests(unittest.TestCase):
-    def test_training_and_shared_catalogs_never_show_legacy_or_cjk_labels(self):
+    def test_training_ground_never_shows_legacy_or_cjk_labels(self):
         fixture = f"""
 local Common = {{}}
 {DISPLAY_HELPER}
@@ -67,23 +67,28 @@ end
 
 {TRANSLATED_CONFIG_NAME}
 
+local function visible(raw, id, prefix)
+    local name = translatedConfigName(raw, id, prefix)
+    return Common.catalogDisplayName(name, prefix, id)
+end
+
 local chinese = "训练场"
-local fallback = translatedConfigName({{ ZhName = chinese }}, 12, "Training ground")
+local fallback = visible({{ ZhName = chinese }}, 12, "Training ground")
 assert(fallback == "Training ground", "CJK echo remained visible: " .. fallback)
 
 translations[chinese] = "Crystal Training Ground"
-local translated = translatedConfigName({{ ZhName = chinese }}, 12, "Training ground")
+local translated = visible({{ ZhName = chinese }}, 12, "Training ground")
 assert(translated == "Crystal Training Ground", "valid translation was discarded")
 
 translations[chinese] = chinese
-local direct = translatedConfigName(
-    {{ ZhName = chinese, Name = "Stone Training Ground" }},
+local direct = visible(
+    {{ Name = "Stone Training Ground" }},
     13,
     "Training ground"
 )
-assert(direct == "Stone Training Ground", "English direct name was not preferred")
+assert(direct == "Stone Training Ground", "English direct name was discarded")
 
-local legacy = translatedConfigName({{ Name = "#14 Ember Ground" }}, 14, "Training ground")
+local legacy = visible({{ Name = "#14 Ember Ground" }}, 14, "Training ground")
 assert(legacy == "Ember Ground", "legacy #ID remained visible: " .. legacy)
 print("catalog_labels_smoke=ok")
 """

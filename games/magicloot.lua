@@ -748,50 +748,49 @@ return function(locomotionFactory, Library, Common)
     end
 
     local function translatedConfigName(raw, id, fallbackPrefix)
-        local directName = type(raw) == "table"
-            and (raw.Name or raw.name or raw.DisplayName or raw.displayName)
+        local name = type(raw) == "table"
+            and (raw.ZhName
+                or raw.Name
+                or raw.name
+                or raw.DisplayName
+                or raw.displayName)
             or nil
-        local translationKey = type(raw) == "table" and raw.ZhName or nil
-        if translationKey ~= nil then
+        if name ~= nil then
             local translation = resolveRuntimeModule("TranslationHelper")
             if translation ~= nil
                 and type(translation.TranslateByKey) == "function"
             then
-                local ok, value = pcall(translation.TranslateByKey, translationKey)
+                local ok, value = pcall(translation.TranslateByKey, name)
                 if ok and type(value) == "string" and value ~= "" then
-                    local display, usedFallback = Common.catalogDisplayName(
-                        value,
-                        fallbackPrefix,
-                        id
-                    )
-                    if not usedFallback then return display end
+                    name = value
                 end
             end
         end
-        local display, usedFallback = Common.catalogDisplayName(
-            directName,
-            fallbackPrefix,
-            id
-        )
-        if not usedFallback then return display end
-        return Common.catalogDisplayName(translationKey, fallbackPrefix, id)
+        if type(name) ~= "string" or name == "" then
+            name = tostring(fallbackPrefix or "Item")
+        end
+        return name
     end
 
     local function catalogByName(name, itemType)
         return Common.catalogEntries(configByName(name), itemType)
     end
 
-    local function catalogDropdownValues(name, fallbackPrefix, firstValue)
+    local function catalogDropdownValues(name, fallbackPrefix, firstValue, cleanVisible)
         local values = {}
         if firstValue ~= nil then table.insert(values, firstValue) end
         for _, entry in ipairs(catalogByName(name)) do
+            local text = translatedConfigName(
+                entry.raw,
+                entry.id,
+                fallbackPrefix
+            )
+            if cleanVisible == true then
+                text = Common.catalogDisplayName(text, fallbackPrefix, entry.id)
+            end
             table.insert(values, {
                 Value = tostring(entry.id),
-                Text = translatedConfigName(
-                    entry.raw,
-                    entry.id,
-                    fallbackPrefix
-                ),
+                Text = text,
             })
         end
         return values
@@ -4964,7 +4963,8 @@ return function(locomotionFactory, Library, Common)
         local trainGroundValues = catalogDropdownValues(
             "trainConf",
             "Training ground",
-            "Best available"
+            "Best available",
+            true
         )
         local trainGroundDropdown = group:AddDropdown("TrainGround", {
             Text = "Training ground",
@@ -4980,7 +4980,8 @@ return function(locomotionFactory, Library, Common)
                 return catalogDropdownValues(
                     "trainConf",
                     "Training ground",
-                    "Best available"
+                    "Best available",
+                    true
                 )
             end,
             false,
@@ -5158,10 +5159,12 @@ return function(locomotionFactory, Library, Common)
                     local entries = catalogByName(configName, itemType)
                     local visible = {}
                     for _, entry in ipairs(entries) do
+                        local name = translatedConfigName(entry.raw, entry.id, "Wand")
+                        name = Common.catalogDisplayName(name, "Wand", entry.id)
                         table.insert(visible, {
                             id = entry.id,
                             price = entry.price,
-                            name = translatedConfigName(entry.raw, entry.id, "Wand"),
+                            name = name,
                         })
                     end
                     return visible
