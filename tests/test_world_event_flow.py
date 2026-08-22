@@ -375,14 +375,11 @@ print("world_event_attack_fallback_smoke=ok")
         )
         fixture = f"""
 local healthText = "0%"
-local nameText = "Dark Dragon"
 local bossVisible = true
-local nameLabel = {{ Text = nameText }}
 local healthLabel = {{ Text = healthText }}
 local boss = {{ Visible = true }}
 function boss:FindFirstChild(name, recursive)
     assert(recursive == true)
-    if name == "ZhName" then nameLabel.Text = nameText return nameLabel end
     if name == "Hp" then healthLabel.Text = healthText return healthLabel end
     return nil
 end
@@ -406,9 +403,6 @@ assert(worldEvent:DragonBossUiActive() == false,
 healthText = "82%"
 assert(worldEvent:DragonBossUiActive() == true)
 bossVisible = false
-assert(worldEvent:DragonBossUiActive() == false)
-bossVisible = true
-nameText = "Training Boss"
 assert(worldEvent:DragonBossUiActive() == false)
 print("world_event_boss_ui_smoke=ok")
 """

@@ -53,7 +53,7 @@ the InfinityGold dashboard.
   base never waits on the countdown alone: every observed timer, notification
   and DragonNest row can remain stale. An active dungeon run is never
   interrupted or returned early. When that run reaches base naturally and a
-  live Fire/Dark Dragon Boss UI with HP strictly above 0, another player with
+  live DragonRise Boss UI with HP strictly above 0, another player with
   `InEventCombat>0`, or the boss model itself appears, the controller
   walks natively to a live participant's
   event position (falling back to the captured entrance). It pauses
