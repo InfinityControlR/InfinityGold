@@ -74,7 +74,7 @@ end
 
 local chinese = "训练场"
 local fallback = visible({{ ZhName = chinese }}, 12, "Training ground")
-assert(fallback == "Training ground", "CJK echo remained visible: " .. fallback)
+assert(fallback == "Training ground 12", "CJK echo remained visible: " .. fallback)
 
 translations[chinese] = "Crystal Training Ground"
 local translated = visible({{ ZhName = chinese }}, 12, "Training ground")

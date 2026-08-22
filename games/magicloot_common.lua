@@ -153,7 +153,8 @@ function Common.catalogDisplayName(value, fallbackPrefix, id)
 
     local prefix = type(fallbackPrefix) == "string" and fallbackPrefix ~= ""
         and fallbackPrefix or "Item"
-    return prefix, true
+    local numericId = math.floor(tonumber(id) or 0)
+    return numericId > 0 and (prefix .. " " .. tostring(numericId)) or prefix, true
 end
 
 -- Local-space offset for Running's circular waypoints. Keeping the trigonometry

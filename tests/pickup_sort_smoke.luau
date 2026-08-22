@@ -152,7 +152,7 @@ check("catalog display: preserves localized non-CJK text",
     displayName == "Terreno Áureo" and usedFallback == false)
 displayName, usedFallback = Common.catalogDisplayName("训练场", "Training ground", 103)
 check("catalog display: replaces untranslated CJK key",
-    displayName == "Training ground" and usedFallback == true)
+    displayName == "Training ground 103" and usedFallback == true)
 
 local orbitX, orbitZ = Common.runningOrbitOffset(0, 12)
 check("running orbit: zero angle", math.abs(orbitX - 12) < 0.001

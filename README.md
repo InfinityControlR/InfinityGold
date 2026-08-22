@@ -147,7 +147,9 @@ the InfinityGold dashboard.
 - **Progress**: Auto Rebirth uses the payload-free invoke contract, stops at
   the selected value from 1–41, and waits until `leaderstats.Level` reaches the
   next `rebirthConf.LvNeed`. Auto Train can use a selected ground or the
-  highest unlocked ground, moves to its zone, updates `TRAIN_ZONE_UPDATE` and
+  first enterable ground in Magic's ascending catalog order. An explicit ground
+  is not vetoed by the advisory `CanEnterTrainGround` predicate; it resolves the
+  requested zone directly, moves there, updates `TRAIN_ZONE_UPDATE` and
   invokes `TRAIN_MANUAL_CLICK`; enabling Auto Train immediately disables Auto
   Broom and both farming switches, so its route is `Alchemy -> Sell -> Train`.
   Auto Return still handles the full temporary bag. Index claims are

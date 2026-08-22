@@ -3917,15 +3917,17 @@ return function(locomotionFactory, Library, Common)
         local explicit = tonumber(selected)
             or tonumber(string.match(selected, "^#?(%d+)"))
         if explicit ~= nil then
-            explicit = math.floor(explicit)
-            return canEnterTrainGround(explicit) and explicit or nil
+            -- Magic trusts an explicit user selection and lets the zone/remote
+            -- provide the real acceptance signal. Its CanEnter predicate is
+            -- used only to choose Best available.
+            return math.floor(explicit)
         end
 
         local ids = {}
         for _, entry in ipairs(catalogByName("trainConf")) do
             table.insert(ids, entry.id)
         end
-        table.sort(ids, function(left, right) return left > right end)
+        table.sort(ids)
         for _, trainId in ipairs(ids) do
             if canEnterTrainGround(trainId) then return trainId end
         end
