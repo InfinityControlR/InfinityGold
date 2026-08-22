@@ -218,6 +218,41 @@ return function(locomotionFactory, Library, Common)
                 if specific then return math.floor(tonumber(selected) or 1) end
                 return math.max((tonumber(cleared) or 0) + 1, math.floor(tonumber(selected) or 1))
             end,
+            dragonWorldEventId = function(value)
+                local eventId = tonumber(value)
+                if eventId == nil then return nil end
+                eventId = math.floor(eventId)
+                return (eventId == 3 or eventId == 4) and eventId or nil
+            end,
+            worldEventTransition = function(
+                previousPhase,
+                activeId,
+                completedId,
+                currentId,
+                combatValue,
+                enabled
+            )
+                if enabled ~= true then return "idle", nil, nil, false end
+                local dragonId = tonumber(currentId)
+                if dragonId ~= nil then dragonId = math.floor(dragonId) end
+                dragonId = (dragonId == 3 or dragonId == 4) and dragonId or nil
+                local phase = tostring(previousPhase or "idle")
+                if phase == "cooldown" then
+                    if dragonId ~= nil and dragonId == tonumber(completedId) then
+                        return "cooldown", nil, completedId, false
+                    end
+                    phase, completedId = "idle", nil
+                end
+                if (tonumber(combatValue) or 0) > 0 then
+                    return "combat", dragonId or tonumber(activeId), nil, false
+                end
+                if phase == "combat" then
+                    local finishedId = tonumber(activeId) or dragonId
+                    return "cooldown", nil, finishedId, true
+                end
+                if dragonId ~= nil then return "seeking", dragonId, nil, false end
+                return "idle", nil, nil, false
+            end,
             parseIdSelection = function(values)
                 local ids = {}
                 if type(values) == "table" then
@@ -256,6 +291,7 @@ return function(locomotionFactory, Library, Common)
         -- Farm
         AutoFarm = false,
         AutoFarmSpecific = false,
+        AutoWorldEvent = false,
         FarmStage = 1,
         FarmMode = "Ground",
         FarmHeight = 20,
@@ -1360,6 +1396,42 @@ return function(locomotionFactory, Library, Common)
         temporaryBagUsed = nil,
         transferStatus = "idle",
     }
+    local worldEvent = {
+        phase = "idle",
+        eventId = nil,
+        completedEventId = nil,
+        entryTarget = nil,
+        lastReturnAt = 0,
+        lastError = nil,
+        status = "idle",
+        -- Captured while two participants had InEventCombat=1. Live positions
+        -- from another participant take precedence; this is only a fallback.
+        fallbackEntry = Vector3.new(-452.6, 10.2, -137.2),
+    }
+
+    function worldEvent:CurrentId()
+        return Common.dragonWorldEventId(playerNumber("curEventId"))
+    end
+
+    function worldEvent:CombatValue()
+        return tonumber(playerNumber("InEventCombat")) or 0
+    end
+
+    function worldEvent:OwnsObjective()
+        if cfg.AutoWorldEvent ~= true then return false end
+        local currentId = self:CurrentId()
+        if self.phase == "cooldown"
+            and currentId ~= nil
+            and currentId == tonumber(self.completedEventId)
+        then
+            return false
+        end
+        return self:CombatValue() > 0
+            or currentId ~= nil
+            or self.phase == "seeking"
+            or self.phase == "combat"
+    end
+
     local basePriority = {
         phase = "alchemy",
         generation = 0,
@@ -1384,6 +1456,9 @@ return function(locomotionFactory, Library, Common)
 
     local function broomEconomyGate()
         if not configReady then return false, "broom waiting for config" end
+        if worldEvent:OwnsObjective() then
+            return false, "broom waiting for World Event"
+        end
         local challenge = playerNumber("InDungeonChallenge")
         if challenge == nil then return false, "broom waiting for dungeon state" end
         if challenge > 0 or basePriority.phase == "broom" then return true end
@@ -1392,6 +1467,9 @@ return function(locomotionFactory, Library, Common)
 
     local function farmObjectiveGate()
         if not configReady then return false, "farm waiting for config" end
+        if worldEvent:OwnsObjective() then
+            return false, "objective waiting for World Event"
+        end
         local challenge = playerNumber("InDungeonChallenge")
         if challenge == nil then return false, "farm waiting for dungeon state" end
         if challenge <= 0 then
@@ -1411,6 +1489,49 @@ return function(locomotionFactory, Library, Common)
         cursor = 1,
         nextAttemptAt = 0,
     }
+
+    function worldEvent:Sync()
+        local previousPhase = self.phase
+        local nextPhase, activeId, completedId, finished = Common.worldEventTransition(
+            self.phase,
+            self.eventId,
+            self.completedEventId,
+            playerNumber("curEventId"),
+            playerNumber("InEventCombat"),
+            cfg.AutoWorldEvent == true
+        )
+        self.phase = nextPhase
+        self.eventId = activeId
+        self.completedEventId = completedId
+
+        if nextPhase == "idle" then
+            self.entryTarget = nil
+            self.lastError = nil
+            self.status = "idle"
+        elseif nextPhase == "seeking" then
+            self.status = "walking to event"
+        elseif nextPhase == "combat" then
+            self.status = "event combat"
+        elseif nextPhase == "cooldown" then
+            self.entryTarget = nil
+            self.status = "event complete; objectives resumed"
+        end
+
+        if previousPhase ~= nextPhase then
+            if nextPhase == "seeking" then
+                notify("Dragon event detected; pausing objectives")
+            elseif nextPhase == "combat" then
+                notify("Dragon event entered; attacking until server return")
+            end
+        end
+        if finished then
+            broomFarmRoute.stage = nil
+            broomFarmRoute.bypassEnterDelay = false
+            resetBasePriority("world event finished")
+            notify("Dragon event finished; resuming base priority")
+        end
+        return nextPhase, finished
+    end
     local alchemyPickupNextAttemptAt = 0
     local alchemyBaseSyncUntil = 0
     local ALCHEMY_BASE_SYNC_SECONDS = 0.35
@@ -3560,6 +3681,101 @@ return function(locomotionFactory, Library, Common)
         return fallback
     end
 
+    function worldEvent:EntryPosition()
+        if self.entryTarget ~= nil then return self.entryTarget end
+        for _, candidate in ipairs(Players:GetPlayers()) do
+            if candidate ~= player then
+                local combatFlag = candidate:FindFirstChild("InEventCombat")
+                local character = candidate.Character
+                local root = character and character:FindFirstChild("HumanoidRootPart")
+                local ok, combat = pcall(function()
+                    return combatFlag and tonumber(combatFlag.Value) or 0
+                end)
+                if ok and combat > 0 and root ~= nil then
+                    self.entryTarget = Vector3.new(
+                        root.Position.X,
+                        self.fallbackEntry.Y,
+                        root.Position.Z
+                    )
+                    return self.entryTarget
+                end
+            end
+        end
+        self.entryTarget = self.fallbackEntry
+        return self.entryTarget
+    end
+
+    function worldEvent:FindTarget()
+        for _, folderName in ipairs({ "Monster", "LocalMonster" }) do
+            local folder = workspace:FindFirstChild(folderName)
+            if folder ~= nil then
+                for _, model in ipairs(folder:GetChildren()) do
+                    local ok, eligible = pcall(function()
+                        if not model:IsA("Model") then return false end
+                        if model:GetAttribute("EventBattleEnemy") ~= true then return false end
+                        local humanoid = model:FindFirstChildOfClass("Humanoid")
+                        return humanoid == nil or humanoid.Health > 0
+                    end)
+                    if ok and eligible then return model end
+                end
+            end
+        end
+        return nil
+    end
+
+    function worldEvent:UpdateMovement()
+        self:Sync()
+        if not self:OwnsObjective() then return false end
+
+        stopMovementModes()
+        local parts = characterParts()
+        if parts == nil then
+            self.status = "waiting for character"
+            setMovementStatus("World Event: waiting for character")
+            return true
+        end
+
+        if self.phase == "combat" then
+            -- Entry is confirmed by replicated state. Stay exactly where the
+            -- game placed us and let the dedicated combat worker attack.
+            pcall(function()
+                parts.humanoid:Move(Vector3.zero, false)
+                parts.humanoid:MoveTo(parts.root.Position)
+            end)
+            self.status = "event combat; holding position"
+            setMovementStatus("World Event: attacking until server return")
+            return true
+        end
+
+        local challenge = playerNumber("InDungeonChallenge")
+        if challenge == nil then
+            self.status = "waiting for dungeon state"
+            setMovementStatus("World Event: waiting for dungeon state")
+            return true
+        end
+        if challenge > 0 then
+            if os.clock() - self.lastReturnAt >= 1 then
+                self.lastReturnAt = os.clock()
+                local sent, err = sendAction("DUNGEON_RETURN_TOWN")
+                self.lastError = sent and nil or tostring(err or "return failed")
+            end
+            self.status = "returning to base for event"
+            setMovementStatus("World Event: returning to base")
+            return true
+        end
+
+        local target = self:EntryPosition()
+        local moved, moveError = pcall(function()
+            parts.humanoid:MoveTo(target)
+        end)
+        self.lastError = moved and nil or tostring(moveError)
+        self.status = moved and "walking to event" or "event walk failed"
+        setMovementStatus(moved
+            and "World Event: walking to entrance"
+            or ("World Event: movement failed: " .. tostring(moveError)))
+        return true
+    end
+
     local function updateMovement()
         if cfg.FarmMode ~= lastFarmMode then
             if lastFarmMode == "Walking" or lastFarmMode == "Running" then
@@ -3567,6 +3783,14 @@ return function(locomotionFactory, Library, Common)
             end
             lastFarmMode = cfg.FarmMode
             enterDelay.stage = nil
+        end
+
+        -- World Event preempts the whole normal objective chain. Its toggle
+        -- never modifies the saved Farm/Broom/Training choices, so the base
+        -- sequence can resume unchanged after the server expels the player.
+        if worldEvent:UpdateMovement() then
+            enterDelay.stage = nil
+            return
         end
 
         local full = bagFull()
@@ -3700,8 +3924,17 @@ return function(locomotionFactory, Library, Common)
     task.spawn(function()
         while sessionAlive do
             local farming = cfg.AutoFarm or cfg.AutoFarmSpecific
-            if farming and cfg.AutoAttack and not blocksAttack() then
-                local target = findAttackTarget(tonumber(cfg.AttackRange) or 120)
+            local eventCombat = cfg.AutoWorldEvent == true
+                and worldEvent:CombatValue() > 0
+            local normalCombat = not worldEvent:OwnsObjective()
+                and farming
+                and cfg.AutoAttack
+            if (eventCombat or normalCombat) and not blocksAttack() then
+                -- Event enemies are selected by their replicated attribute,
+                -- never by dragon name or range. Auto World Event is therefore
+                -- self-contained even if normal Auto Attack is disabled.
+                local target = eventCombat and worldEvent:FindTarget()
+                    or findAttackTarget(tonumber(cfg.AttackRange) or 120)
                 if target ~= nil then
                     local ok, err = attackTarget(target)
                     if ok then
@@ -3882,7 +4115,9 @@ return function(locomotionFactory, Library, Common)
 
     task.spawn(function()
         while sessionAlive do
-            if cfg.AutoPickup then
+            local eventCombat = cfg.AutoWorldEvent == true
+                and worldEvent:CombatValue() > 0
+            if cfg.AutoPickup or eventCombat then
                 local ok, err = pcall(collectDrops)
                 if not ok then
                     -- transient scan failure; retry on the next tick
@@ -4089,7 +4324,7 @@ return function(locomotionFactory, Library, Common)
 
     task.spawn(function() -- rebirth
         while sessionAlive do
-            runRebirthCycle()
+            if not worldEvent:OwnsObjective() then runRebirthCycle() end
             task.wait(3)
         end
     end)
@@ -4181,6 +4416,7 @@ return function(locomotionFactory, Library, Common)
         local function idleBaseAlchemyEnabled()
             return cfg.AutoBrew == true
                 and cfg.AutoPickupPotion == true
+                and not worldEvent:OwnsObjective()
                 and cfg.AutoBroom ~= true
                 and cfg.AutoFarm ~= true
                 and cfg.AutoFarmSpecific ~= true
@@ -4305,6 +4541,10 @@ return function(locomotionFactory, Library, Common)
                 sellTelemetry.status = "waiting for config"
                 sellTelemetry.lastError = nil
                 nextAutoSellAt = 0
+            elseif worldEvent:OwnsObjective() then
+                -- Preserve the current Alchemy/Sell phase without starting a
+                -- new base action. World Event owns the player until the game
+                -- itself clears InEventCombat and returns them to the lobby.
             elseif observedChallenge == nil then
                 setBasePriorityPhase("alchemy", "waiting for dungeon state")
             elseif observedChallenge > 0 then
@@ -4659,6 +4899,26 @@ return function(locomotionFactory, Library, Common)
                 end
             end,
         })
+        group:AddToggle("AutoWorldEvent", {
+            Text = "Auto World Event",
+            Default = false,
+        })
+        local worldEventDiagnostics = group:AddLabel("World Event: disabled")
+        task.spawn(function()
+            while sessionAlive do
+                pcall(function()
+                    local state = cfg.AutoWorldEvent and worldEvent.status or "disabled"
+                    local eventId = worldEvent:CurrentId()
+                    worldEventDiagnostics:Set(string.format(
+                        "World Event: %s • id %s • combat %d",
+                        tostring(state),
+                        eventId and tostring(eventId) or "-",
+                        worldEvent:CombatValue()
+                    ))
+                end)
+                task.wait(0.5)
+            end
+        end)
         local stageValues = {}
         for stage = 1, MAX_FARM_STAGE do
             table.insert(stageValues, tostring(stage))

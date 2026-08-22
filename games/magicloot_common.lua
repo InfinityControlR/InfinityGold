@@ -123,6 +123,55 @@ function Common.broomFarmStageTarget(normalStage, broomStage, progressive)
     return broom, false
 end
 
+-- Runtime capture identifies the two rotating dragon invasions as event IDs
+-- 3 and 4. The enemy name/model is deliberately not part of this contract:
+-- both variants expose the same replicated event-combat state.
+function Common.dragonWorldEventId(value)
+    local eventId = tonumber(value)
+    if eventId == nil then return nil end
+    eventId = math.floor(eventId)
+    if eventId == 3 or eventId == 4 then return eventId end
+    return nil
+end
+
+-- Pure state transition for the World Event controller. A completed event
+-- remains in cooldown while the same ID is still replicated, preventing the
+-- forced return from being mistaken for a fresh invitation.
+function Common.worldEventTransition(
+    previousPhase,
+    activeId,
+    completedId,
+    currentId,
+    combatValue,
+    enabled
+)
+    if enabled ~= true then return "idle", nil, nil, false end
+
+    local dragonId = Common.dragonWorldEventId(currentId)
+    local combat = tonumber(combatValue) or 0
+    local phase = tostring(previousPhase or "idle")
+
+    if phase == "cooldown" then
+        if dragonId ~= nil and dragonId == tonumber(completedId) then
+            return "cooldown", nil, completedId, false
+        end
+        phase = "idle"
+        completedId = nil
+    end
+
+    if combat > 0 then
+        return "combat", dragonId or tonumber(activeId), nil, false
+    end
+    if phase == "combat" then
+        local finishedId = tonumber(activeId) or dragonId
+        return "cooldown", nil, finishedId, true
+    end
+    if dragonId ~= nil then
+        return "seeking", dragonId, nil, false
+    end
+    return "idle", nil, nil, false
+end
+
 -- Keep catalog identity in the dropdown Value while presenting a clean label.
 -- Old configs and some game facades expose "#ID name"; untranslated ZhName
 -- values are CJK keys rather than useful localized text.

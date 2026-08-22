@@ -36,7 +36,12 @@ def run_luau(source: str) -> subprocess.CompletedProcess:
         path.unlink(missing_ok=True)
 
 
-BASE_PRIORITY = core_slice(
+WORLD_EVENT_IDLE_STUB = """
+local worldEvent = {
+    OwnsObjective = function() return false end,
+}
+"""
+BASE_PRIORITY = WORLD_EVENT_IDLE_STUB + core_slice(
     "    local basePriority = {",
     "    local alchemyRecovery = {",
 )

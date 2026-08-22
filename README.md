@@ -48,6 +48,14 @@ the InfinityGold dashboard.
   `Above`, `Orbit`, `Running`, `Walking`, configurable height/orbit/enter delay.
   Walking/Running start their route directly from base; they do not wait for
   `InDungeonChallenge > 0` before moving toward a stage.
+  Auto World Event recognizes the captured dragon rotation IDs 3/4, returns
+  from a dungeon when necessary and walks natively to a live participant's
+  event position (falling back to the captured entrance). It pauses
+  `Alchemy -> Sell -> Broom -> Farm/Train` without changing any of those
+  toggles. Once `InEventCombat=1` confirms entry, it holds position and attacks
+  the model carrying `EventBattleEnemy=true` until the server clears that flag
+  and expels the player; only then is base priority restarted. The dragon name,
+  health and a local duration are never completion signals.
 - **Walking**: `humanoid:Move` driven from a render-step binding at
   `Enum.RenderPriority.Character + 1`. No teleports, no WalkSpeed/JumpPower
   changes. Its final farm point is the stage centre, matching Magic; EnterDelay
