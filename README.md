@@ -58,9 +58,11 @@ the InfinityGold dashboard.
   walks natively to a live participant's
   event position (falling back to the captured entrance). It pauses
   `Alchemy -> Sell -> Broom -> Farm/Train` without changing any of those
-  toggles. Once `InEventCombat=1` confirms entry, it holds position and attacks
+  toggles. Once `InEventCombat=1` confirms entry, it begins attacking
   the model carrying `EventBattleEnemy=true` until the server clears that flag
-  and expels the player; only then is base priority restarted. The dragon name,
+  and expels the player. While the boss is alive it reuses the native Running
+  render-step controller to orbit the moving dragon at `Running distance` and
+  jump from the ground every 0.9 s; only then is base priority restarted. The dragon name,
   health and a local duration are never completion signals.
   Rotations that instead spawn `SpecialEnemyConfigId`/`SpecialEnemyStageId`
   monsters are explicitly ignored, even though they share `curEventId` and

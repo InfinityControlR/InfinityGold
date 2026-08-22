@@ -3859,26 +3859,42 @@ return function(locomotionFactory, Library, Common)
         self:Sync()
         if not self:OwnsObjective() then return false end
 
-        stopMovementModes()
         local parts = characterParts()
         if parts == nil then
+            stopMovementModes()
             self.status = "waiting for character"
             setMovementStatus("World Event: waiting for character")
             return true
         end
 
         if self.phase == "combat" then
-            -- Entry is confirmed by replicated state. Stay exactly where the
-            -- game placed us and let the dedicated combat worker attack.
+            local target = self:FindTarget()
+            local anchor = target and (target.PrimaryPart
+                or target:FindFirstChild("HumanoidRootPart")
+                or target:FindFirstChildWhichIsA("BasePart", true))
+            if loco ~= nil and anchor ~= nil then
+                local ok, status = pcall(function()
+                    return loco:UpdateEventRunning(parts.root, anchor.Position)
+                end)
+                if ok then
+                    self.status = "event combat; running around dragon"
+                    setMovementStatus("World Event: " .. tostring(status))
+                    return true
+                end
+            end
+            stopMovementModes()
+            -- If the boss model is between replication frames, hold position
+            -- while the combat worker keeps retrying attacks.
             pcall(function()
                 parts.humanoid:Move(Vector3.zero, false)
                 parts.humanoid:MoveTo(parts.root.Position)
             end)
-            self.status = "event combat; holding position"
-            setMovementStatus("World Event: attacking until server return")
+            self.status = "event combat; waiting for dragon position"
+            setMovementStatus("World Event: attacking; waiting for dragon position")
             return true
         end
 
+        stopMovementModes()
         if self.phase == "prewait" then
             pcall(function()
                 parts.humanoid:Move(Vector3.zero, false)

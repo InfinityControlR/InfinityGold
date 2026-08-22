@@ -86,6 +86,8 @@ class WorldEventFlowTests(unittest.TestCase):
         self.assertNotIn("root.CFrame =", controller)
         self.assertNotIn("eventDuration", controller)
         self.assertNotIn("eventEndsAt", controller)
+        self.assertIn("loco:UpdateEventRunning(parts.root, anchor.Position)", CORE)
+        self.assertIn("event combat; running around dragon", CORE)
 
     def test_cached_countdown_signals_never_own_objectives(self):
         availability = core_slice(
@@ -310,7 +312,7 @@ humanoid.moveTo = nil
 assert(worldEvent:UpdateMovement() == true)
 assert(humanoid.moveTo == root.Position)
 assert(humanoid.move == Vector3.zero)
-assert(string.find(movementStatus, "attacking until server return", 1, true))
+assert(string.find(movementStatus, "waiting for dragon position", 1, true))
 
 worldEvent.phase = "prewait"
 humanoid.moveTo = nil

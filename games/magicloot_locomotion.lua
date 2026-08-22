@@ -1248,6 +1248,117 @@ function Module.create(context)
         return string.format("stage %d %s %.1f studs", stage, action, distance)
     end
 
+    -- World Event uses the same native Running controller around a moving
+    -- dragon instead of a stage footprint. The core refreshes `center` from
+    -- EventBattleEnemy every movement tick; render-step owns smooth movement
+    -- and the existing grounded 0.9 s jump cadence.
+    function api:UpdateEventRunning(root, center)
+        if root == nil or typeof(center) ~= "Vector3" then
+            resetAll()
+            return "event running waiting for dragon"
+        end
+        local character = root.Parent
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if humanoid == nil or humanoid.Health <= 0 then
+            resetAll()
+            return "event running waiting for character"
+        end
+
+        local now = os.clock()
+        local sameRoute = state.active
+            and state.mode == "EventRunning"
+            and state.humanoid == humanoid
+            and state.root == root
+        if not sameRoute then
+            stopMovement()
+            local offset = root.Position - center
+            local planar = Vector3.new(offset.X, 0, offset.Z)
+            state.active = true
+            state.enteredStage = true
+            state.generation = state.generation + 1
+            state.mode = "EventRunning"
+            state.stage = -1
+            state.humanoid = humanoid
+            state.root = root
+            state.finalDestination = center
+            state.orbitAngle = (planar.Magnitude >= 1
+                and math.atan2(planar.Z, planar.X) or 0) + RUNNING_ORBIT_STEP
+            state.orbitRadius = readRunningDistance()
+            state.destination = center + Vector3.new(
+                math.cos(state.orbitAngle) * state.orbitRadius,
+                0,
+                math.sin(state.orbitAngle) * state.orbitRadius
+            )
+            state.phase = "orbit"
+            state.lastPosition = root.Position
+            state.lastMovedAt = now
+
+            local moved = pcall(function()
+                runService:UnbindFromRenderStep(bindName)
+                runService:BindToRenderStep(
+                    bindName,
+                    Enum.RenderPriority.Character.Value + 1,
+                    function()
+                        if not state.active
+                            or state.mode ~= "EventRunning"
+                            or state.humanoid ~= humanoid
+                            or state.root ~= root
+                            or state.destination == nil
+                            or humanoid.Parent == nil
+                            or humanoid.Health <= 0
+                            or root.Parent == nil
+                        then
+                            return
+                        end
+                        local delta = state.destination - root.Position
+                        local direction = Vector3.new(delta.X, 0, delta.Z)
+                        humanoid:Move(
+                            direction.Magnitude > 1
+                                and direction.Unit or Vector3.new(0, 0, 0),
+                            false
+                        )
+                        jumpWhileRunning(humanoid, os.clock())
+                    end
+                )
+            end)
+            if not moved then
+                resetAll()
+                return "event running unavailable"
+            end
+            state.bound = true
+            startWatchdog(state.generation)
+        end
+
+        local radius = readRunningDistance()
+        local centerMoved = state.finalDestination == nil
+            or planarDistance(state.finalDestination, center) > 0.25
+        if centerMoved or math.abs(radius - state.orbitRadius) > 0.05 then
+            state.finalDestination = center
+            state.orbitRadius = radius
+            state.destination = center + Vector3.new(
+                math.cos(state.orbitAngle) * radius,
+                0,
+                math.sin(state.orbitAngle) * radius
+            )
+        end
+        local distance = planarDistance(state.destination, root.Position)
+        if distance <= 4 then
+            state.orbitAngle = state.orbitAngle + RUNNING_ORBIT_STEP
+            state.destination = center + Vector3.new(
+                math.cos(state.orbitAngle) * state.orbitRadius,
+                0,
+                math.sin(state.orbitAngle) * state.orbitRadius
+            )
+            distance = planarDistance(state.destination, root.Position)
+        end
+        state.heartbeat = now
+        return string.format(
+            "event running %.1f studs from dragon; waypoint %.1f studs",
+            state.orbitRadius,
+            distance
+        )
+    end
+
     function api:BlocksAttack()
         if state.active and os.clock() - state.heartbeat > 1 then
             resetAll()

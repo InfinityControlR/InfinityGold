@@ -181,4 +181,23 @@ assert(string.find(arrived, "walking arrived", 1, true) ~= nil)
 assert(humanoid.Jump == false)
 assert(humanoid.lastState == nil)
 
+-- World Event reuses the same render-step/native Running controller around a
+-- moving dragon target, without a stage part or teleport.
+controller:StopWalking()
+root.Position = Vector3.new(-20, 3, 0)
+humanoid.Jump = false
+humanoid.lastMove = nil
+local eventRunning = controller:UpdateEventRunning(root, center)
+assert(string.find(eventRunning, "event running 20.0 studs from dragon", 1, true) ~= nil)
+assert(renderCallback ~= nil)
+renderCallback()
+assert(humanoid.lastMove ~= nil and humanoid.lastMove.Magnitude > 0.01)
+assert(humanoid.Jump == true)
+
+local movedDragon = Vector3.new(10, 3, 0)
+eventRunning = controller:UpdateEventRunning(root, movedDragon)
+assert(string.find(eventRunning, "event running 20.0 studs from dragon", 1, true) ~= nil)
+controller:StopWalking()
+assert(renderCallback == nil)
+
 print("running_orbit_smoke=ok")
