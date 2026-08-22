@@ -168,9 +168,15 @@ assert(worldEvent:AvailableId() == nil)
 assert(worldEvent:OwnsObjective() == false,
     "dragon ID during countdown paused normal objectives")
 
-countdown = 10
 weatherConfig = true
 fakeClock = 2
+assert(worldEvent:DragonWeatherActive() == true)
+assert(worldEvent:AvailableId() == nil)
+assert(worldEvent:OwnsObjective() == false,
+    "cached DragonNest config paused a 27-minute countdown")
+
+countdown = 10
+fakeClock = 4
 assert(worldEvent:ShouldPrewait() == true)
 assert(worldEvent:OwnsObjective() == true,
     "last ten seconds at base did not reserve the event")
@@ -183,7 +189,7 @@ assert(worldEvent:OwnsObjective() == false,
 challenge = 0
 specialEvent = true
 weatherConfig = false
-fakeClock = 4
+fakeClock = 6
 assert(worldEvent:ShouldPrewait() == false)
 assert(worldEvent:OwnsObjective() == false,
     "SpecialEnemy event reserved the final ten seconds at base")
@@ -200,7 +206,7 @@ assert(worldEvent:OwnsObjective() == false,
 
 specialEvent = false
 weatherConfig = true
-fakeClock = 6
+fakeClock = 8
 dragonTarget = false
 assert(worldEvent:DragonWeatherActive() == true)
 assert(worldEvent:AvailableId() == 3,
@@ -380,7 +386,7 @@ print("world_event_attack_fallback_smoke=ok")
         self.assertIn('group:AddToggle("AutoWorldEvent"', CORE)
         self.assertIn('Text = "Auto World Event"', CORE)
         self.assertIn(
-            '"World Event: %s • id %s • timer %s • weather %s • dragon %s • special %s • combat %d"',
+            '"World Event: %s • id %s • timer %s • config %s • live %d • dragon %s • special %s • combat %d"',
             CORE,
         )
 

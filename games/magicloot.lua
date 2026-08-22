@@ -1452,7 +1452,12 @@ return function(locomotionFactory, Library, Common)
             return eventId
         end
         if self:HasSpecialEnemyEvent() then return nil end
-        if self:DragonWeatherActive() then return eventId end
+        -- Dragon weather rows can remain cached long after the event. The
+        -- live invitation is required as an activation edge; SpecialEnemy
+        -- remains a stronger veto because it shares that same notification.
+        if self:InvitationValue() > 0 and self:DragonWeatherActive() then
+            return eventId
+        end
         return nil
     end
 
@@ -5026,11 +5031,12 @@ return function(locomotionFactory, Library, Common)
                     local specialEvent = worldEvent:HasSpecialEnemyEvent()
                     local dragonWeather = worldEvent:DragonWeatherActive()
                     worldEventDiagnostics:Set(string.format(
-                        "World Event: %s • id %s • timer %s • weather %s • dragon %s • special %s • combat %d",
+                        "World Event: %s • id %s • timer %s • config %s • live %d • dragon %s • special %s • combat %d",
                         tostring(state),
                         eventId and tostring(eventId) or "-",
                         countdown ~= nil and tostring(countdown) or "-",
                         dragonWeather and tostring(worldEvent.weatherName) or "no",
+                        worldEvent:InvitationValue(),
                         dragonTarget and "yes" or "no",
                         specialEvent and "yes" or "no",
                         worldEvent:CombatValue()

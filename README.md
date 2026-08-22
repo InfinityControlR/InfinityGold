@@ -53,7 +53,8 @@ the InfinityGold dashboard.
   base waits during the final ten seconds when the loaded weather row says
   `Facility=DragonNest` and `Weather=FireDragon/DarkDragon`. An active dungeon run is never
   interrupted or returned early. When that run reaches base naturally and
-  that DragonNest weather is live, the controller
+  that DragonNest configuration coincides with the live `Mysterious Event`
+  activation, the controller
   walks natively to a live participant's
   event position (falling back to the captured entrance). It pauses
   `Alchemy -> Sell -> Broom -> Farm/Train` without changing any of those
@@ -64,6 +65,7 @@ the InfinityGold dashboard.
   Rotations that instead spawn `SpecialEnemyConfigId`/`SpecialEnemyStageId`
   monsters are explicitly ignored, even though they share `curEventId` and
   `Mysterious Event` with the dragon rotation.
+  A cached DragonNest row by itself never pauses movement or base priority.
   Once inside, `EventBattleEnemy=true` becomes the target authority. If the
   game omits `NowTargetCurrent`, the event worker still releases the normal
   attack skill instead of failing every combat tick.
