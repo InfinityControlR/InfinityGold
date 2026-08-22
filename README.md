@@ -53,8 +53,8 @@ the InfinityGold dashboard.
   base never waits on the countdown alone: every observed timer, notification
   and DragonNest row can remain stale. An active dungeon run is never
   interrupted or returned early. When that run reaches base naturally and a
-  live dragon Boss UI, another player with `InEventCombat>0`, or the boss model
-  itself appears, the controller
+  live Fire/Dark Dragon Boss UI with HP strictly above 0, another player with
+  `InEventCombat>0`, or the boss model itself appears, the controller
   walks natively to a live participant's
   event position (falling back to the captured entrance). It pauses
   `Alchemy -> Sell -> Broom -> Farm/Train` without changing any of those
@@ -66,7 +66,8 @@ the InfinityGold dashboard.
   monsters are explicitly ignored, even though they share `curEventId` and
   `Mysterious Event` with the dragon rotation.
   Cached `curEventId`, `Mysterious Event`, timer and DragonNest data never pause
-  movement or base priority by themselves.
+  movement or base priority by themselves. A visible but stale Boss UI at 0%
+  is ignored too.
   Once inside, `EventBattleEnemy=true` becomes the target authority. If the
   game omits `NowTargetCurrent`, the event worker still releases the normal
   attack skill instead of failing every combat tick.

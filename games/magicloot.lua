@@ -3816,10 +3816,18 @@ return function(locomotionFactory, Library, Common)
             return nameLabel and tostring(nameLabel.Text) or ""
         end)
         if not textOk then return false end
-        return string.find(text, "Fire Dragon", 1, true) ~= nil
+        local dragonName = string.find(text, "Fire Dragon", 1, true) ~= nil
             or string.find(text, "Dark Dragon", 1, true) ~= nil
             or string.find(text, "火龙", 1, true) ~= nil
             or string.find(text, "暗龙", 1, true) ~= nil
+        if not dragonName then return false end
+        local healthLabel = boss:FindFirstChild("Hp", true)
+        local healthOk, healthText = pcall(function()
+            return healthLabel and tostring(healthLabel.Text) or ""
+        end)
+        if not healthOk then return false end
+        local health = tonumber(string.match(healthText, "(%d+%.?%d*)")) or 0
+        return health > 0
     end
 
     function worldEvent:FindTarget()

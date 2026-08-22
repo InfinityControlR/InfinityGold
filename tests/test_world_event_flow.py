@@ -368,6 +368,58 @@ print("world_event_attack_fallback_smoke=ok")
         )
         self.assertIn("world_event_attack_fallback_smoke=ok", completed.stdout)
 
+    def test_stale_zero_percent_boss_ui_is_not_live(self):
+        helper = core_slice(
+            "    function worldEvent:DragonBossUiActive()",
+            "    function worldEvent:FindTarget()",
+        )
+        fixture = f"""
+local healthText = "0%"
+local nameText = "Dark Dragon"
+local bossVisible = true
+local nameLabel = {{ Text = nameText }}
+local healthLabel = {{ Text = healthText }}
+local boss = {{ Visible = true }}
+function boss:FindFirstChild(name, recursive)
+    assert(recursive == true)
+    if name == "ZhName" then nameLabel.Text = nameText return nameLabel end
+    if name == "Hp" then healthLabel.Text = healthText return healthLabel end
+    return nil
+end
+local playerGui = {{}}
+function playerGui:FindFirstChild(name, recursive)
+    assert(name == "BossHp" and recursive == true)
+    boss.Visible = bossVisible
+    return boss
+end
+local player = {{}}
+function player:FindFirstChildOfClass(name)
+    assert(name == "PlayerGui")
+    return playerGui
+end
+local worldEvent = {{}}
+
+{helper}
+
+assert(worldEvent:DragonBossUiActive() == false,
+    "stale 0% Boss UI authorized a nonexistent event")
+healthText = "82%"
+assert(worldEvent:DragonBossUiActive() == true)
+bossVisible = false
+assert(worldEvent:DragonBossUiActive() == false)
+bossVisible = true
+nameText = "Training Boss"
+assert(worldEvent:DragonBossUiActive() == false)
+print("world_event_boss_ui_smoke=ok")
+"""
+        completed = run_luau(fixture)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            f"World Event Boss UI smoke failed:\n{completed.stdout}\n{completed.stderr}",
+        )
+        self.assertIn("world_event_boss_ui_smoke=ok", completed.stdout)
+
     def test_world_event_preempts_every_objective_without_changing_toggles(self):
         movement = core_slice("    local function updateMovement()", "    -- Combat")
         self.assertLess(
