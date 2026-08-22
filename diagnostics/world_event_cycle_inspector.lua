@@ -18,7 +18,7 @@ local MAX_SCALARS = 900
 local MAX_UI_TEXTS = 700
 local MAX_PARTS = 3000
 local MAX_TABLE_MATCHES = 60
-local POLL_SECONDS = 0.5
+local POLL_SECONDS = 1
 
 local alive = true
 local startedAt = os.clock()
